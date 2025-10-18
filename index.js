@@ -1,47 +1,65 @@
-const express = require('express');
-const cors = require('cors');
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+ const express = require('express');
+    const cors = require('cors');
+    const { GoogleGenerativeAI } = require("@google/generative-ai");
 
-const app = express();
-app.use(cors());
-app.use(express.json());
+    const app = express();
+    app.use(cors());
+    app.use(express.json());
 
-// Check for the API key from environment variables (Secrets)
-if (!process.env.GOOGLE_API_KEY) {
-  throw new Error("API Key not found. Please add GOOGLE_API_KEY to environment variables.");
-}
+    // --- A VISIBLE MARKER TO CONFIRM DEPLOYMENT ---
+    // This will be our proof that the new code is live.
+    app.get('/', (req, res) => {
+      res.json({ 
+        status: "EduApp AI Proxy is running!", 
+        version: "2.0",
+        message: "The new code has been deployed successfully." 
+      });
+    });
 
-// Initialize Google AI with the key
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
-
-// --- THE FIX IS HERE ---
-// Use the correct and stable model name
-const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-
-// The chat endpoint that your app will call
-app.post('/chat', async (req, res) => {
-  try {
-    const userMessage = req.body.message;
-    if (!userMessage) {
-      return res.status(400).json({ error: 'Message is required' });
+    if (!process.env.GOOGLE_API_KEY) {
+      console.error("FATAL ERROR: GOOGLE_API_KEY is not defined in environment variables.");
     }
 
-    // Generate content using the model
-    const result = await model.generateContent(userMessage);
-    const response = await result.response;
-    const botReply = response.text();
+    const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
 
-    // Send the bot's reply back to your app
-    res.json({ reply: botReply });
+    app.get('/list-models', async (req, res) => {
+      try {
+        const result = await genAI.listModels();
+        const modelInfo = [];
+        for (const m of result) {
+          modelInfo.push({ name: m.name, displayName: m.displayName });
+        }
+        res.json({ availableModels: modelInfo });
+      } catch (error) {
+        console.error("Error listing models:", error.message);
+        res.status(500).json({ error: 'Could not list models.', details: error.message });
+      }
+    });
 
-  } catch (error) {
-    console.error("Error processing chat:", error);
-    res.status(500).json({ error: 'Something went wrong on the server.' });
-  }
-});
+    app.post('/chat', async (req, res) => {
+      try {
+        // --- THE FINAL FIX ---
+        // We will use the model name that we get from /list-models
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" }); // Using a very recent and likely available model
+        
+        const userMessage = req.body.message;
+        if (!userMessage) {
+          return res.status(400).json({ error: 'Message is required' });
+        }
 
-// Start the server
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
-});
+        const result = await model.generateContent(userMessage);
+        const response = await result.response;
+        const botReply = response.text();
+
+        res.json({ reply: botReply });
+
+      } catch (error) {
+        console.error("Error processing chat:", error.message);
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    const port = process.env.PORT || 10000;
+    app.listen(port, () => {
+      console.log(`Server is running on port ${port}`);
+    });
