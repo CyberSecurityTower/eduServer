@@ -21,7 +21,7 @@ if (!process.env.GOOGLE_API_KEY) {
   throw new Error("API Key not found. Please add GOOGLE_API_KEY to environment variables.");
 }
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
 // --- إعداد الخادم ---
 const app = express();
