@@ -1,0 +1,17 @@
+{
+          "name": "eduapp-ai-proxy",
+          "version": "1.0.0",
+          "description": "A secure proxy for EduApp AI features",
+          "main": "index.js",
+          "scripts": {
+            "start": "node index.js"
+          },
+          "dependencies": {
+            "@google/generative-ai": "^0.1.3",
+            "cors": "^2.8.5",
+            "express": "^4.18.2"
+          },
+          "engines": {
+            "node": "18.x"
+          }
+        }
