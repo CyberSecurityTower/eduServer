@@ -144,6 +144,7 @@ You are 'EduAI' (you can call yourself 'owl'), a smart, positive, and deeply emp
 });
 
 // --- Title Generation Endpoint ---
+// --- Title Generation Endpoint ---
 app.post('/generate-title', async (req, res) => {
     try {
         const { message, language } = req.body;
@@ -159,7 +160,6 @@ app.post('/generate-title', async (req, res) => {
         User Message: "${message}"
         Title:`;
 
-        // --- USE THE FAST TITLE MODEL ---
         const result = await titleModel.generateContent(titlePrompt);
         const response = await result.response;
         const title = response.text().trim();
@@ -170,9 +170,76 @@ app.post('/generate-title', async (req, res) => {
         console.error("Error in /generate-title endpoint:", error);
         res.status(500).json({ error: 'Failed to generate title.' });
     }
+}); 
+// --- NEW: Quiz Failure Analysis Endpoint ---
+app.post('/analyze-quiz-fail', async (req, res) => {
+    try {
+        const { userId, lessonTitle, quizQuestions, userAnswers, totalScore } = req.body;
+
+        if (!userId || !quizQuestions || !userAnswers) {
+            return res.status(400).json({ error: 'Required quiz data is missing.' });
+        }
+        
+        // 1. Format the data for the AI model
+        const quizLog = quizQuestions.map((q, index) => ({
+            question: q.question,
+            correctAnswer: q.correctAnswer,
+            userAnswer: userAnswers[index],
+            status: q.correctAnswer === userAnswers[index] ? 'Correct' : 'Incorrect'
+        }));
+        
+        const quizLogText = JSON.stringify(quizLog, null, 2);
+
+        // 2. Advanced Prompt for Analysis (Using the powerful model)
+        const analysisPrompt = `
+        <role>You are a specialized Educational Data Analyst AI.</role>
+        
+        <context>
+        Analyze the student's performance on the quiz for the lesson: "${lessonTitle}".
+        The student scored ${totalScore} out of ${quizQuestions.length}.
+        The student's objective is to achieve mastery and understand the root cause of their mistakes.
+        </context>
+
+        <quiz_data>
+        ${quizLogText}
+        </quiz_data>
+
+        <task>
+        Based ONLY on the <quiz_data>, generate a detailed analysis.
+        You must structure your output as a VALID JSON object.
+
+        **JSON Schema:**
+        {
+          "newMasteryScore": "A number between 0 and 100 based on the totalScore and complexity of the incorrect answers.",
+          "feedbackSummary": "A concise, motivating summary (in Arabic) of their overall performance, acknowledging their score but encouraging them to focus on weak areas.",
+          "suggestedNextStep": "A specific, actionable study plan (in Arabic) based on the incorrect answers. E.g., 'مراجعة المفهوم X', 'إعادة قراءة القسم Y في الدرس'."
+        }
+
+        **CRITICAL_RULE:** Provide ONLY the JSON object. Do not add any extra text or formatting.
+        </task>
+        `;
+
+        const result = await chatModel.generateContent(analysisPrompt);
+        const responseText = result.response.text().trim();
+
+        // 3. Attempt to parse the JSON output
+        const analysisData = JSON.parse(responseText.replace(/```json|```/g, '').trim());
+
+        // 4. Update the user's progress in Firestore (Placeholder for full implementation)
+        // Note: Full progress update logic will be refined in the app side (next step)
+        
+        res.json(analysisData);
+
+    } catch (error) {
+        console.error("Error in /analyze-quiz-fail endpoint:", error);
+        // Attempt to send a default error response
+        res.status(500).json({
+            newMasteryScore: totalScore, 
+            feedbackSummary: "عذراً، حدث خطأ أثناء تحليل إجاباتك. لكنك قدمت أداءً جيداً!",
+            suggestedNextStep: "يرجى المحاولة مرة أخرى لاحقًا."
+        });
+    }
 });
-
-
 // --- Server Activation ---
 app.listen(PORT, () => {
   console.log(`EduAI Brain V7 is running on port ${PORT}`);
