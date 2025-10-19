@@ -5,7 +5,7 @@ const admin = require('firebase-admin');
 
 // --- Configuration ---
 const PORT = process.env.PORT || 3000;
-const MODEL_NAME = "gemini-flash-latest";
+const MODEL_NAME = "gemini-2.5-pro";
 
 // --- Initialization ---
 const app = express();
