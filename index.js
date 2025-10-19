@@ -1,10 +1,11 @@
-// server.js
+// server.js (النسخة المحسنة والنهائية)
 'use strict';
 
 const express = require('express');
 const cors = require('cors');
 const admin = require('firebase-admin');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const fetch = require('node-fetch'); // --- 1. أضف هذا السطر ---
 
 // ----------------- Configuration -----------------
 const PORT = Number(process.env.PORT || 3000);
@@ -225,6 +226,74 @@ async function detectLanguage(message) {
   }
 }
 
+// ----------------- Task Management Logic (Helper Function) -----------------
+async function applyTaskModification(userId, userRequest) {
+  if (!userId || !userRequest) throw new Error('userId and userRequest required for task modification.');
+
+  const progressDoc = await db.collection('userProgress').doc(userId).get();
+  const currentTasks = progressDoc.exists() ? progressDoc.data().dailyTasks?.tasks || [] : [];
+
+  const modificationPrompt = `
+<role>
+You are an intelligent task manager. Your job is to modify a user's existing task list based on their request.
+The response MUST be a valid JSON object containing a single key "tasks", which is the complete, updated array of tasks. Do not include any other text or markdown formatting.
+
+**Current Task List (JSON):**
+${JSON.stringify(currentTasks, null, 2)}
+
+**User's Modification Request:**
+"${escapeForPrompt(userRequest)}"
+
+**Instructions:**
+1. Read the user's request and modify the current task list accordingly.
+2. You can add, remove, or update tasks.
+3. Ensure all tasks in the final array have the required fields: "id", "title" (in Arabic), "type", "status", "relatedLessonId" (can be null if not applicable).
+4. Do not invent lesson IDs. If the user mentions a topic without an ID, set relatedLessonId to null.
+5. Maintain existing tasks that were not mentioned in the request.
+</role>
+`.trim();
+
+  const resultPromise = chatModel.generateContent(modificationPrompt);
+  const result = await withTimeout(resultPromise, REQUEST_TIMEOUT_MS, 'task modification');
+  const rawJson = await extractTextFromResult(result);
+
+  let parsedTasks;
+  try {
+    const cleanedJson = rawJson.replace(/```json/g, '').replace(/```/g, '').trim();
+    // try JSON.parse directly
+    try {
+      parsedTasks = JSON.parse(cleanedJson);
+    } catch (e) {
+      // attempt to extract the first {...} block
+      const firstBrace = cleanedJson.indexOf('{');
+      const lastBrace = cleanedJson.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        const candidate = cleanedJson.slice(firstBrace, lastBrace + 1);
+        parsedTasks = JSON.parse(candidate);
+      } else {
+        throw e;
+      }
+    }
+  } catch (e) {
+    console.error('Initial JSON parsing failed. Raw response:', rawJson);
+    throw new Error('Model returned invalid JSON.');
+  }
+
+  if (!parsedTasks || !Array.isArray(parsedTasks.tasks)) {
+    throw new Error('Model response did not contain a valid tasks array.');
+  }
+
+  const userProgressRef = db.collection('userProgress').doc(userId);
+  await userProgressRef.set({
+    dailyTasks: {
+      tasks: parsedTasks.tasks,
+      generatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }
+  }, { merge: true });
+
+  return parsedTasks.tasks;
+}
+
 // ----------------- Endpoints -----------------
 
 app.post('/chat', async (req, res) => {
@@ -234,7 +303,7 @@ app.post('/chat', async (req, res) => {
     const lessonId = req.body.lessonId || null;
 
     if (!userId || !message || typeof message !== 'string') {
-      return res.status(400).json({ error: 'Invalid request. Required: userId (string) and message (string).' });
+      return res.status(400).json({ error: 'Invalid request.' });
     }
 
     // Fetch required data concurrently
@@ -247,39 +316,18 @@ app.post('/chat', async (req, res) => {
     ]);
 
     const detectedLanguage = sanitizeLanguage(detectedLanguageRaw);
+    const lessonContent = lessonContentRaw ? escapeForPrompt(safeSnippet(String(lessonContentRaw))) : null;
+    const safeMessage = escapeForPrompt(safeSnippet(message));
+    const formattedHistory = (history || []).slice(-5).map(item => `${item.role === 'model' ? 'EduAI' : 'User'}: ${String(item.text || '').replace(/\n/g, ' ')}`).join('\n');
+    const lessonContextBlock = lessonContent ? `<lesson_context>...</lesson_context>` : '';
 
-    // Prepare safe lesson content and safe message
-    const lessonContent = lessonContentRaw ? escapeForPrompt(safeSnippet(String(lessonContentRaw), 6000)) : null;
-    const safeMessage = escapeForPrompt(safeSnippet(message, 2000));
-
-    // Build short formatted history
-    const formattedHistory = (history || [])
-      .slice(-5)
-      .map(item => {
-        const r = item.role === 'model' ? 'EduAI' : 'User';
-        const txt = String(item.text || '').replace(/\n/g, ' ');
-        return `${r}: ${txt}`;
-      })
-      .join('\n');
-
-    // Insert lesson context block only if lessonContent exists
-    const lessonContextBlock = lessonContent
-      ? `
-<lesson_context>
-**CRITICAL_FOCUS:** The user is currently viewing a lesson. Your response MUST be based ONLY on the following text block. Do NOT use general knowledge about the topic. If the text does not contain the answer, state that gently.
-<lesson_text>
-${lessonContent}
-</lesson_text>
-</lesson_context>
-`
-      : '';
-
+    // --- يتضمن تعليمات الشخصية الجديدة التي أضفتها ---
     const finalPrompt = `
 <role>
-You are 'EduAI' (you can call yourself 'owl'), a smart, positive, and deeply empathetic study companion. Your primary goal is to be a helpful and motivating friend to the user. Use sophisticated and appropriate words. Avoid starting every message with a greeting like "hi" or "أهلاً".
+You are 'EduAI' (you can call yourself 'owl'), a smart, positive, and deeply empathetic study companion. Your primary goal is to be a helpful and motivating friend to the user. Use sophisticated and appropriate words. Avoid starting every message with a greeting like "hi" or "أهلاً". Treat the user like a close friend; you can be angry with them (if they haven't studied for a long time), or you can be: motivating, sad, helpful (according to the situation).
 </role>
 
-${lessonContextBlock} <!-- LESSON CONTEXT IS INSERTED HERE -->
+${lessonContextBlock}
 
 <user_profile>
   <dynamic_data>
@@ -287,41 +335,99 @@ ${lessonContextBlock} <!-- LESSON CONTEXT IS INSERTED HERE -->
     - Daily Streak: ${Number(dynamicData.streak || 0)}
   </dynamic_data>
   <static_memory>
-    - Summary: ${escapeForPrompt(safeSnippet(memorySummary || 'No available memory.', 1000))}
+    - Summary: ${escapeForPrompt(safeSnippet(memorySummary))}
   </static_memory>
 </user_profile>
 
 <conversation_context>
-  <history>
-${formattedHistory || 'This is the beginning of the conversation.'}
-  </history>
-  <latest_message>
-    ${safeMessage}
-  </latest_message>
+  <history>${formattedHistory || 'This is the beginning of the conversation.'}</history>
+  <latest_message>${safeMessage}</latest_message>
 </conversation_context>
 
-<task>
-  Your task is to generate a response to the <latest_message>.
-  
-  **Core Directives:**
-  1. If a <lesson_context> exists, your response is limited to that context.
-  2. Maintain Context: Your response MUST be a logical and direct continuation of the <conversation_context>.
-  3. Be Subtle: Use information from <user_profile> only if it's highly relevant.
+<capabilities>
+You can manage the user's daily tasks. If the user's message is a clear command to create, add, or modify their study plan, you MUST respond with a specific JSON object to trigger this action. Otherwise, respond normally.
+**Trigger Condition:** Direct commands like "create a task for tomorrow", "add a quiz about history", "remind me to study at 8 PM".
+**JSON Action Format:**
+{
+  "action": "manage_tasks",
+  "userRequest": "The user's original and complete request text."
+}
+</capabilities>
 
-  **CRITICAL_RULE:**
-  You must write your entire response in the following language: **${detectedLanguage}**. No other languages are permitted.
+<task>
+1. Evaluate if the message meets the trigger condition in <capabilities>. If yes, respond with the JSON Action Format.
+2. If no, generate a normal, helpful, text-based response.
+**CRITICAL_RULE:** Your text response MUST be in **${detectedLanguage}**. The JSON action is always in English.
 </task>
 `.trim();
 
-    // Call model with timeout
     const modelCallPromise = chatModel.generateContent(finalPrompt);
     const modelResult = await withTimeout(modelCallPromise, REQUEST_TIMEOUT_MS, 'chat model');
     const botReplyRaw = await extractTextFromResult(modelResult);
-    const botReply = (botReplyRaw && botReplyRaw.length) ? botReplyRaw : "Sorry — I couldn't generate a response right now.";
 
-    return res.json({ reply: botReply });
+    // Try to robustly detect the JSON action
+    let actionResponse = null;
+    if (botReplyRaw && botReplyRaw.trim()) {
+      const trimmed = botReplyRaw.trim();
+      try {
+        // direct parse
+        const parsedDirect = JSON.parse(trimmed);
+        if (parsedDirect && parsedDirect.action === 'manage_tasks' && parsedDirect.userRequest) {
+          actionResponse = parsedDirect;
+        }
+      } catch (e) {
+        // attempt to extract first JSON object substring
+        const firstBrace = trimmed.indexOf('{');
+        const lastBrace = trimmed.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+          const candidate = trimmed.slice(firstBrace, lastBrace + 1);
+          try {
+            const parsedCandidate = JSON.parse(candidate);
+            if (parsedCandidate && parsedCandidate.action === 'manage_tasks' && parsedCandidate.userRequest) {
+              actionResponse = parsedCandidate;
+            }
+          } catch (e2) {
+            // not JSON
+            actionResponse = null;
+          }
+        }
+      }
+    }
+
+    // --- 2. التحسين الرئيسي هنا: استدعاء نقطة النهاية في الخلفية (fire-and-forget) ---
+    if (actionResponse) {
+      console.log(`Action detected: manage_tasks. Request: "${actionResponse.userRequest}"`);
+
+      // Fire-and-forget background request to /update-daily-tasks
+      try {
+        const host = req.get('host') || 'localhost';
+        // determine protocol (very simple heuristic)
+        const protocol = host.includes('localhost') || host.includes('127.0.0.1') ? 'http' : 'https';
+        const url = `${protocol}://${host}/update-daily-tasks`;
+
+        fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: userId, userRequest: actionResponse.userRequest }),
+        }).catch(err => {
+          console.error('Failed to trigger background task update:', err && err.message ? err.message : err);
+        });
+      } catch (err) {
+        console.error('Failed to initiate background fetch for task update:', err && err.message ? err.message : err);
+      }
+
+      // Immediately send a confirmation message back to the user.
+      const confirmationMessage = "بالتأكيد! أنا أعمل على تحديث مهامك الآن. ستراها في شاشتك الرئيسية بعد لحظات.";
+      return res.json({ reply: confirmationMessage });
+
+    } else {
+      // Normal reply path
+      const botReply = (botReplyRaw && botReplyRaw.length) ? botReplyRaw : "Sorry, I couldn't generate a response.";
+      return res.json({ reply: botReply });
+    }
+
   } catch (err) {
-    console.error('Critical Error in /chat endpoint:', err && err.message ? err.message : err);
+    console.error('Critical Error in /chat:', err && err.message ? err.message : err);
     if (err && err.message && err.message.toLowerCase().includes('timed out')) {
       return res.status(504).json({ error: 'Model request timed out.' });
     }
@@ -329,6 +435,23 @@ ${formattedHistory || 'This is the beginning of the conversation.'}
   }
 });
 
+// --- 3. هذه نقطة النهاية تعمل الآن كعامل في الخلفية ---
+app.post('/update-daily-tasks', async (req, res) => {
+  try {
+    const { userId, userRequest } = req.body;
+    if (!userId || !userRequest) {
+      return res.status(400).json({ error: 'userId and userRequest are required.' });
+    }
+
+    await applyTaskModification(userId, userRequest);
+    res.status(200).json({ success: true, message: 'Tasks updated successfully in the background.' });
+  } catch (err) {
+    console.error('Error in /update-daily-tasks background job:', err && err.message ? err.message : err);
+    res.status(500).json({ error: 'Failed to update tasks.' });
+  }
+});
+
+// ----------------- generate-title endpoint -----------------
 app.post('/generate-title', async (req, res) => {
   try {
     const { message, language } = req.body;
