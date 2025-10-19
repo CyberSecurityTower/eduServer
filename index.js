@@ -9,8 +9,8 @@ const fetch = require('node-fetch');
 
 // --- Configuration ---
 const PORT = Number(process.env.PORT || 3000);
-const CHAT_MODEL_NAME = process.env.CHAT_MODEL_NAME || 'gemini-1.5-flash';
-const TITLE_MODEL_NAME = process.env.TITLE_MODEL_NAME || 'gemini-1.5-flash';
+const CHAT_MODEL_NAME = process.env.CHAT_MODEL_NAME || 'gemini-2.5-flash';
+const TITLE_MODEL_NAME = process.env.TITLE_MODEL_NAME || 'gemini-2.5-flash-lite';
 const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 25000);
 const BODY_LIMIT = process.env.BODY_LIMIT || '150kb';
 
