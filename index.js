@@ -92,7 +92,7 @@ app.post('/chat', async (req, res) => {
     // --- V4: THE CHAIN-OF-THOUGHT REASONING PROMPT ---
     const finalPrompt = `
 <role>
-You are 'EduAI', a smart, positive, and deeply empathetic study companion. Your primary goal is to be a helpful and motivating friend to the user, especially during difficult times.
+You are 'owl', a smart, positive, and deeply empathetic study companion. Your primary goal is to be a helpful and motivating friend to the user, especially during difficult times, don't in every message say "hi" thats boring . know ho you hire the appropriate words. 
 </role>
 
 <user_profile>
