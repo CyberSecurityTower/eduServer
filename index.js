@@ -121,6 +121,21 @@ function sanitizeLanguage(langCandidate) {
 }
 
 // --- Firestore Helpers ---
+async function detectLanguage(message) {
+  try {
+    if (!message || typeof message !== 'string') return 'Arabic';
+    const prompt = `What is the primary language of the following text? Respond with only the language name in English (e.g., "Arabic", "English", "French"). Text: "${message.replace(/"/g, '\\"')}"`;
+    const rawPromise = titleModel.generateContent(prompt);
+    const rawResult = await withTimeout(rawPromise, REQUEST_TIMEOUT_MS, 'language detection');
+    const rawText = await extractTextFromResult(rawResult);
+    const lang = sanitizeLanguage(rawText);
+    return lang;
+  } catch (err)
+   {
+    console.error('Language detection failed:', err && err.message ? err.message : err);
+    return 'Arabic';
+  }
+}
 async function fetchMemoryProfile(userId) {
   try {
     const doc = await db.collection('aiMemoryProfiles').doc(userId).get();
