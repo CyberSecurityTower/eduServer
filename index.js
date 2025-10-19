@@ -26,7 +26,7 @@ const db = admin.firestore();
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
 const model = genAI.getGenerativeModel({ model: MODEL_NAME });
 
-// --- Helper Functions ---
+// --- Helper Functions (No changes) ---
 
 async function fetchMemoryProfile(userId) {
   try {
@@ -36,7 +36,6 @@ async function fetchMemoryProfile(userId) {
       return memoryDoc.data().profileSummary;
     }
   } catch (error) {
-    // <-- FIX: Comma added here
     console.error(`Error fetching memory for user ${userId}:`, error);
   }
   return "No available memory.";
@@ -54,7 +53,6 @@ async function fetchUserProgress(userId) {
       };
     }
   } catch (error) {
-    // <-- FIX: Comma added here
     console.error(`Error fetching progress for user ${userId}:`, error);
   }
   return { points: 0, streak: 0 };
@@ -67,7 +65,6 @@ async function detectLanguage(message) {
         const response = await result.response;
         return response.text().trim();
     } catch (error) {
-        // <-- FIX: Comma added here
         console.error("Language detection failed:", error);
         return 'Arabic';
     }
@@ -92,9 +89,10 @@ app.post('/chat', async (req, res) => {
       .map(item => `${item.role === 'model' ? 'EduAI' : 'User'}: ${item.text}`)
       .join('\n');
 
+    // --- V4: THE CHAIN-OF-THOUGHT REASONING PROMPT ---
     const finalPrompt = `
 <role>
-You are 'EduAI', a smart, positive, and supportive study companion. Your primary goal is to be a helpful and motivating friend to the user.
+You are 'EduAI', a smart, positive, and deeply empathetic study companion. Your primary goal is to be a helpful and motivating friend to the user, especially during difficult times.
 </role>
 
 <user_profile>
@@ -119,13 +117,16 @@ You are 'EduAI', a smart, positive, and supportive study companion. Your primary
 <task>
   Your task is to generate a response to the <latest_message>.
 
-  **Core Directives:**
-  1.  **Maintain Context:** Your response MUST be a logical and direct continuation of the <conversation_context>. Acknowledge the <history> if it's relevant to the <latest_message>.
-  2.  **Be Subtle:** Use information from <user_profile> only if it's highly relevant. Do not just list facts.
-  3.  **Be Natural:** Keep your tone friendly and your responses concise.
+  **REASONING_STEPS (Think silently before you respond):**
+  1.  **Analyze Context:** Carefully read the entire <conversation_context>. Is there an established emotional tone (e.g., sad, happy, stressed)?
+  2.  **Connect the Dots:** Does the <latest_message> directly relate to anything mentioned earlier in the <history>? Specifically, look for recurring topics or entities (like family members).
+  3.  **Check for Safety Triggers:** Does the <latest_message> seem like a request for private information or a cry for help? If it relates to a sensitive topic already discussed (like loss), handle it with empathy based on the established context, NOT as a new, literal request.
+  4.  **Formulate a Plan:** Based on the analysis, decide on the most appropriate tone and content for the response.
 
-  **CRITICAL_RULE:**
-  You must write your entire response in the following language: **${detectedLanguage}**. No other languages are permitted.
+  **FINAL_OUTPUT_RULES:**
+  1.  **Maintain Context:** Your response MUST be a logical continuation of the conversation.
+  2.  **CRITICAL_LANGUAGE_RULE:** You must write your entire response in **${detectedLanguage}**. No other languages are permitted.
+  3.  **Output Format:** Provide ONLY the final response text, without the reasoning steps.
 </task>
 `;
 
@@ -136,7 +137,6 @@ You are 'EduAI', a smart, positive, and supportive study companion. Your primary
     res.json({ reply: botReply });
 
   } catch (error) {
-    // <-- FIX: Comma added here
     console.error("Critical Error in /chat endpoint:", error);
     res.status(500).json({ error: 'An internal server error occurred.' });
   }
@@ -144,5 +144,6 @@ You are 'EduAI', a smart, positive, and supportive study companion. Your primary
 
 // --- Server Activation ---
 app.listen(PORT, () => {
-  console.log(`EduAI Brain V3 is running on port ${PORT}`);
+  console.log(`EduAI Brain V4 is running on port ${PORT}`);
+  console.log("hii thats me!");
 });
