@@ -386,7 +386,7 @@ ${weaknessesPrompt}
 <instructions>
 1. Create 2-3 tasks based on weaknesses. If none, create introductory tasks.
 2. Titles must be in Arabic.
-3. Each task needs: id, title, type, status ('pending'), relatedLessonId, and relatedSubjectId.
+3. Each task must include: id, title, type, status ('pending'), relatedLessonId, and relatedSubjectId.
 </instructions>
 `.trim();
 
@@ -400,45 +400,59 @@ ${weaknessesPrompt}
       throw new Error('Model returned empty tasks');
     }
 
-    const tasksToSave = parsed.tasks.slice(0, 5).map((task) => ({
-      id: task.id || (String(Date.now()) + Math.random().toString(36).substring(7)),
-      title: task.title || task.name || 'مهمة تعليمية',
-      type: VALID_TASK_TYPES.has((task.type || '').toString().toLowerCase()) ? (task.type || '').toString().toLowerCase() : 'review',
-      status: task.status || 'pending',
+    // 🧩 Normalize each task (remove invalid fields, add ids)
+    const tasksToSave = parsed.tasks.slice(0, 5).map((task, i) => ({
+      id: task.id || String(Date.now() + i),
+      title: String(task.title || 'مهمة جديدة').trim(),
+      type: ['review', 'quiz', 'new_lesson', 'practice', 'study'].includes(task.type) ? task.type : 'study',
+      status: 'pending',
       relatedLessonId: task.relatedLessonId || null,
-      relatedSubjectId: task.relatedSubjectId || null,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      relatedSubjectId: task.relatedSubjectId || null
     }));
 
-    await db.collection('userProgress').doc(userId).set({ dailyTasks: { tasks: tasksToSave, generatedAt: admin.firestore.FieldValue.serverTimestamp() } }, { merge: true });
-    await cacheDel('progress', userId);
+    // ✅ الحفظ الصحيح (بدون serverTimestamp داخل المصفوفة)
+    await db.collection('userProgress').doc(userId).set({
+      dailyTasks: {
+        tasks: tasksToSave,
+        generatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+    }, { merge: true });
+
+    cache.progress.clear();
     console.log(`[${iso()}] ✅ Generated ${tasksToSave.length} tasks for ${userId}`);
     return tasksToSave;
 
   } catch (err) {
-    console.error(`[${iso()}] ❌ handleGenerateDailyTasks error: ${err && err.message ? err.message : err}. Using fallback.`);
+    console.error(`[${iso()}] ❌ handleGenerateDailyTasks error: ${err.message}. Using fallback.`);
+
+    // ✅ fallback بدون serverTimestamp داخل المصفوفة
     const fallbackTasks = [{
       id: String(Date.now()),
       title: 'مراجعة درس مهم',
       type: 'review',
       status: 'pending',
       relatedLessonId: null,
-      relatedSubjectId: null,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      relatedSubjectId: null
     }];
+
     try {
-      await db.collection('userProgress').doc(userId).set({ dailyTasks: { tasks: fallbackTasks, generatedAt: admin.firestore.FieldValue.serverTimestamp() } }, { merge: true });
-      await cacheDel('progress', userId);
+      await db.collection('userProgress').doc(userId).set({
+        dailyTasks: {
+          tasks: fallbackTasks,
+          generatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+      }, { merge: true });
+
+      cache.progress.clear();
       console.log(`[${iso()}] ✅ Saved fallback task for ${userId}`);
     } catch (saveErr) {
-      console.error(`[${iso()}] ⚠️ CRITICAL: Failed to save fallback task:`, saveErr && saveErr.message ? saveErr.message : saveErr);
+      console.error(`[${iso()}] ⚠️ CRITICAL: Failed to save fallback task:`, saveErr.message);
     }
+
     return fallbackTasks;
   }
 }
-
 // ----------------- ROUTES -----------------
-
 app.post('/chat', async (req, res) => {
   const start = Date.now();
   metrics.requests += 1;
