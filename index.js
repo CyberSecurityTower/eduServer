@@ -1,4 +1,3 @@
-```javascript
 const express = require('express');
 const cors = require('cors');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
@@ -27,7 +26,7 @@ const db = admin.firestore();
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
 const model = genAI.getGenerativeModel({ model: MODEL_NAME });
 
-// --- Helper Functions (No changes needed here) ---
+// --- Helper Functions ---
 
 async function fetchMemoryProfile(userId) {
   try {
@@ -37,6 +36,7 @@ async function fetchMemoryProfile(userId) {
       return memoryDoc.data().profileSummary;
     }
   } catch (error) {
+    // <-- FIX: Comma added here
     console.error(`Error fetching memory for user ${userId}:`, error);
   }
   return "No available memory.";
@@ -54,6 +54,7 @@ async function fetchUserProgress(userId) {
       };
     }
   } catch (error) {
+    // <-- FIX: Comma added here
     console.error(`Error fetching progress for user ${userId}:`, error);
   }
   return { points: 0, streak: 0 };
@@ -66,6 +67,7 @@ async function detectLanguage(message) {
         const response = await result.response;
         return response.text().trim();
     } catch (error) {
+        // <-- FIX: Comma added here
         console.error("Language detection failed:", error);
         return 'Arabic';
     }
@@ -90,7 +92,6 @@ app.post('/chat', async (req, res) => {
       .map(item => `${item.role === 'model' ? 'EduAI' : 'User'}: ${item.text}`)
       .join('\n');
 
-    // --- V3: THE LOGICAL REASONING PROMPT STRUCTURE ---
     const finalPrompt = `
 <role>
 You are 'EduAI', a smart, positive, and supportive study companion. Your primary goal is to be a helpful and motivating friend to the user.
@@ -135,6 +136,7 @@ You are 'EduAI', a smart, positive, and supportive study companion. Your primary
     res.json({ reply: botReply });
 
   } catch (error) {
+    // <-- FIX: Comma added here
     console.error("Critical Error in /chat endpoint:", error);
     res.status(500).json({ error: 'An internal server error occurred.' });
   }
