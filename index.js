@@ -1,3 +1,4 @@
+```javascript
 const express = require('express');
 const cors = require('cors');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
@@ -12,7 +13,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Initialize Firebase Admin SDK
 try {
   const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
   admin.initializeApp({
@@ -24,17 +24,11 @@ try {
 }
 const db = admin.firestore();
 
-// Initialize Google Gemini API
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
 const model = genAI.getGenerativeModel({ model: MODEL_NAME });
 
-// --- Helper Functions (for cleaner code) ---
+// --- Helper Functions (No changes needed here) ---
 
-/**
- * Fetches the user's long-term memory profile from Firestore.
- * @param {string} userId The user's ID.
- * @returns {Promise<string>} The user's profile summary.
- */
 async function fetchMemoryProfile(userId) {
   try {
     const memoryDocRef = db.collection('aiMemoryProfiles').doc(userId);
@@ -45,14 +39,9 @@ async function fetchMemoryProfile(userId) {
   } catch (error) {
     console.error(`Error fetching memory for user ${userId}:`, error);
   }
-  return "لا توجد ذاكرة حالية عن هذا المستخدم.";
+  return "No available memory.";
 }
 
-/**
- * Fetches the user's dynamic progress data (points, streak) from Firestore.
- * @param {string} userId The user's ID.
- * @returns {Promise<object>} An object with points and streak.
- */
 async function fetchUserProgress(userId) {
   try {
     const progressDocRef = db.collection('userProgress').doc(userId);
@@ -70,88 +59,88 @@ async function fetchUserProgress(userId) {
   return { points: 0, streak: 0 };
 }
 
-/**
- * Detects the language of the user's message.
- * @param {string} message The user's message.
- * @returns {Promise<string>} The detected language (e.g., 'Arabic', 'English').
- */
 async function detectLanguage(message) {
     try {
-        const prompt = `What language is this text written in? Respond with only the language name (e.g., "Arabic", "English", "French"). Text: "${message}"`;
+        const prompt = `What is the primary language of the following text? Respond with only the language name in English (e.g., "Arabic", "English", "French"). Text: "${message}"`;
         const result = await model.generateContent(prompt);
         const response = await result.response;
         return response.text().trim();
     } catch (error) {
         console.error("Language detection failed:", error);
-        return 'Arabic'; // Default to Arabic on failure
+        return 'Arabic';
     }
 }
 
 // --- Main Chat Endpoint ---
 app.post('/chat', async (req, res) => {
   try {
-    // 1. Robust Validation
     const { userId, message, history } = req.body;
     if (!userId || !message || typeof message !== 'string' || !Array.isArray(history)) {
-      return res.status(400).json({ error: 'Invalid request body. Required: userId (string), message (string), history (array).' });
+      return res.status(400).json({ error: 'Invalid request body.' });
     }
 
-    // 2. Fetch all data concurrently for performance
     const [memorySummary, dynamicData, detectedLanguage] = await Promise.all([
       fetchMemoryProfile(userId),
       fetchUserProgress(userId),
       detectLanguage(message)
     ]);
 
-    // 3. Conversation History Formatting (Confirmation: Yes, it's here!)
     const formattedHistory = history
-      .slice(-5) // Ensure we only take the last 5 messages
+      .slice(-5)
       .map(item => `${item.role === 'model' ? 'EduAI' : 'User'}: ${item.text}`)
       .join('\n');
 
-    // 4. Advanced Prompt Construction
-    const finalPrompt = `### SYSTEM PROMPT ###
-# ROLE & CONTEXT
-أنت 'EduAI'، رفيق دراسي ذكي، إيجابي، وداعم. هدفك هو مساعدة المستخدم على الشعور بالثقة والتحفيز.
+    // --- V3: THE LOGICAL REASONING PROMPT STRUCTURE ---
+    const finalPrompt = `
+<role>
+You are 'EduAI', a smart, positive, and supportive study companion. Your primary goal is to be a helpful and motivating friend to the user.
+</role>
 
-# LANGUAGE_RULE
-**Rule: You must respond exclusively in ${detectedLanguage}.** Do not mix languages.
+<user_profile>
+  <dynamic_data>
+    - Current Points: ${dynamicData.points}
+    - Daily Streak: ${dynamicData.streak}
+  </dynamic_data>
+  <static_memory>
+    - Summary: ${memorySummary}
+  </static_memory>
+</user_profile>
 
-# DATA_SHEET (Live User Data)
-- Current Points: ${dynamicData.points}
-- Daily Streak: ${dynamicData.streak}
+<conversation_context>
+  <history>
+    ${formattedHistory || "This is the beginning of the conversation."}
+  </history>
+  <latest_message>
+    ${message}
+  </latest_message>
+</conversation_context>
 
-# MEMORY (Long-term Knowledge)
-- User Profile Summary: ${memorySummary}
+<task>
+  Your task is to generate a response to the <latest_message>.
 
-# CONVERSATION_HISTORY
-${formattedHistory}
+  **Core Directives:**
+  1.  **Maintain Context:** Your response MUST be a logical and direct continuation of the <conversation_context>. Acknowledge the <history> if it's relevant to the <latest_message>.
+  2.  **Be Subtle:** Use information from <user_profile> only if it's highly relevant. Do not just list facts.
+  3.  **Be Natural:** Keep your tone friendly and your responses concise.
 
-# RULES_OF_ENGAGEMENT
-1.  **Don't Dump Info:** Pick only ONE relevant piece of information from DATA_SHEET or MEMORY to personalize the conversation naturally. If nothing is relevant, don't force it.
-2.  **Match Intent:** If it's a greeting, be warm and encouraging. If it's a question, answer it directly. If it's frustration, show empathy first.
-3.  **Be Concise:** Keep replies short and natural.
+  **CRITICAL_RULE:**
+  You must write your entire response in the following language: **${detectedLanguage}**. No other languages are permitted.
+</task>
+`;
 
-# TASK
-Based on all the above, reply to the user's latest message in a helpful, personal, and natural way, following the LANGUAGE_RULE strictly.
-
-User's New Message: "${message}"`;
-
-    // 5. Generate Content
     const result = await model.generateContent(finalPrompt);
     const response = await result.response;
     const botReply = response.text();
 
-    // 6. Send Response
     res.json({ reply: botReply });
 
   } catch (error) {
     console.error("Critical Error in /chat endpoint:", error);
-    res.status(500).json({ error: 'An internal server error occurred. Please try again later.' });
+    res.status(500).json({ error: 'An internal server error occurred.' });
   }
 });
 
 // --- Server Activation ---
 app.listen(PORT, () => {
-  console.log(`EduAI Brain is running on port ${PORT}`);
+  console.log(`EduAI Brain V3 is running on port ${PORT}`);
 });
