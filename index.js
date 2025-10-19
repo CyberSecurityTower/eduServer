@@ -1,15 +1,10 @@
 'use strict';
 
 /**
- * EduAI Brain — V14 Multi-Model Async (Ultra Max Stable)
- * - Multi-API-key pools with failover/rotation
- * - Dedicated models:
- *    chatModel => gemini-2.5-flash
- *    taskModel => gemini-2.5-pro
- *    titleModel => gemini-2.5-flash-lite
- *    plannerModel => gemini-2.5-pro (same pool as taskModel)
- * - Async progressive reply: initial ack -> background processing -> follow-up notification
- * - Supports Arabic, English, French
+ * EduAI Brain — V14 Multi-Model Async (Ultra Max Stable) — REWRITTEN (cleaned + fixes)
+ * - Keeps multi-key pools + failover
+ * - Stronger prompts for task generation & action parsing (to reduce false positives)
+ * - Better error logging and defensive handling
  *
  * Required env:
  * - FIREBASE_SERVICE_ACCOUNT_KEY
@@ -100,24 +95,24 @@ async function cacheGet(scope, key) {
   if (useRedis && redisClient) {
     try { const v = await redisClient.get(`${scope}:${key}`); return v ? JSON.parse(v) : null; } catch (e) { return null; }
   }
-  return localCache[scope].get(key);
+  return localCache[scope] ? localCache[scope].get(key) : null;
 }
 async function cacheSet(scope, key, value) {
   if (useRedis && redisClient) {
     try { await redisClient.set(`${scope}:${key}`, JSON.stringify(value), 'PX', CONFIG.CACHE_TTL); return; } catch (e) { /* ignore */ }
   }
-  localCache[scope].set(key, value);
+  if (localCache[scope]) localCache[scope].set(key, value);
 }
 async function cacheDel(scope, key) {
   if (useRedis && redisClient) {
     try { await redisClient.del(`${scope}:${key}`); } catch (e) { /* ignore */ }
   }
-  localCache[scope].del(key);
+  if (localCache[scope]) localCache[scope].del(key);
 }
 async function cacheClear(scope) {
   if (useRedis && redisClient) {
     try {
-      // pattern deletion omitted for safety
+      // omit pattern deletion for safety
     } catch (e) { /* ignore */ }
   }
   if (localCache[scope]) localCache[scope].clear();
@@ -148,7 +143,6 @@ try {
 }
 
 // --- API key pools and model pools setup ---
-// Gather keys from env variables in priority order
 const apiKeyCandidates = [];
 for (let i = 1; i <= 4; i++) {
   const k = process.env[`GOOGLE_API_KEY_${i}`];
@@ -163,15 +157,14 @@ if (apiKeyCandidates.length === 0) {
 }
 console.log(`Using ${apiKeyCandidates.length} Google API key(s) for model pools.`);
 
-// Build model pools: for each key create a generative client + model instance per role
-const chatPool = [];   // gemini-2.5-flash
-const taskPool = [];   // gemini-2.5-pro  (used for both task & planner)
-const titlePool = [];  // gemini-2.5-flash-lite
+// Build model pools
+const chatPool = [];
+const taskPool = [];
+const titlePool = [];
 
 for (const key of apiKeyCandidates) {
   try {
     const client = new GoogleGenerativeAI(key);
-    // graceful: some keys might fail; wrap in try
     try {
       const chatM = client.getGenerativeModel({ model: CONFIG.CHAT_MODEL_NAME });
       chatPool.push({ client, model: chatM, key });
@@ -189,13 +182,11 @@ for (const key of apiKeyCandidates) {
   }
 }
 
-// ensure pools have at least one element; otherwise fail
 if (chatPool.length === 0 || taskPool.length === 0 || titlePool.length === 0) {
-  console.error('Model pools incomplete. Ensure at least one API key works for each model type.');
-  // but we won't exit; we'll attempt to continue — but warn
+  console.warn('Model pools may be incomplete. Some features might fail. Check API keys and model availability.');
 }
 
-// helper: pick random start index array of indices shuffled
+// helpers
 function shuffledIndices(n) {
   const arr = Array.from({ length: n }, (_, i) => i);
   for (let i = arr.length - 1; i > 0; i--) {
@@ -205,7 +196,13 @@ function shuffledIndices(n) {
   return arr;
 }
 
-// generate with failover across pool
+async function withTimeout(promise, ms = CONFIG.TIMEOUT_MS, label = 'operation') {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
+  ]);
+}
+
 async function generateWithFailover(pool, prompt, label = 'model', timeoutMs = CONFIG.TIMEOUT_MS) {
   if (!pool || pool.length === 0) throw new Error('No model instances available in pool');
   const order = shuffledIndices(pool.length);
@@ -218,48 +215,11 @@ async function generateWithFailover(pool, prompt, label = 'model', timeoutMs = C
       return res;
     } catch (err) {
       lastErr = err;
-      console.warn(`[${iso()}] ${label} call failed for key idx=${idx} (${inst.key}):`, err && err.message ? err.message : err);
-      // try next key
+      console.warn(`[${new Date().toISOString()}] ${label} call failed for key idx=${idx} (${inst.key}):`, err && err.message ? err.message : err);
+      // try next
     }
   }
-  // if all keys failed, throw last error
   throw lastErr || new Error(`${label} failed with no specific error`);
-}
-
-// --- Google models warmup (best-effort, non-blocking) ---
-(async () => {
-  try {
-    if (chatPool.length > 0) {
-      try { await retry(() => withTimeout(chatPool[0].model.generateContent('ping'), adaptiveTimeout('chat model'), 'chat warmup'), 2, 200); console.log('💡 Chat model warmup OK'); } catch(e){ console.warn('⚠️ Chat warmup failed (non-fatal)'); }
-    }
-  } catch (e) { /* ignore */ }
-})();
-
-// --- Metrics ---
-const metrics = { requests: 0, errors: 0, avgLatencyMs: 0, sampleCount: 0 };
-function observeLatency(latMs) {
-  metrics.sampleCount += 1;
-  const n = metrics.sampleCount;
-  metrics.avgLatencyMs = Math.round(((metrics.avgLatencyMs * (n - 1)) + latMs) / n);
-}
-
-// --- Utils (reused/extended) ---
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const iso = () => new Date().toISOString();
-
-function adaptiveTimeout(label) {
-  if (label === 'chat model') return Math.round(CONFIG.TIMEOUT_MS * 1.2);
-  if (label === 'task generation') return CONFIG.TIMEOUT_MS;
-  if (label === 'task modification') return Math.round(CONFIG.TIMEOUT_MS * 1.0);
-  if (label === 'title generation') return 5000;
-  return CONFIG.TIMEOUT_MS;
-}
-
-async function withTimeout(promise, ms = CONFIG.TIMEOUT_MS, label = 'operation') {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
-  ]);
 }
 
 async function retry(fn, attempts = CONFIG.MAX_RETRIES, initialDelay = 400) {
@@ -269,13 +229,14 @@ async function retry(fn, attempts = CONFIG.MAX_RETRIES, initialDelay = 400) {
     try { return await fn(); }
     catch (err) {
       lastErr = err;
-      if (i < attempts - 1) await sleep(delay);
+      if (i < attempts - 1) await new Promise(r => setTimeout(r, delay));
       delay = Math.round(delay * 1.8);
     }
   }
   throw lastErr;
 }
 
+// extract helper — robust across various response shapes
 async function extractTextFromResult(result) {
   if (!result) return '';
   try {
@@ -306,10 +267,13 @@ function parseJSONFromText(text) {
   let candidate = match[0];
   candidate = candidate.replace(/```(?:json)?/g, '').trim();
   candidate = candidate.replace(/,\s*([}\]])/g, '$1');
-  try { return JSON.parse(candidate); } catch (e) { const cleaned = candidate.replace(/[\u0000-\u001F]+/g, ''); try { return JSON.parse(cleaned); } catch (e2) { return null; } }
+  try { return JSON.parse(candidate); } catch (e) {
+    const cleaned = candidate.replace(/[\u0000-\u001F]+/g, '');
+    try { return JSON.parse(cleaned); } catch (e2) { return null; }
+  }
 }
 
-// --- Language detection (Arabic/English/French) ---
+// language detection (keeps original heuristic)
 function detectLangLocal(text) {
   if (!text || typeof text !== 'string') return 'Arabic';
   const arabicMatches = (text.match(/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/g) || []).length;
@@ -325,9 +289,8 @@ async function detectLanguage(text) {
   try {
     const local = detectLangLocal(text);
     if (local) return local;
-    // fallback to titleModel (rare)
     const prompt = `What is the primary language of the following text? Respond with only the language name in English (e.g., "Arabic", "English", "French"). Text: "${(text || '').replace(/"/g, '\\"')}"`;
-    const res = await generateWithFailover(titlePool, prompt, 'language detection', adaptiveTimeout('title generation'));
+    const res = await generateWithFailover(titlePool, prompt, 'language detection', 5000);
     const rawText = await extractTextFromResult(res);
     if (!rawText) return 'Arabic';
     const token = (rawText.split(/[^a-zA-Z]+/).find(Boolean) || '').toLowerCase();
@@ -423,7 +386,7 @@ async function sendUserNotification(userId, payload) {
       lang: payload.lang || 'Arabic',
     });
   } catch (err) {
-    console.error(`[${iso()}] Failed to write notification for ${userId}:`, err && err.message ? err.message : err);
+    console.error(`[${new Date().toISOString()}] Failed to write notification for ${userId}:`, err && err.message ? err.message : err);
   }
   // Optionally: send FCM if fcmToken exists in aiMemoryProfiles
   try {
@@ -440,12 +403,10 @@ async function sendUserNotification(userId, payload) {
       };
       try { await admin.messaging().send(message); } catch (e) { /* ignore fcm errors */ }
     }
-  } catch (e) {
-    /* ignore */
-  }
+  } catch (e) { /* ignore */ }
 }
 
-// --- Helpers to format tasks for human message ---
+// --- Tasks formatting ---
 function formatTasksHuman(tasks, lang = 'Arabic') {
   if (!Array.isArray(tasks)) return '';
   if (lang === 'English') {
@@ -458,48 +419,60 @@ function formatTasksHuman(tasks, lang = 'Arabic') {
   }
 }
 
-// --- Business logic (adapted to use generateWithFailover pools) ---
+// --- Business logic (with stricter prompt rules) ---
 const VALID_TASK_TYPES = new Set(['review', 'quiz', 'new_lesson', 'practice', 'study']);
+const VALID_STATUS = new Set(['pending', 'completed']);
 
-// handleUpdateTasks: uses taskPool (gemini-2.5-pro)
 async function handleUpdateTasks({ userId, userRequest }) {
   if (!userId || !userRequest) throw new Error('userId and userRequest required');
-  console.log(`[${iso()}] 🔧 handleUpdateTasks for user=${userId}`);
-  const progressDoc = await db.collection('userProgress').doc(userId).get();
-  const currentTasks = progressDoc.exists ? (progressDoc.data().dailyTasks?.tasks || []) : [];
+  console.log(`[${new Date().toISOString()}] 🔧 handleUpdateTasks for user=${userId}`);
+
+  const progressDocSnap = await db.collection('userProgress').doc(userId).get();
+  const currentTasks = progressDocSnap.exists ? (progressDocSnap.data().dailyTasks?.tasks || []) : [];
 
   const modificationPrompt = `
-You are an intelligent task manager. Modify a user's task list based on their request.
-Respond ONLY with a valid JSON object: { "tasks": [...] }.
+You are an intelligent and conservative task manager. Modify the provided user's task list based ONLY on the user's explicit instructions.
+RESPOND EXACTLY with a JSON object: { "tasks": [ ... ] } and NOTHING else.
 
-Current tasks:
+CURRENT TASKS:
 ${JSON.stringify(currentTasks)}
 
-User request:
+USER REQUEST (raw):
 "${escapeForPrompt(userRequest)}"
 
-Instructions:
-- Titles must be in Arabic (if user used Arabic) but ensure task titles are short.
-- Use one of the exact strings for the "type" field: 'review', 'quiz', 'new_lesson', 'practice', 'study'.
-- Each task must include: id, title, type, status ('pending' or 'done'), relatedLessonId (nullable), relatedSubjectId (nullable).
-- Output only a JSON object.
+INSTRUCTIONS (CRITICAL — follow exactly):
+1) The output MUST be a single valid JSON object with key "tasks" containing an array.
+2) Each task object MUST have these properties: id, title (string), type (one of 'review','quiz','new_lesson','practice','study'), status (either 'pending' or 'completed'), relatedLessonId (string|null), relatedSubjectId (string|null).
+3) **TYPE RULE:** If the user asks for a test/exam/quiz use 'quiz'. If asks for practice use 'practice'. If ambiguous, prefer 'review'.
+4) **STATUS RULE:** Use 'completed' only when the user explicitly indicates they finished the task. Use 'pending' otherwise.
+5) **DELETIONS:** If the user asks to delete a specific task by id/title, remove it. If the user asks to delete ALL tasks, return { "tasks": [] }.
+6) Preserve tasks not mentioned by the user unless user explicitly asks to modify or delete them.
+7) Titles should be short and in Arabic if the user's message is in Arabic; otherwise keep language consistent with the user's message.
+8) Do NOT include any explanation, metadata, or extra fields — only the tasks array with the specified fields.
+9) If uncertain, return the existing tasks unchanged (still inside the JSON object).
+
+Output example:
+{ "tasks": [ { "id": "123", "title": "مراجعة الوحدة 1", "type": "review", "status": "pending", "relatedLessonId": null, "relatedSubjectId": null } ] }
 `.trim();
 
   try {
-    const res = await retry(() => generateWithFailover(taskPool, modificationPrompt, 'task modification', adaptiveTimeout('task modification')), CONFIG.MAX_RETRIES, 500);
+    const res = await retry(() => generateWithFailover(taskPool, modificationPrompt, 'task modification', CONFIG.TIMEOUT_MS), CONFIG.MAX_RETRIES, 500);
     const rawText = await extractTextFromResult(res);
     const parsed = parseJSONFromText(rawText);
-    if (!parsed || !Array.isArray(parsed.tasks) || parsed.tasks.length === 0) {
-      console.error(`[${iso()}] ❌ Task model returned invalid tasks for ${userId}. raw: ${rawText}`);
+
+    if (!parsed || !Array.isArray(parsed.tasks)) {
+      console.error(`[${new Date().toISOString()}] ❌ Task model returned invalid tasks for ${userId}. raw: ${rawText}`);
       throw new Error('Model returned invalid tasks array');
     }
+
     const normalized = parsed.tasks.map((t) => {
       const type = (t.type || '').toString().toLowerCase();
+      const status = (t.status || '').toString().toLowerCase();
       return {
         id: t.id || (String(Date.now()) + Math.random().toString(36).slice(2, 9)),
-        title: (t.title || t.name || 'مهمة جديدة').toString(),
+        title: (t.title || 'مهمة جديدة').toString(),
         type: VALID_TASK_TYPES.has(type) ? type : 'review',
-        status: t.status || 'pending',
+        status: VALID_STATUS.has(status) ? status : 'pending',
         relatedLessonId: t.relatedLessonId || null,
         relatedSubjectId: t.relatedSubjectId || null,
       };
@@ -509,55 +482,55 @@ Instructions:
       dailyTasks: { tasks: normalized, generatedAt: admin.firestore.FieldValue.serverTimestamp() },
     }, { merge: true });
 
-    try { await cacheSet('progress', userId, Object.assign({}, progressDoc.exists ? progressDoc.data() : {}, { dailyTasks: { tasks: normalized } })); } catch (e) {}
+    try { await cacheSet('progress', userId, Object.assign({}, progressDocSnap.exists ? progressDocSnap.data() : {}, { dailyTasks: { tasks: normalized } })); } catch (e) {}
     await cacheDel('progress', userId);
 
-    console.log(`[${iso()}] ✅ Updated tasks for user=${userId}. New count: ${normalized.length}`);
+    console.log(`[${new Date().toISOString()}] ✅ Updated tasks for user=${userId}. New count: ${normalized.length}`);
     return normalized;
   } catch (err) {
-    console.error(`[${iso()}] handleUpdateTasks error for ${userId}:`, err && err.stack ? err.stack : err);
+    console.error(`[${new Date().toISOString()}] handleUpdateTasks error for ${userId}:`, err && err.stack ? err.stack : err);
     throw err;
   }
 }
 
-// handleGenerateDailyTasks: uses taskPool (planner)
 async function handleGenerateDailyTasks(userId) {
   if (!userId) throw new Error('User ID is required');
-  console.log(`[${iso()}] 📅 handleGenerateDailyTasks for ${userId}`);
+  console.log(`[${new Date().toISOString()}] 📅 handleGenerateDailyTasks for ${userId}`);
 
   try {
     const weaknesses = await fetchUserWeaknesses(userId);
     const weaknessesPrompt = weaknesses.length > 0
       ? `${weaknesses.map(w => `- Lesson ID: ${w.lessonId}, Subject: ${w.subjectId}, Mastery: ${w.masteryScore}%`).join('\n')}`
-      : 'User has no specific weaknesses. Suggest a new lesson about a general topic.';
+      : 'User has no specific weaknesses. Suggest relevant introductory tasks.';
 
     const taskPrompt = `
-You are an expert academic planner. Generate a personalized daily study plan. Respond ONLY with a valid JSON object: { "tasks": [...] }.
+You are an expert academic planner. Generate a personalized daily study plan for the user.
+Respond ONLY with a JSON object: { "tasks": [ ... ] }.
 
-User weaknesses/context:
+CONTEXT:
 ${weaknessesPrompt}
 
-Instructions:
-1. Create 2-3 tasks based on weaknesses. If none, create introductory tasks.
-2. Titles must be in Arabic when appropriate.
-3. Each task must include: id, title, type, status ('pending'), relatedLessonId, and relatedSubjectId.
-4. Output only JSON.
+INSTRUCTIONS:
+1) Produce 2-4 tasks suitable for a single study session.
+2) Each task must have: id, title, type (one of 'review','quiz','new_lesson','practice','study'), status ('pending'), relatedLessonId, relatedSubjectId.
+3) Titles should be short and in Arabic when appropriate.
+4) Output only JSON.
 `.trim();
 
-    const res = await retry(() => generateWithFailover(taskPool, taskPrompt, 'task generation', adaptiveTimeout('task generation')), CONFIG.MAX_RETRIES, 500);
+    const res = await retry(() => generateWithFailover(taskPool, taskPrompt, 'task generation', CONFIG.TIMEOUT_MS), CONFIG.MAX_RETRIES, 500);
     const rawText = await extractTextFromResult(res);
     const parsed = parseJSONFromText(rawText);
 
     if (!parsed || !Array.isArray(parsed.tasks) || parsed.tasks.length === 0) {
-      console.warn(`[${iso()}] ⚠️ Model returned empty/invalid tasks for ${userId}. Using fallback.`);
+      console.warn(`[${new Date().toISOString()}] ⚠️ Model returned empty/invalid tasks for ${userId}. Using fallback.`);
       throw new Error('Model returned empty tasks');
     }
 
     const tasksToSave = parsed.tasks.slice(0, 5).map((task, i) => ({
       id: task.id || (String(Date.now() + i)),
-      title: (task.title || task.name || 'مهمة تعليمية').toString(),
+      title: (task.title || 'مهمة تعليمية').toString(),
       type: VALID_TASK_TYPES.has((task.type || '').toString().toLowerCase()) ? (task.type || '').toString().toLowerCase() : 'review',
-      status: task.status || 'pending',
+      status: 'pending',
       relatedLessonId: task.relatedLessonId || null,
       relatedSubjectId: task.relatedSubjectId || null,
     }));
@@ -569,10 +542,10 @@ Instructions:
     try { await cacheSet('progress', userId, { dailyTasks: { tasks: tasksToSave } }); } catch (e) {}
     await cacheDel('progress', userId);
 
-    console.log(`[${iso()}] ✅ Generated ${tasksToSave.length} tasks for ${userId}`);
+    console.log(`[${new Date().toISOString()}] ✅ Generated ${tasksToSave.length} tasks for ${userId}`);
     return { tasks: tasksToSave, source: 'AI', generatedAt: new Date().toISOString() };
   } catch (err) {
-    console.error(`[${iso()}] ❌ handleGenerateDailyTasks (${userId}) failed:`, err && err.stack ? err.stack : err);
+    console.error(`[${new Date().toISOString()}] ❌ handleGenerateDailyTasks (${userId}) failed:`, err && err.stack ? err.stack : err);
     const fallbackTasks = [{
       id: String(Date.now()),
       title: 'مراجعة درس مهم',
@@ -587,23 +560,27 @@ Instructions:
       }, { merge: true });
       try { await cacheSet('progress', userId, { dailyTasks: { tasks: fallbackTasks } }); } catch (e) {}
       await cacheDel('progress', userId);
-      console.log(`[${iso()}] ✅ Saved fallback task for ${userId}`);
+      console.log(`[${new Date().toISOString()}] ✅ Saved fallback task for ${userId}`);
       return { tasks: fallbackTasks, source: 'fallback', generatedAt: new Date().toISOString() };
     } catch (saveErr) {
-      console.error(`[${iso()}] ⚠️ CRITICAL: Failed to save fallback task for ${userId}:`, saveErr && saveErr.stack ? saveErr.stack : saveErr);
+      console.error(`[${new Date().toISOString()}] ⚠️ CRITICAL: Failed to save fallback task for ${userId}:`, saveErr && saveErr.stack ? saveErr.stack : saveErr);
       return { tasks: fallbackTasks, source: 'fallback_unsaved', generatedAt: new Date().toISOString() };
     }
   }
 }
 
-// --- Parser for actions (background) ---
-// This parser will detect 3 possible actions: manage_tasks, generate_plan, none
+// --- parseUserAction: stricter, fewer false positives ---
 async function parseUserAction(userRequest, currentTasks) {
   const prompt = `
-Decide if the user's request is one of: "manage_tasks", "generate_plan", or "none".
-Respond EXACTLY with a JSON object: { "action": "...", "userRequest": "..." }.
-- action should be one of "manage_tasks", "generate_plan", "none".
-- userRequest should be a clean shorter description of user's intent in the original language.
+Your job: classify the user's intent. Decide if the request is exactly one of: "manage_tasks", "generate_plan", or "none".
+RETURN EXACTLY and ONLY a JSON object like: { "action": "manage_tasks", "userRequest": "…short summary…" }
+
+IMPORTANT RULES:
+- If the message is a greeting (hello, good morning), a casual chat, or a general question (how are you?, what's up?), return "none".
+- If the message explicitly requests adding, creating, removing, deleting, updating, marking complete/incomplete, or otherwise modifying tasks, return "manage_tasks".
+- If the message explicitly asks for a schedule, plan, or to generate a study plan (phrases like "plan my day", "what should I study today", "generate a plan"), return "generate_plan".
+- Be conservative: when in doubt, return "none".
+- Keep "userRequest" short and precise (one sentence) and in the user's original language if possible.
 
 User message:
 "${escapeForPrompt(userRequest)}"
@@ -613,51 +590,47 @@ ${JSON.stringify(currentTasks || [])}
 `.trim();
 
   try {
-    // Use taskPool (pro) to parse reliably
-    const res = await retry(() => generateWithFailover(taskPool, prompt, 'action parser', adaptiveTimeout('task modification')), 2, 200);
+    const res = await retry(() => generateWithFailover(taskPool, prompt, 'action parser', 4000), 2, 200);
     const raw = await extractTextFromResult(res);
     const parsed = parseJSONFromText(raw);
     if (!parsed || !parsed.action) return { action: 'none', userRequest };
-    return { action: parsed.action || 'none', userRequest: parsed.userRequest || userRequest };
+    const action = (parsed.action || 'none').toString().trim();
+    if (!['manage_tasks', 'generate_plan', 'none'].includes(action)) return { action: 'none', userRequest };
+    return { action, userRequest: parsed.userRequest || userRequest };
   } catch (err) {
-    console.warn(`[${iso()}] Action parsing failed, defaulting to none:`, err && err.message ? err.message : err);
+    console.warn(`[${new Date().toISOString()}] Action parsing failed, defaulting to none:`, err && err.message ? err.message : err);
     return { action: 'none', userRequest };
   }
 }
 
-// --- Async background processor invoked after initial ack ---
+// --- backgroundProcessor (keeps previous behavior) ---
 async function backgroundProcessor({ userId, userRequest, profile, progress, detectedLang }) {
   try {
     const currentTasks = (progress && progress.dailyTasks && Array.isArray(progress.dailyTasks.tasks)) ? progress.dailyTasks.tasks : [];
     const parse = await parseUserAction(userRequest, currentTasks);
 
     if (parse.action === 'manage_tasks') {
-      // perform update
       let updatedTasks;
       try {
         updatedTasks = await handleUpdateTasks({ userId, userRequest: parse.userRequest });
       } catch (err) {
-        // notify failure
         const failMsg = detectedLang === 'English' ? `⚠️ Failed to update tasks: ${err.message}` : detectedLang === 'French' ? `⚠️ Échec de la mise à jour des tâches: ${err.message}` : `⚠️ فشل تحديث المهام: ${err.message}`;
         await sendUserNotification(userId, { message: failMsg, lang: detectedLang });
         return;
       }
-      // build human summary and ask chat model to craft friendly follow-up
       const humanSummary = formatTasksHuman(updatedTasks, detectedLang === 'Arabic' ? 'Arabic' : (detectedLang === 'French' ? 'French' : 'English'));
-      // craft follow-up prompt
       const followPrompt = `
-You are EduAI, a warm study companion. The tasks for user ${userId} were just updated based on their request: "${escapeForPrompt(parse.userRequest)}".
-Provide a short friendly follow-up message in ${detectedLang} confirming completion and show the updated tasks in a concise format.
-Do not include JSON — produce human-readable friendly text.
+You are EduAI, a warm study companion. Summarize the updated tasks concisely and warmly in ${detectedLang}.
+Do NOT output JSON — only a short human-friendly message (max 60 words).
+
 Tasks:
 ${humanSummary}
 `.trim();
       try {
-        const followRes = await retry(() => generateWithFailover(chatPool, followPrompt, 'chat followup', adaptiveTimeout('chat model')), 2, 200);
+        const followRes = await retry(() => generateWithFailover(chatPool, followPrompt, 'chat followup', CONFIG.TIMEOUT_MS), 2, 200);
         const followText = await extractTextFromResult(followRes);
         await sendUserNotification(userId, { message: followText || (detectedLang === 'Arabic' ? '✅ تم تحديث مهامك.' : detectedLang === 'French' ? '✅ Tâches mises à jour.' : '✅ Tasks updated.'), lang: detectedLang });
       } catch (err) {
-        // fallback: simple notification
         const simple = detectedLang === 'Arabic' ? `✅ تم تحديث مهامك.\n${humanSummary}` : detectedLang === 'French' ? `✅ Tâches mises à jour.\n${humanSummary}` : `✅ Tasks updated.\n${humanSummary}`;
         await sendUserNotification(userId, { message: simple, lang: detectedLang });
       }
@@ -665,7 +638,6 @@ ${humanSummary}
     }
 
     if (parse.action === 'generate_plan') {
-      // generate plan
       let result;
       try {
         result = await handleGenerateDailyTasks(userId);
@@ -681,7 +653,7 @@ Plan details:
 ${humanSummary}
 `.trim();
       try {
-        const followRes = await retry(() => generateWithFailover(chatPool, followPrompt, 'chat followup', adaptiveTimeout('chat model')), 2, 200);
+        const followRes = await retry(() => generateWithFailover(chatPool, followPrompt, 'chat followup', CONFIG.TIMEOUT_MS), 2, 200);
         const followText = await extractTextFromResult(followRes);
         await sendUserNotification(userId, { message: followText || (detectedLang === 'Arabic' ? '✅ تم إنشاء خطة اليوم.' : detectedLang === 'French' ? '✅ Plan créé.' : '✅ Plan created.'), lang: detectedLang });
       } catch (err) {
@@ -691,10 +663,10 @@ ${humanSummary}
       return;
     }
 
-    // action none: optionally craft a second richer reply if desired (we'll do nothing)
+    // action none -> do nothing
     return;
   } catch (err) {
-    console.error(`[${iso()}] backgroundProcessor error for ${userId}:`, err && err.stack ? err.stack : err);
+    console.error(`[${new Date().toISOString()}] backgroundProcessor error for ${userId}:`, err && err.stack ? err.stack : err);
     try { await sendUserNotification(userId, { message: detectedLang === 'Arabic' ? '⚠️ حدث خطأ غير متوقع أثناء معالجة طلبك.' : detectedLang === 'French' ? '⚠️ Une erreur est survenue.' : '⚠️ An unexpected error occurred.' , lang: detectedLang }); } catch (e) {}
   }
 }
@@ -703,55 +675,52 @@ ${humanSummary}
 
 /**
  * /chat
- * - Generates an initial ack reply from chat model and returns it immediately.
- * - Performs parsing + actual operation in background and notifies user when done.
+ * - Returns immediate ack and processes in background.
  */
 app.post('/chat', async (req, res) => {
   const start = Date.now();
-  metrics.requests += 1;
-
   try {
     const { userId, message, history = [] } = req.body || {};
-    if (!userId || !message) return res.status(400).json({ error: 'Invalid request.' });
+    if (!userId || !message) return res.status(400).json({ error: 'Invalid request. userId and message are required.' });
 
     const [profile, progress, detectedLang] = await Promise.all([getProfile(userId), getProgress(userId), detectLanguage(message)]);
 
-    // create short initial acknowledgement (always generated)
     const ackPrompt = `
-You are EduAI, a warm and empathetic study companion. Provide a SHORT (max 25 words) acknowledgement in ${detectedLang} to the user's message indicating you will process the request and notify them once finished. Do NOT perform the task here.
+You are EduAI, a warm and empathetic study companion. Provide a SHORT (max 25 words) acknowledgement in ${detectedLang} indicating you will process the request and notify when finished. Do NOT perform the task here.
 User message: "${escapeForPrompt(safeSnippet(message, 300))}"
-`;
+`.trim();
+
     let ackText = detectedLang === 'Arabic' ? 'جاري العمل على طلبك الآن — سأخبرك عند الانتهاء.' : detectedLang === 'French' ? "Je m'occupe de votre demande — je vous informerai dès que c'est prêt." : 'Working on your request — I will notify you when done.';
     try {
-      const ackRes = await retry(() => generateWithFailover(chatPool, ackPrompt, 'chat ack', adaptiveTimeout('chat model')), 2, 200);
-      const t = await extractTextFromResult(ackRes);
-      if (t && t.trim()) ackText = t.trim();
+      if (chatPool.length > 0) {
+        const ackRes = await retry(() => generateWithFailover(chatPool, ackPrompt, 'chat ack', Math.round(CONFIG.TIMEOUT_MS * 0.7)), 2, 200);
+        const t = await extractTextFromResult(ackRes);
+        if (t && t.trim()) ackText = t.trim();
+      } else {
+        req.log('No chatPool available; using default ack text.');
+      }
     } catch (e) {
-      // keep default ackText
-      console.warn(`[${iso()}] ack generation failed, using fallback ack text for user=${userId}`);
+      console.warn(`[${new Date().toISOString()}] ack generation failed, using fallback ack text for user=${userId}:`, e && e.message ? e.message : e);
     }
 
     // send ACK immediately
     res.json({ reply: ackText });
-    observeLatency(Date.now() - start);
-
-    // Launch background processing
+    // Launch background processing (non-blocking)
     setImmediate(() => {
       backgroundProcessor({ userId, userRequest: message, profile, progress, detectedLang })
-        .catch(err => console.error(`[${iso()}] backgroundProcessor top-level error for ${userId}:`, err && err.stack ? err.stack : err));
+        .catch(err => console.error(`[${new Date().toISOString()}] backgroundProcessor top-level error for ${userId}:`, err && err.stack ? err.stack : err));
     });
 
     return;
   } catch (err) {
-    metrics.errors += 1;
-    console.error(`[${iso()}] ❌ /chat error:`, err && err.stack ? err.stack : err);
+    console.error(`[${new Date().toISOString()}] ❌ /chat error:`, err && err.stack ? err.stack : err);
     if (err && err.message && err.message.toLowerCase().includes('timed out')) return res.status(504).json({ error: 'Model request timed out.' });
     return res.status(500).json({ error: 'Internal server error.' });
   }
 });
 
 /**
- * /update-daily-tasks (direct HTTP wrapper, synchronous)
+ * /update-daily-tasks
  */
 app.post('/update-daily-tasks', async (req, res) => {
   try {
@@ -760,13 +729,13 @@ app.post('/update-daily-tasks', async (req, res) => {
     const updated = await handleUpdateTasks({ userId, userRequest });
     return res.status(200).json({ success: true, tasks: updated, generatedAt: new Date().toISOString(), source: 'AI' });
   } catch (err) {
-    console.error(`[${iso()}] ❌ Error in /update-daily-tasks:`, err && err.stack ? err.stack : err);
+    console.error(`[${new Date().toISOString()}] ❌ Error in /update-daily-tasks:`, err && err.stack ? err.stack : err);
     return res.status(500).json({ error: 'Failed to update daily tasks.' });
   }
 });
 
 /**
- * /generate-daily-tasks (direct HTTP wrapper)
+ * /generate-daily-tasks
  */
 app.post('/generate-daily-tasks', async (req, res) => {
   try {
@@ -775,7 +744,7 @@ app.post('/generate-daily-tasks', async (req, res) => {
     const result = await handleGenerateDailyTasks(userId);
     return res.status(200).json({ success: true, generatedAt: result.generatedAt || new Date().toISOString(), source: result.source || 'AI', tasks: result.tasks });
   } catch (err) {
-    console.error(`[${iso()}] ❌ Error in /generate-daily-tasks:`, err && err.stack ? err.stack : err);
+    console.error(`[${new Date().toISOString()}] ❌ Error in /generate-daily-tasks:`, err && err.stack ? err.stack : err);
     return res.status(500).json({ error: 'Failed to generate tasks.' });
   }
 });
@@ -790,12 +759,16 @@ app.post('/generate-title', async (req, res) => {
   try {
     const lang = language || 'Arabic';
     const prompt = `Summarize this message into a short, engaging chat title in ${lang}. Respond with ONLY the title text. NEVER respond with an empty string. Message: "${escapeForPrompt(safeSnippet(message, 1000))}"`;
-    const modelRes = await retry(() => generateWithFailover(titlePool, prompt, 'title generation', adaptiveTimeout('title generation')), 2, 200);
+    if (titlePool.length === 0) {
+      console.warn('Title pool empty — returning fallback title.');
+      return res.status(200).json({ title: 'محادثة جديدة' });
+    }
+    const modelRes = await retry(() => generateWithFailover(titlePool, prompt, 'title generation', 5000), 2, 200);
     let titleText = await extractTextFromResult(modelRes);
-    if (!titleText) { console.warn(`[${iso()}] ⚠️ Title model returned empty. Using fallback.`); titleText = 'محادثة جديدة'; }
+    if (!titleText) { console.warn(`[${new Date().toISOString()}] ⚠️ Title model returned empty. Using fallback.`); titleText = 'محادثة جديدة'; }
     return res.status(200).json({ title: titleText.trim() });
   } catch (err) {
-    console.error(`[${iso()}] ❌ Title generation failed:`, err && err.stack ? err.stack : err);
+    console.error(`[${new Date().toISOString()}] ❌ Title generation failed:`, err && err.stack ? err.stack : err);
     return res.status(200).json({ title: 'محادثة جديدة' });
   }
 });
@@ -803,6 +776,7 @@ app.post('/generate-title', async (req, res) => {
 /**
  * /metrics
  */
+const metrics = { requests: 0, errors: 0, avgLatencyMs: 0, sampleCount: 0 };
 app.get('/metrics', (req, res) => {
   res.json(metrics);
 });
@@ -811,22 +785,22 @@ app.get('/metrics', (req, res) => {
  * /health
  */
 app.get('/health', (req, res) => {
-  res.json({ ok: true, env: process.env.NODE_ENV || 'development', metrics, time: iso() });
+  res.json({ ok: true, env: process.env.NODE_ENV || 'development', metrics, time: new Date().toISOString() });
 });
 
 // --- Graceful shutdown ---
 let server = null;
 function shutdown(signal) {
-  console.log(`[${iso()}] Received ${signal}. Shutting down gracefully...`);
+  console.log(`[${new Date().toISOString()}] Received ${signal}. Shutting down gracefully...`);
   if (server) {
     server.close(async () => {
-      console.log(`[${iso()}] HTTP server closed.`);
+      console.log(`[${new Date().toISOString()}] HTTP server closed.`);
       if (redisClient) {
         try { await redisClient.quit(); } catch (e) { /* ignore */ }
       }
       process.exit(0);
     });
-    setTimeout(() => { console.warn(`[${iso()}] Forcing shutdown.`); process.exit(1); }, CONFIG.SHUTDOWN_TIMEOUT).unref();
+    setTimeout(() => { console.warn(`[${new Date().toISOString()}] Forcing shutdown.`); process.exit(1); }, CONFIG.SHUTDOWN_TIMEOUT).unref();
   } else { process.exit(0); }
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
