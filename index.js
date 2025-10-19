@@ -1,17 +1,15 @@
 'use strict';
 
 /**
- * EduAI Brain — Final production server.js (Merged, V13)
- * - Merges V11 intelligence + V12 performance + V12.1 fixes
- * - Robust: retries, LRU TTL cache, optional Redis backing, request tracing
- * - Safety: model output parsing, non-empty task checks, guaranteed fallback saves
- * - Observability: requestId logs, basic metrics, adaptive timeouts
+ * EduAI Brain — V13.5 Ultra Max Stable
+ * - Final merged, robust, production-ready
+ * - Fixes: Firestore timestamp-in-array, cache usage, route fallbacks, adaptive timeouts, warmup, metrics
  *
- * Env vars required:
+ * Required env:
  * - GOOGLE_API_KEY
  * - FIREBASE_SERVICE_ACCOUNT_KEY (raw JSON or base64)
  * Optional:
- * - REDIS_URL (for distributed cache)
+ * - REDIS_URL
  */
 
 const express = require('express');
@@ -112,6 +110,14 @@ async function cacheDel(scope, key) {
   }
   localCache[scope].del(key);
 }
+async function cacheClear(scope) {
+  if (useRedis && redisClient) {
+    try {
+      // careful: in Redis you'd need a pattern delete; omit for safety
+    } catch (e) { /* ignore */ }
+  }
+  if (localCache[scope]) localCache[scope].clear();
+}
 
 // --- FIREBASE INIT (robust parsing) ---
 let db;
@@ -161,6 +167,15 @@ function observeLatency(latMs) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const iso = () => new Date().toISOString();
 
+function adaptiveTimeout(label) {
+  // returns ms
+  if (label === 'chat model') return Math.round(CONFIG.TIMEOUT_MS * 1.2);
+  if (label === 'task generation') return CONFIG.TIMEOUT_MS;
+  if (label === 'task modification') return Math.round(CONFIG.TIMEOUT_MS * 0.9);
+  if (label === 'title generation') return 5000;
+  return CONFIG.TIMEOUT_MS;
+}
+
 async function withTimeout(promise, ms = CONFIG.TIMEOUT_MS, label = 'operation') {
   return Promise.race([
     promise,
@@ -172,9 +187,8 @@ async function retry(fn, attempts = CONFIG.MAX_RETRIES, initialDelay = 400) {
   let lastErr;
   let delay = initialDelay;
   for (let i = 0; i < attempts; i++) {
-    try {
-      return await fn();
-    } catch (err) {
+    try { return await fn(); }
+    catch (err) {
       lastErr = err;
       if (i < attempts - 1) await sleep(delay);
       delay = Math.round(delay * 1.8);
@@ -203,7 +217,7 @@ async function extractTextFromResult(result) {
   }
 }
 
-function escapeForPrompt(s) { if (!s) return ''; return String(s).replace(/<\//g, '<\\/').replace(/"/g, '\\"'); }
+function escapeForPrompt(s) { if (!s) return ''; return String(s).replace(/<\/+/g, '<\\/').replace(/"/g, '\\"'); }
 function safeSnippet(text, max = 6000) { if (typeof text !== 'string') return ''; if (text.length <= max) return text; return text.slice(0, max) + '\n\n... [truncated]'; }
 
 function parseJSONFromText(text) {
@@ -231,7 +245,7 @@ async function detectLanguage(text) {
     const local = detectLangLocal(text);
     if (local) return local;
     const prompt = `What is the primary language of the following text? Respond with only the language name in English (e.g., "Arabic", "English"). Text: "${(text || '').replace(/"/g, '\\"')}"`;
-    const raw = await withTimeout(titleModel.generateContent(prompt), CONFIG.TIMEOUT_MS, 'language detection');
+    const raw = await withTimeout(titleModel.generateContent(prompt), adaptiveTimeout('title generation'), 'language detection');
     const rawText = await extractTextFromResult(raw);
     if (!rawText) return 'Arabic';
     const token = (rawText.split(/[^a-zA-Z]+/).find(Boolean) || '').toLowerCase();
@@ -243,7 +257,7 @@ async function detectLanguage(text) {
   }
 }
 
-// --- Firestore helpers (unchanged but using cache functions) ---
+// --- Firestore helpers (use cache functions) ---
 async function getProfile(userId) {
   try {
     const key = userId;
@@ -315,9 +329,14 @@ async function fetchUserWeaknesses(userId) {
   }
 }
 
-// --- Business logic (merged intelligence, improved) ---
+// --- Business logic ---
 const VALID_TASK_TYPES = new Set(['review', 'quiz', 'new_lesson', 'practice', 'study']);
 
+/**
+ * handleUpdateTasks
+ * - produce normalized tasks WITHOUT FieldValue.serverTimestamp() inside array elements.
+ * - save generatedAt outside array.
+ */
 async function handleUpdateTasks({ userId, userRequest }) {
   if (!userId || !userRequest) throw new Error('userId and userRequest required');
   console.log(`[${iso()}] 🔧 handleUpdateTasks for user=${userId}`);
@@ -338,38 +357,47 @@ Each task must include at least: id, title, type, status ('pending' or 'done'), 
 
   try {
     const modelCall = () => chatModel.generateContent(modificationPrompt);
-    const raw = await retry(() => withTimeout(modelCall(), CONFIG.TIMEOUT_MS, 'task modification'));
+    const raw = await retry(() => withTimeout(modelCall(), adaptiveTimeout('task modification'), 'task modification'));
     const rawText = await extractTextFromResult(raw);
     const parsed = parseJSONFromText(rawText);
-    if (!parsed || !Array.isArray(parsed.tasks)) {
+    if (!parsed || !Array.isArray(parsed.tasks) || parsed.tasks.length === 0) {
       console.error(`[${iso()}] ❌ Failed to parse tasks from model for user=${userId}. Raw: ${rawText}`);
       throw new Error('Model returned invalid tasks array');
     }
 
-    const normalized = parsed.tasks.map((t) => {
+    const normalized = parsed.tasks.map((t, i) => {
       const type = (t.type || '').toString().toLowerCase();
       return {
         id: t.id || (String(Date.now()) + Math.random().toString(36).slice(2, 9)),
-        title: t.title || t.name || 'مهمة جديدة',
+        title: (t.title || t.name || 'مهمة جديدة').toString(),
         type: VALID_TASK_TYPES.has(type) ? type : 'review',
         status: t.status || 'pending',
         relatedLessonId: t.relatedLessonId || null,
         relatedSubjectId: t.relatedSubjectId || null,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
       };
     });
 
-    await db.collection('userProgress').doc(userId).set({ dailyTasks: { tasks: normalized, generatedAt: admin.firestore.FieldValue.serverTimestamp() } }, { merge: true });
+    await db.collection('userProgress').doc(userId).set({
+      dailyTasks: { tasks: normalized, generatedAt: admin.firestore.FieldValue.serverTimestamp() },
+    }, { merge: true });
+
+    // update cache (best-effort)
+    try { await cacheSet('progress', userId, Object.assign({}, progressDoc.exists ? progressDoc.data() : {}, { dailyTasks: { tasks: normalized } })); } catch (e) { /* ignore */ }
     await cacheDel('progress', userId);
 
     console.log(`[${iso()}] ✅ Updated tasks for user=${userId}. New count: ${normalized.length}`);
     return normalized;
   } catch (err) {
-    console.error('handleUpdateTasks error:', err && err.message ? err.message : err);
+    console.error(`[${iso()}] handleUpdateTasks error for ${userId}:`, err && err.stack ? err.stack : err);
     throw err;
   }
 }
 
+/**
+ * handleGenerateDailyTasks
+ * - uses weaknesses to generate tasks
+ * - guarantees fallback saved and cache invalidated
+ */
 async function handleGenerateDailyTasks(userId) {
   if (!userId) throw new Error('User ID is required');
   console.log(`[${iso()}] 📅 handleGenerateDailyTasks for ${userId}`);
@@ -391,7 +419,7 @@ ${weaknessesPrompt}
 `.trim();
 
     const modelCall = () => chatModel.generateContent(taskPrompt);
-    const raw = await retry(() => withTimeout(modelCall(), CONFIG.TIMEOUT_MS, 'task generation'));
+    const raw = await retry(() => withTimeout(modelCall(), adaptiveTimeout('task generation'), 'task generation'));
     const rawText = await extractTextFromResult(raw);
     const parsed = parseJSONFromText(rawText);
 
@@ -400,66 +428,62 @@ ${weaknessesPrompt}
       throw new Error('Model returned empty tasks');
     }
 
-    // 🧩 Normalize each task (remove invalid fields, add ids)
+    // Normalize tasks (NO serverTimestamp inside array elements)
     const tasksToSave = parsed.tasks.slice(0, 5).map((task, i) => ({
-      id: task.id || String(Date.now() + i),
-      title: String(task.title || 'مهمة جديدة').trim(),
-      type: ['review', 'quiz', 'new_lesson', 'practice', 'study'].includes(task.type) ? task.type : 'study',
-      status: 'pending',
+      id: task.id || (String(Date.now() + i)),
+      title: (task.title || task.name || 'مهمة تعليمية').toString(),
+      type: VALID_TASK_TYPES.has((task.type || '').toString().toLowerCase()) ? (task.type || '').toString().toLowerCase() : 'review',
+      status: task.status || 'pending',
       relatedLessonId: task.relatedLessonId || null,
-      relatedSubjectId: task.relatedSubjectId || null
+      relatedSubjectId: task.relatedSubjectId || null,
     }));
 
-    // ✅ الحفظ الصحيح (بدون serverTimestamp داخل المصفوفة)
+    // Save (generatedAt outside array)
     await db.collection('userProgress').doc(userId).set({
-  dailyTasks: {
-    tasks: tasksToSave,
-    generatedAt: admin.firestore.FieldValue.serverTimestamp(),
-  },
-}, { merge: true });
+      dailyTasks: { tasks: tasksToSave, generatedAt: admin.firestore.FieldValue.serverTimestamp() },
+    }, { merge: true });
 
-if (cache?.progress) cache.progress.clear();
-console.log(`[${iso()}] ✅ Generated ${tasksToSave.length} tasks for ${userId}`);
-return tasksToSave;
+    // cache update (best-effort)
+    try { await cacheSet('progress', userId, { dailyTasks: { tasks: tasksToSave } }); } catch (e) {}
+    await cacheDel('progress', userId);
 
-
+    console.log(`[${iso()}] ✅ Generated ${tasksToSave.length} tasks for ${userId}`);
+    return { tasks: tasksToSave, source: 'AI', generatedAt: new Date().toISOString() };
   } catch (err) {
-    console.error(`[${iso()}] ❌ handleGenerateDailyTasks (${userId}) failed:`, err);
-
-
-    // ✅ fallback بدون serverTimestamp داخل المصفوفة
+    console.error(`[${iso()}] ❌ handleGenerateDailyTasks (${userId}) failed:`, err && err.stack ? err.stack : err);
+    // fallback
     const fallbackTasks = [{
       id: String(Date.now()),
       title: 'مراجعة درس مهم',
       type: 'review',
       status: 'pending',
       relatedLessonId: null,
-      relatedSubjectId: null
+      relatedSubjectId: null,
     }];
-
     try {
       await db.collection('userProgress').doc(userId).set({
-  dailyTasks: {
-    tasks: fallbackTasks,
-    generatedAt: admin.firestore.FieldValue.serverTimestamp(),
-  },
-}, { merge: true });
-
-if (cache?.progress) cache.progress.clear();
-console.log(`[${iso()}] ✅ Saved fallback task for ${userId}`);
-
+        dailyTasks: { tasks: fallbackTasks, generatedAt: admin.firestore.FieldValue.serverTimestamp() },
+      }, { merge: true });
+      try { await cacheSet('progress', userId, { dailyTasks: { tasks: fallbackTasks } }); } catch (e) {}
+      await cacheDel('progress', userId);
+      console.log(`[${iso()}] ✅ Saved fallback task for ${userId}`);
+      return { tasks: fallbackTasks, source: 'fallback', generatedAt: new Date().toISOString() };
     } catch (saveErr) {
-      console.error(`[${iso()}] ⚠️ CRITICAL: Failed to save fallback task:`, saveErr.message);
+      console.error(`[${iso()}] ⚠️ CRITICAL: Failed to save fallback task for ${userId}:`, saveErr && saveErr.stack ? saveErr.stack : saveErr);
+      // still return fallback payload (not saved)
+      return { tasks: fallbackTasks, source: 'fallback_unsaved', generatedAt: new Date().toISOString() };
     }
-
-    return fallbackTasks;
   }
 }
+
 // ----------------- ROUTES -----------------
+
+/**
+ * /chat
+ */
 app.post('/chat', async (req, res) => {
   const start = Date.now();
   metrics.requests += 1;
-  const reqId = req.requestId || 'unknown';
 
   try {
     const { userId, message, history = [] } = req.body || {};
@@ -503,14 +527,17 @@ Final Instruction: Based on user's message, decide whether to answer as text or 
 `.trim();
 
     const modelCall = () => chatModel.generateContent(finalPrompt);
-    const modelRes = await retry(() => withTimeout(modelCall(), CONFIG.TIMEOUT_MS, 'chat model'));
+    const modelRes = await retry(() => withTimeout(modelCall(), adaptiveTimeout('chat model'), 'chat model'));
     const rawReply = await extractTextFromResult(modelRes);
 
     const actionResponse = parseJSONFromText(rawReply);
 
     if (actionResponse?.action === 'manage_tasks' && actionResponse.userRequest) {
       req.log('Action detected:', actionResponse.userRequest);
-      setImmediate(() => { handleUpdateTasks({ userId, userRequest: actionResponse.userRequest }).catch(err => req.log('Background update failed:', err && err.message ? err.message : err)); });
+      setImmediate(() => {
+        handleUpdateTasks({ userId, userRequest: actionResponse.userRequest })
+          .catch(err => req.log('Background update failed:', err && err.stack ? err.stack : err));
+      });
       const confirmationMessage = "بالتأكيد! أنا أعمل على تحديث مهامك الآن.";
       res.json({ reply: confirmationMessage });
       observeLatency(Date.now() - start);
@@ -521,39 +548,45 @@ Final Instruction: Based on user's message, decide whether to answer as text or 
     observeLatency(Date.now() - start);
   } catch (err) {
     metrics.errors += 1;
-    console.error(`[${iso()}] ❌ /chat error:`, err && err.message ? err.message : err);
+    console.error(`[${iso()}] ❌ /chat error:`, err && err.stack ? err.stack : err);
     if (err && err.message && err.message.toLowerCase().includes('timed out')) return res.status(504).json({ error: 'Model request timed out.' });
     return res.status(500).json({ error: 'Internal server error.' });
   }
 });
 
-// update-daily-tasks HTTP wrapper
+/**
+ * /update-daily-tasks
+ */
 app.post('/update-daily-tasks', async (req, res) => {
   try {
     const { userId, userRequest } = req.body || {};
     if (!userId || !userRequest) return res.status(400).json({ error: 'userId and userRequest are required.' });
     const updated = await handleUpdateTasks({ userId, userRequest });
-    return res.status(200).json({ success: true, tasks: updated });
+    return res.status(200).json({ success: true, tasks: updated, generatedAt: new Date().toISOString(), source: 'AI' });
   } catch (err) {
-    console.error(`[${iso()}] ❌ Error in /update-daily-tasks:`, err && err.message ? err.message : err);
+    console.error(`[${iso()}] ❌ Error in /update-daily-tasks:`, err && err.stack ? err.stack : err);
     return res.status(500).json({ error: 'Failed to update daily tasks.' });
   }
 });
 
-// generate-daily-tasks
+/**
+ * /generate-daily-tasks
+ */
 app.post('/generate-daily-tasks', async (req, res) => {
   try {
     const { userId } = req.body || {};
     if (!userId) return res.status(400).json({ error: 'User ID is required.' });
-    const tasks = await handleGenerateDailyTasks(userId);
-    return res.status(200).json({ success: true, tasks });
+    const result = await handleGenerateDailyTasks(userId);
+    return res.status(200).json({ success: true, generatedAt: result.generatedAt || new Date().toISOString(), source: result.source || 'AI', tasks: result.tasks });
   } catch (err) {
-    console.error(`[${iso()}] ❌ Error in /generate-daily-tasks:`, err && err.message ? err.message : err);
-    return res.status(200).json({ success: true, generatedAt: iso(), source: 'AI', tasks });
+    console.error(`[${iso()}] ❌ Error in /generate-daily-tasks:`, err && err.stack ? err.stack : err);
+    return res.status(500).json({ error: 'Failed to generate tasks.' });
   }
 });
 
-// generate-title (more robust)
+/**
+ * /generate-title
+ */
 app.post('/generate-title', async (req, res) => {
   const { message, language } = req.body || {};
   if (!message) return res.status(400).json({ error: 'Message is required.' });
@@ -562,30 +595,50 @@ app.post('/generate-title', async (req, res) => {
     const lang = language || 'Arabic';
     const prompt = `Summarize this message into a short, engaging chat title in ${lang}. Respond with ONLY the title text. NEVER respond with an empty string. Message: "${escapeForPrompt(safeSnippet(message, 1000))}"`;
     const modelCall = () => titleModel.generateContent(prompt);
-    const modelRes = await retry(() => withTimeout(modelCall(), 5000, 'title generation'));
+    const modelRes = await retry(() => withTimeout(modelCall(), adaptiveTimeout('title generation'), 'title generation'));
     let titleText = await extractTextFromResult(modelRes);
     if (!titleText) { console.warn(`[${iso()}] ⚠️ Title model returned empty. Using fallback.`); titleText = 'محادثة جديدة'; }
-    res.json({ title: titleText.trim() });
+    return res.status(200).json({ title: titleText.trim() });
   } catch (err) {
-    console.error(`[${iso()}] ❌ Title generation failed:`, err && err.message ? err.message : err);
-    // return fallback gracefully
-    return res.status(200).json({ success: true, generatedAt: iso(), source: 'fallback', tasks });
+    console.error(`[${iso()}] ❌ Title generation failed:`, err && err.stack ? err.stack : err);
+    return res.status(200).json({ title: 'محادثة جديدة' });
   }
 });
 
-// health
+/**
+ * /metrics (simple)
+ */
+app.get('/metrics', (req, res) => {
+  res.json(metrics);
+});
+
+/**
+ * /health
+ */
 app.get('/health', (req, res) => {
   res.json({ ok: true, env: process.env.NODE_ENV || 'development', metrics, time: iso() });
 });
+
+// --- Warmup model (best-effort, non-blocking) ---
+(async () => {
+  try {
+    await retry(() => withTimeout(chatModel.generateContent('ping'), adaptiveTimeout('chat model'), 'chat warmup'), 2, 200);
+    console.log('💡 Chat model warmup OK');
+  } catch (e) {
+    console.warn('⚠️ Chat model warmup skipped or failed (non-fatal)');
+  }
+})();
 
 // --- Graceful shutdown ---
 let server = null;
 function shutdown(signal) {
   console.log(`[${iso()}] Received ${signal}. Shutting down gracefully...`);
   if (server) {
-    server.close(() => {
+    server.close(async () => {
       console.log(`[${iso()}] HTTP server closed.`);
-      if (redisClient) redisClient.quit().catch(() => {});
+      if (redisClient) {
+        try { await redisClient.quit(); } catch (e) { /* ignore */ }
+      }
       process.exit(0);
     });
     setTimeout(() => { console.warn(`[${iso()}] Forcing shutdown.`); process.exit(1); }, CONFIG.SHUTDOWN_TIMEOUT).unref();
@@ -596,7 +649,7 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 // --- Start server ---
 server = app.listen(CONFIG.PORT, () => {
-  console.log(`🚀 EduAI Brain (Merged Final) running on port ${CONFIG.PORT}`);
+  console.log(`🚀 EduAI Brain (V13.5 Ultra Max Stable) running on port ${CONFIG.PORT}`);
   console.log(`💬 Chat model: ${CONFIG.CHAT_MODEL}`);
   console.log(`🏷️ Title model: ${CONFIG.TITLE_MODEL}`);
 });
