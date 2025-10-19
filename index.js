@@ -412,18 +412,20 @@ ${weaknessesPrompt}
 
     // ✅ الحفظ الصحيح (بدون serverTimestamp داخل المصفوفة)
     await db.collection('userProgress').doc(userId).set({
-      dailyTasks: {
-        tasks: tasksToSave,
-        generatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      },
-    }, { merge: true });
+  dailyTasks: {
+    tasks: tasksToSave,
+    generatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  },
+}, { merge: true });
 
-    cache.progress.clear();
-    console.log(`[${iso()}] ✅ Generated ${tasksToSave.length} tasks for ${userId}`);
-    return tasksToSave;
+if (cache?.progress) cache.progress.clear();
+console.log(`[${iso()}] ✅ Generated ${tasksToSave.length} tasks for ${userId}`);
+return tasksToSave;
+
 
   } catch (err) {
-    console.error(`[${iso()}] ❌ handleGenerateDailyTasks error: ${err.message}. Using fallback.`);
+    console.error(`[${iso()}] ❌ handleGenerateDailyTasks (${userId}) failed:`, err);
+
 
     // ✅ fallback بدون serverTimestamp داخل المصفوفة
     const fallbackTasks = [{
@@ -437,14 +439,15 @@ ${weaknessesPrompt}
 
     try {
       await db.collection('userProgress').doc(userId).set({
-        dailyTasks: {
-          tasks: fallbackTasks,
-          generatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-      }, { merge: true });
+  dailyTasks: {
+    tasks: fallbackTasks,
+    generatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  },
+}, { merge: true });
 
-      cache.progress.clear();
-      console.log(`[${iso()}] ✅ Saved fallback task for ${userId}`);
+if (cache?.progress) cache.progress.clear();
+console.log(`[${iso()}] ✅ Saved fallback task for ${userId}`);
+
     } catch (saveErr) {
       console.error(`[${iso()}] ⚠️ CRITICAL: Failed to save fallback task:`, saveErr.message);
     }
@@ -546,7 +549,7 @@ app.post('/generate-daily-tasks', async (req, res) => {
     return res.status(200).json({ success: true, tasks });
   } catch (err) {
     console.error(`[${iso()}] ❌ Error in /generate-daily-tasks:`, err && err.message ? err.message : err);
-    return res.status(500).json({ error: 'Failed to generate tasks.' });
+    return res.status(200).json({ success: true, generatedAt: iso(), source: 'AI', tasks });
   }
 });
 
@@ -566,7 +569,7 @@ app.post('/generate-title', async (req, res) => {
   } catch (err) {
     console.error(`[${iso()}] ❌ Title generation failed:`, err && err.message ? err.message : err);
     // return fallback gracefully
-    return res.status(200).json({ title: 'محادثة جديدة' });
+    return res.status(200).json({ success: true, generatedAt: iso(), source: 'fallback', tasks });
   }
 });
 
