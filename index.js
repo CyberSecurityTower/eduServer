@@ -5,8 +5,9 @@ const admin = require('firebase-admin');
 
 // --- Configuration ---
 const PORT = process.env.PORT || 3000;
-// --- FIX: Using a valid and powerful model name ---
-const MODEL_NAME = "gemini-2.5-pro";
+// --- Use the specific models as requested ---
+const CHAT_MODEL_NAME = "gemini-2.5-pro";
+const TITLE_MODEL_NAME = "gemini-2.5-flash-lite";
 
 // --- Initialization ---
 const app = express();
@@ -25,9 +26,12 @@ try {
 const db = admin.firestore();
 
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
-const model = genAI.getGenerativeModel({ model: MODEL_NAME });
+// --- NEW: Initialize two separate, specialized models ---
+const chatModel = genAI.getGenerativeModel({ model: CHAT_MODEL_NAME });
+const titleModel = genAI.getGenerativeModel({ model: TITLE_MODEL_NAME });
 
-// --- Helper Functions ---
+
+// --- Helper Functions (No changes) ---
 
 async function fetchMemoryProfile(userId) {
   try {
@@ -61,8 +65,9 @@ async function fetchUserProgress(userId) {
 
 async function detectLanguage(message) {
     try {
+        // Use the fast title model for this simple task as well
         const prompt = `What is the primary language of the following text? Respond with only the language name in English (e.g., "Arabic", "English", "French"). Text: "${message}"`;
-        const result = await model.generateContent(prompt);
+        const result = await titleModel.generateContent(prompt);
         const response = await result.response;
         return response.text().trim();
     } catch (error) {
@@ -90,12 +95,10 @@ app.post('/chat', async (req, res) => {
       .map(item => `${item.role === 'model' ? 'EduAI' : 'User'}: ${item.text}`)
       .join('\n');
 
-    // --- V6: THE SELF-CORRECTING PROMPT ---
     const finalPrompt = `
 <role>
 You are 'EduAI' (you can call yourself 'owl'), a smart, positive, and deeply empathetic study companion. Your primary goal is to be a helpful and motivating friend. Use sophisticated and appropriate words. Avoid starting every message with a greeting like "hi" or "أهلاً".
 </role>
-
 <user_profile>
   <dynamic_data>
     - Current Points: ${dynamicData.points}
@@ -105,7 +108,6 @@ You are 'EduAI' (you can call yourself 'owl'), a smart, positive, and deeply emp
     - Summary: ${memorySummary}
   </static_memory>
 </user_profile>
-
 <conversation_context>
   <history>
     ${formattedHistory || "This is the beginning of the conversation."}
@@ -114,24 +116,22 @@ You are 'EduAI' (you can call yourself 'owl'), a smart, positive, and deeply emp
     ${message}
   </latest_message>
 </conversation_context>
-
 <task>
   Your task is to generate a response to the <latest_message>.
-
   **REASONING_STEPS (Think silently before you respond):**
-  1.  **Analyze Context:** Read the <conversation_context>.
-  2.  **Error Check:** If the <history> contains a connection error message from you, IGNORE IT COMPLETELY. Focus only on the user's valid messages. Do not apologize for past technical errors.
-  3.  **Connect the Dots & Be Wise:** Connect the <latest_message> to the <history> and <user_profile>. Use general traits for encouragement and specific facts only when highly relevant.
-  4.  **Formulate a Plan:** Decide on the most appropriate tone and content.
-
+  1.  Analyze Context.
+  2.  If the history contains a connection error, IGNORE IT and do not apologize.
+  3.  Connect the dots wisely.
+  4.  Formulate a Plan.
   **FINAL_OUTPUT_RULES:**
-  1.  **Maintain Context:** Your response MUST be a logical continuation of the conversation.
-  2.  **CRITICAL_LANGUAGE_RULE:** You must write your entire response in **${detectedLanguage}**.
-  3.  **Output Format:** Provide ONLY the final response text.
+  1.  Maintain Context.
+  2.  CRITICAL_LANGUAGE_RULE: You must write your entire response in **${detectedLanguage}**.
+  3.  Output Format: Provide ONLY the final response text.
 </task>
 `;
 
-    const result = await model.generateContent(finalPrompt);
+    // --- USE THE POWERFUL CHAT MODEL ---
+    const result = await chatModel.generateContent(finalPrompt);
     const response = await result.response;
     const botReply = response.text();
 
@@ -143,7 +143,7 @@ You are 'EduAI' (you can call yourself 'owl'), a smart, positive, and deeply emp
   }
 });
 
-// --- NEW: Title Generation Endpoint ---
+// --- Title Generation Endpoint ---
 app.post('/generate-title', async (req, res) => {
     try {
         const { message, language } = req.body;
@@ -152,15 +152,15 @@ app.post('/generate-title', async (req, res) => {
         }
 
         const titlePrompt = `
-        Your task is to summarize the following user message into a short, concise, and engaging chat title.
+        Summarize the following user message into a short, concise, and engaging chat title.
         - The title must be a nominal phrase (جملة اسمية).
         - The title must be in ${language || 'Arabic'}.
-        - Respond with ONLY the title text and nothing else.
-
+        - Respond with ONLY the title text.
         User Message: "${message}"
         Title:`;
 
-        const result = await model.generateContent(titlePrompt);
+        // --- USE THE FAST TITLE MODEL ---
+        const result = await titleModel.generateContent(titlePrompt);
         const response = await result.response;
         const title = response.text().trim();
 
@@ -175,5 +175,7 @@ app.post('/generate-title', async (req, res) => {
 
 // --- Server Activation ---
 app.listen(PORT, () => {
-  console.log(`EduAI Brain V6 is running on port ${PORT}`);
+  console.log(`EduAI Brain V7 is running on port ${PORT}`);
+  console.log(`Using Chat Model: ${CHAT_MODEL_NAME}`);
+  console.log(`Using Title Model: ${TITLE_MODEL_NAME}`);
 });
