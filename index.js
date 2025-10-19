@@ -1,85 +1,74 @@
 const express = require('express');
 const cors = require('cors');
-const { GoogleGenerativeAI } = require("@google/generative-ai");
-const admin = require('firebase-admin'); // <-- استيراد مكتبة Firebase Admin
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const admin = require('firebase-admin');
 
-// --- إعداد Firebase Admin ---
-// التحقق من وجود مفتاح الخدمة
-if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
-  throw new Error("Firebase Service Account key not found in environment variables.");
-}
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-
-// تهيئة التطبيق
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
-const db = admin.firestore(); // الحصول على مرجع لقاعدة البيانات
-
-// --- إعداد Google AI ---
-if (!process.env.GOOGLE_API_KEY) {
-  throw new Error("API Key not found. Please add GOOGLE_API_KEY to environment variables.");
-}
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-
-// --- إعداد الخادم ---
+// --- تهيئة الخادم والتطبيقات ---
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// --- نقطة النهاية المحدثة والذكية ---
+// تهيئة Firebase Admin SDK (لقراءة البيانات من Firestore بأمان)
+// ملاحظة: يتم تخزين مفتاح الخدمة كمتغير بيئة على Render.com
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+const db = admin.firestore();
+
+// تهيئة Google Gemini API
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
+const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+
+// --- نقطة النهاية الرئيسية للمحادثة ---
 app.post('/chat', async (req, res) => {
   try {
-    const { message, userId } = req.body;
+    const { userId, message, history } = req.body;
 
-    if (!message) {
-      return res.status(400).json({ error: 'Message is required' });
+    if (!userId || !message) {
+      return res.status(400).json({ error: 'User ID and message are required.' });
     }
 
-    let userContext = "The user is a new student.";
-    // إذا أرسل التطبيق userId، قم بجلب بياناته
-    if (userId) {
-      const userProgressRef = db.collection('userProgress').doc(userId);
-      const userProgressDoc = await userProgressRef.get();
-
-      if (userProgressDoc.exists) {
-        const data = userProgressDoc.data();
-        const userName = data.stats?.displayName || "student";
-        const userPoints = data.stats?.points || 0;
-        const userStreak = data.streakCount || 0;
-        // بناء السياق الشخصي
-        userContext = `The user's name is ${userName}. Their current stats are: ${userPoints} points and a ${userStreak}-day streak.`;
-      }
+    // 1. [الذكاء] جلب ملف الذاكرة من Firestore
+    let memorySummary = "لا توجد ذاكرة حالية عن هذا المستخدم.";
+    const memoryDocRef = db.collection('aiMemoryProfiles').doc(userId);
+    const memoryDoc = await memoryDocRef.get();
+    if (memoryDoc.exists) {
+      memorySummary = memoryDoc.data().profileSummary || memorySummary;
     }
 
-    // بناء المقدمة الكاملة لـ Gemini
-    const promptPreamble = `
-      You are EduAI, a smart and encouraging study assistant. 
-      Your personality is helpful, positive, and a little playful.
-      You are talking to a university student.
-      This is the context about the user: ${userContext}
-      Address the user by their name if you know it.
-      Keep your answers concise and helpful.
-      
-      The user's message is: "${message}"
-    `;
+    // 2. [السياق] تنسيق سجل المحادثة
+    const formattedHistory = history.map(item => `${item.role === 'model' ? 'EduAI' : 'User'}: ${item.text}`).join('\n');
 
-    // إرسال المقدمة الكاملة إلى النموذج
-    const result = await model.generateContent(promptPreamble);
+    // 3. [الدستور] بناء الموجه النهائي القوي
+    const finalPrompt = `### SYSTEM PROMPT ###
+# ROLE & CONTEXT
+أنت 'EduAI'، رفيق دراسي ذكي، إيجابي، وداعم... (بقية الدستور)
+# MEMORY
+- ملخص ذاكرة المستخدم: ${memorySummary}
+- سجل المحادثة الأخيرة:
+${formattedHistory}
+# RULES OF ENGAGEMENT ... (بقية القواعد)
+# TASK
+...
+رسالة المستخدم الجديدة: ${message}`;
+
+    // 4. [التنفيذ] إرسال الموجه إلى Gemini
+    const result = await model.generateContent(finalPrompt);
     const response = await result.response;
     const botReply = response.text();
 
+    // 5. [الرد] إرجاع الإجابة الذكية إلى التطبيق
     res.json({ reply: botReply });
 
   } catch (error) {
-    console.error("Error processing chat:", error);
-    res.status(500).json({ error: 'Something went wrong on the server.' });
+    console.error("Error in /chat endpoint:", error);
+    res.status(500).json({ error: 'An internal error occurred.' });
   }
 });
 
-// تشغيل الخادم
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
+// --- تشغيل الخادم ---
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
 });
