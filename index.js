@@ -23,9 +23,9 @@ const crypto = require('crypto');
 // ---------- CONFIG ----------
 const CONFIG = {
   PORT: Number(process.env.PORT || 3000),
-  CHAT_MODEL_NAME: process.env.CHAT_MODEL_NAME || 'gemini-1.5-flash',
-  TASK_MODEL_NAME: process.env.TASK_MODEL_NAME || 'gemini-1.5-pro',
-  TITLE_MODEL_NAME: process.env.TITLE_MODEL_NAME || 'gemini-1.5-flash',
+  CHAT_MODEL_NAME: process.env.CHAT_MODEL_NAME || 'gemini-2.5-flash',
+  TASK_MODEL_NAME: process.env.TASK_MODEL_NAME || 'gemini-2.5-pro',
+  TITLE_MODEL_NAME: process.env.TITLE_MODEL_NAME || 'gemini-2.5-flash-lite',
   TIMEOUT_MS: Number(process.env.REQUEST_TIMEOUT_MS || 45000),
   TIMEOUT_CHAT_MS: Number(process.env.TIMEOUT_CHAT_MS || 60000),
   TIMEOUT_TASK_MS: Number(process.env.TIMEOUT_TASK_MS || 45000),
