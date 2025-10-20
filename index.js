@@ -23,9 +23,9 @@ const crypto = require('crypto');
 // ---------- CONFIG ----------
 const CONFIG = {
   PORT: Number(process.env.PORT || 3000),
-  CHAT_MODEL_NAME: process.env.CHAT_MODEL_NAME || 'gemini-2.5-flash',
-  TASK_MODEL_NAME: process.env.TASK_MODEL_NAME || 'gemini-2.5-pro',
-  TITLE_MODEL_NAME: process.env.TITLE_MODEL_NAME || 'gemini-2.5-flash-lite',
+  CHAT_MODEL_NAME: process.env.CHAT_MODEL_NAME || 'gemini-1.5-flash',
+  TASK_MODEL_NAME: process.env.TASK_MODEL_NAME || 'gemini-1.5-pro',
+  TITLE_MODEL_NAME: process.env.TITLE_MODEL_NAME || 'gemini-1.5-flash',
   TIMEOUT_MS: Number(process.env.REQUEST_TIMEOUT_MS || 45000),
   TIMEOUT_CHAT_MS: Number(process.env.TIMEOUT_CHAT_MS || 60000),
   TIMEOUT_TASK_MS: Number(process.env.TIMEOUT_TASK_MS || 45000),
@@ -58,13 +58,13 @@ app.use((req, res, next) => {
   next();
 });
 
-// ---------- Simple LRU cache (fallback) ----------
+// ---------- Caching Layer (Redis with LRU Fallback) ----------
 let redisClient = null;
 let useRedis = false;
-if (process.env.REDIS_URL) {
+if (CONFIG.REDIS_URL) {
   try {
     const IORedis = require('ioredis');
-    redisClient = new IORedis(process.env.REDIS_URL);
+    redisClient = new IORedis(CONFIG.REDIS_URL);
     useRedis = true;
     console.log(`[${new Date().toISOString()}] Redis enabled.`);
   } catch (e) {
@@ -76,7 +76,7 @@ class LRUCache {
   constructor(limit = 500, ttl = CONFIG.CACHE_TTL) { this.limit = limit; this.ttl = ttl; this.map = new Map(); }
   _isExpired(e) { return Date.now() - e.t > this.ttl; }
   get(k) { const e = this.map.get(k); if (!e) return null; if (this._isExpired(e)) { this.map.delete(k); return null; } this.map.delete(k); this.map.set(k, e); return e.v; }
-  set(k, v) { if (this.map.size >= this.limit) this.map.delete(this.map.keys().next().value); this.map.set(k, { v, t: Date.now() }); }
+  set(k, v) { if (this.map.size >= this.limit) { this.map.delete(this.map.keys().next().value); } this.map.set(k, { v, t: Date.now() }); }
   del(k) { this.map.delete(k); }
   clear() { this.map.clear(); }
 }
@@ -110,7 +110,7 @@ try {
     serviceAccount = JSON.parse(raw);
   } catch (e1) {
     try {
-      const repaired = raw.replace(/\r?\n/g, '\\n');
+      const repaired = raw.replace(/\\n/g, '\n');
       serviceAccount = JSON.parse(repaired);
     } catch (e2) {
       const decoded = Buffer.from(raw, 'base64').toString('utf8');
@@ -135,9 +135,9 @@ const chatPool = [], taskPool = [], titlePool = [];
 for (const key of apiKeyCandidates) {
   try {
     const client = new GoogleGenerativeAI(key);
-    try { chatPool.push({ client, model: client.getGenerativeModel({ model: CONFIG.CHAT_MODEL_NAME }), key }); } catch (e) { }
-    try { taskPool.push({ client, model: client.getGenerativeModel({ model: CONFIG.TASK_MODEL_NAME }), key }); } catch (e) { }
-    try { titlePool.push({ client, model: client.getGenerativeModel({ model: CONFIG.TITLE_MODEL_NAME }), key }); } catch (e) { }
+    chatPool.push({ client, model: client.getGenerativeModel({ model: CONFIG.CHAT_MODEL_NAME }), key });
+    taskPool.push({ client, model: client.getGenerativeModel({ model: CONFIG.TASK_MODEL_NAME }), key });
+    titlePool.push({ client, model: client.getGenerativeModel({ model: CONFIG.TITLE_MODEL_NAME }), key });
   } catch (e) {
     console.warn('A Google key failed to initialize — skipping it.');
   }
@@ -163,34 +163,29 @@ async function generateWithFailover(pool, prompt, label = 'model', timeoutMs = C
   for (const idx of order) {
     const inst = pool[idx];
     try {
-      const call = inst.model.generateContent ? () => inst.model.generateContent(prompt) : () => inst.model.generate(prompt);
-      const res = await withTimeout(call(), timeoutMs, `${label} (key ${idx})`);
+      const res = await withTimeout(inst.model.generateContent(prompt), timeoutMs, `${label} (key ${idx})`);
       return res;
     } catch (err) {
       lastErr = err;
-      console.warn(`[${new Date().toISOString()}] ${label} failed for keyIdx=${idx} key=${inst.key}:`, err && err.message ? err.message : err);
+      console.warn(`[${new Date().toISOString()}] ${label} failed for keyIdx=${idx}:`, err && err.message ? err.message : err);
     }
   }
-  throw lastErr || new Error(`${label} failed`);
+  throw lastErr || new Error(`${label} failed for all keys`);
 }
 async function extractTextFromResult(result) {
   if (!result) return '';
   try {
-    const resp = result.response ? await result.response : result;
+    const resp = result.response;
     if (!resp) return '';
-    if (resp && typeof resp.text === 'function') { const t = await resp.text(); return (t || '').toString().trim(); }
-    if (typeof resp.text === 'string' && resp.text.trim()) return resp.text.trim();
-    if (typeof resp.outputText === 'string' && resp.outputText.trim()) return resp.outputText.trim();
-    if (Array.isArray(resp.content) && resp.content.length) return resp.content.map(c => (typeof c === 'string' ? c : c?.text || '')).join('').trim();
-    if (Array.isArray(resp.candidates) && resp.candidates.length) return resp.candidates.map(c => c?.text || '').join('').trim();
-    return String(resp).trim();
+    const text = resp.text();
+    return (text || '').toString().trim();
   } catch (err) {
     console.error('extractTextFromResult failed:', err && err.message ? err.message : err);
     return '';
   }
 }
-function escapeForPrompt(s) { if (!s) return ''; return String(s).replace(/<\/+/g, '<\\/').replace(/"/g, '\\"'); }
-function safeSnippet(text, max = 6000) { if (typeof text !== 'string') return ''; if (text.length <= max) return text; return text.slice(0, max) + '\n\n... [truncated]'; }
+function escapeForPrompt(s) { if (!s) return ''; return String(s).replace(/"/g, '\\"'); }
+function safeSnippet(text, max = 6000) { if (typeof text !== 'string') return ''; return text.length <= max ? text : text.slice(0, max) + '\n\n... [truncated]'; }
 function parseJSONFromText(text) {
   if (!text || typeof text !== 'string') return null;
   const match = text.match(/\{[\s\S]*\}/);
@@ -203,13 +198,11 @@ function parseJSONFromText(text) {
 function detectLangLocal(text) {
   if (!text || typeof text !== 'string') return 'Arabic';
   const arabicMatches = (text.match(/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/g) || []).length;
-  const frenchMatches = (text.match(/[éèêëàâôùûçœÉÈÀÂÔÇÛŒ]/g) || []).length;
-  const latinMatches = (text.match(/[a-zA-Z]/g) || []).length;
   const len = Math.max(1, text.length);
   if (arabicMatches / len > 0.02) return 'Arabic';
+  const frenchMatches = (text.match(/[éèêëàâôùûçœÉÈÀÂÔÇÛŒ]/g) || []).length;
   if (frenchMatches / len > 0.01) return 'French';
-  if (latinMatches / len > 0.02) return 'English';
-  return 'Arabic';
+  return 'English';
 }
 
 // ---------- Firestore helpers ----------
@@ -237,16 +230,13 @@ async function getProgress(userId) {
 }
 async function fetchUserWeaknesses(userId) {
   try {
-    const doc = await db.collection('userProgress').doc(userId).get();
-    if (!doc.exists) return [];
-    const progressData = doc.data()?.pathProgress || {};
+    const progressData = await getProgress(userId);
+    const pathProgress = progressData?.pathProgress || {};
     const weaknesses = [];
-    for (const pathId of Object.keys(progressData)) {
-      const pathEntry = progressData[pathId] || {};
-      const subjects = pathEntry.subjects || {};
+    for (const pathId of Object.keys(pathProgress)) {
+      const subjects = pathProgress[pathId]?.subjects || {};
       for (const subjectId of Object.keys(subjects)) {
-        const subjectEntry = subjects[subjectId] || {};
-        const lessons = subjectEntry.lessons || {};
+        const lessons = subjects[subjectId]?.lessons || {};
         for (const lessonId of Object.keys(lessons)) {
           const lessonData = lessons[lessonId] || {};
           const masteryScore = Number(lessonData.masteryScore || 0);
@@ -270,15 +260,14 @@ async function sendUserNotification(userId, payload) {
     const token = profileDoc.exists ? profileDoc.data()?.fcmToken : null;
     if (token) {
       const message = { token, notification: { title: payload.title || 'EduAI', body: payload.message }, data: payload.data || {} };
-      try { await admin.messaging().send(message); } catch (e) { /* ignore FCM errors */ }
+      await admin.messaging().send(message);
     }
-  } catch (e) { /* ignore */ }
+  } catch (e) { /* ignore FCM errors */ }
 }
 
 // ---------- Task helpers ----------
 function formatTasksHuman(tasks, lang = 'Arabic') {
   if (!Array.isArray(tasks)) return '';
-  if (lang === 'English' || lang === 'French') return tasks.map((t, i) => `${i + 1}. ${t.title} [${t.type}]`).join('\n');
   return tasks.map((t, i) => `${i + 1}. ${t.title} [${t.type}]`).join('\n');
 }
 
@@ -313,7 +302,7 @@ function quickAmbiguityCheck(rawMessage, detectedLang = 'Arabic') {
 
   if ((hasPraise || hasPast) && !hasTaskVerb) {
     if (detectedLang === 'English') return "Thanks — would you like me to repeat the same plan for today, or were you just sharing feedback?";
-    if (detectedLang === 'French') return "Merci — voulez-vous que je répète le même plan pour aujourd'hui, ou partagiez-vous فقط ملاحظة؟";
+    if (detectedLang === 'French') return "Merci — voulez-vous que je répète le même plan pour aujourd'hui, ou partagiez-vous seulement une remarque ?";
     return "رائع — هل تريد أن أعيد نفس الخطة لليوم أم أنك تشارك ملاحظة فقط؟";
   }
   return null;
@@ -333,44 +322,29 @@ async function parseUserAction(userRequest, currentTasks) {
 
   const details = {};
   if (wantsComplete) { details.intent = 'complete'; details.forceStatus = 'completed'; }
-  if (wantsDelete) details.intent = 'delete';
-  if (wantsCreate) details.intent = 'create';
-  if (wantsUpdate) details.intent = 'update';
+  else if (wantsDelete) details.intent = 'delete';
+  else if (wantsCreate) details.intent = 'create';
+  else if (wantsUpdate) details.intent = 'update';
 
-  if (wantsDelete || wantsComplete || wantsCreate || wantsUpdate) return { action: 'manage_tasks', userRequest: raw, details };
+  if (details.intent) return { action: 'manage_tasks', userRequest: raw, details };
   if (wantsPlan) return { action: 'generate_plan', userRequest: raw, details: {} };
 
-  // greetings detection
-  const greetings = ['hello','hi','hey','مرحبا','صباح','مساء','سلام','كيف حالك','what\'s up','bonjour'];
+  const greetings = ['hello','hi','hey','مرحبا','صباح','مساء','سلام','كيف حالك',"what's up",'bonjour'];
   if (greetings.some(g => norm.includes(g))) return { action: 'none', userRequest: raw, details: {} };
 
-  // fallback to small model (titlePool preferred)
-  const fallbackPool = (Array.isArray(titlePool) && titlePool.length > 0) ? titlePool : taskPool;
-  if (!fallbackPool || fallbackPool.length === 0) return { action: 'none', userRequest: raw, details: {} };
+  const fallbackPool = titlePool.length > 0 ? titlePool : taskPool;
+  if (fallbackPool.length === 0) return { action: 'none', userRequest: raw, details: {} };
 
-  const prompt = `
-You are a conservative classifier. Decide if the user's message should trigger exactly one of:
-"manage_tasks", "generate_plan", or "none".
-Return EXACTLY and ONLY a JSON object like:
-{ "action": "manage_tasks", "userRequest": "short summary", "details": { "intent": "create|complete|delete|update|null", "forceStatus": "completed|null" } }
-
-RULES (follow strictly):
-- If message is greeting, thanks, or feedback only -> "none".
-- If it explicitly asks to add/remove/complete/update tasks -> "manage_tasks".
-- If it asks for a plan or to plan the day -> "generate_plan".
-- Be conservative: when in doubt return "none".
-User message: "${escapeForPrompt(safeSnippet(userRequest, 500))}"
-Current tasks: ${JSON.stringify(currentTasks || [])}
-`.trim();
+  const prompt = `You are a conservative classifier. Decide if the user's message should trigger exactly one of: "manage_tasks", "generate_plan", or "none". Return EXACTLY and ONLY a JSON object like: { "action": "manage_tasks", "userRequest": "short summary", "details": { "intent": "create|complete|delete|update|null", "forceStatus": "completed|null" } }. RULES: If greeting/thanks -> "none". If asks to add/remove/complete/update tasks -> "manage_tasks". If asks for a plan -> "generate_plan". When in doubt -> "none". User message: "${escapeForPrompt(safeSnippet(userRequest, 500))}". Current tasks: ${JSON.stringify(currentTasks || [])}`;
 
   try {
     const res = await retry(() => generateWithFailover(fallbackPool, prompt, 'action parser', CONFIG.TIMEOUT_ACTION_MS), 2, 300);
     const rawText = await extractTextFromResult(res);
     const parsed = parseJSONFromText(rawText);
-    if (!parsed || !parsed.action) return { action: 'none', userRequest: raw, details: {} };
-    const action = parsed.action;
-    if (!['manage_tasks','generate_plan','none'].includes(action)) return { action: 'none', userRequest: raw, details: {} };
-    return { action, userRequest: parsed.userRequest || raw, details: parsed.details || {} };
+    if (!parsed || !parsed.action || !['manage_tasks','generate_plan','none'].includes(parsed.action)) {
+      return { action: 'none', userRequest: raw, details: {} };
+    }
+    return { action: parsed.action, userRequest: parsed.userRequest || raw, details: parsed.details || {} };
   } catch (err) {
     console.warn('parseUserAction fallback failed — defaulting to none:', err && err.message ? err.message : err);
     return { action: 'none', userRequest: raw, details: {} };
@@ -385,33 +359,15 @@ async function handleUpdateTasks({ userId, userRequest, details = {} }) {
   if (!userId || !userRequest) throw new Error('userId and userRequest required');
   console.log(`[${new Date().toISOString()}] handleUpdateTasks user=${userId} details=${JSON.stringify(details)}`);
 
-  const progressSnap = await db.collection('userProgress').doc(userId).get();
-  const currentTasks = progressSnap.exists ? (progressSnap.data().dailyTasks?.tasks || []) : [];
+  const userProgressRef = db.collection('userProgress').doc(userId);
+  
+  // Using a transaction to prevent race conditions
+  return db.runTransaction(async (transaction) => {
+    const progressSnap = await transaction.get(userProgressRef);
+    const currentTasks = progressSnap.exists ? (progressSnap.data().dailyTasks?.tasks || []) : [];
 
-  const modificationPrompt = `
-You are a conservative task manager. Modify the user's task list BASED ONLY on the explicit instructions.
-RETURN EXACTLY one JSON object and NOTHING ELSE:
-{ "tasks": [ { "id": "...", "title": "...", "type": "...", "status": "...", "relatedLessonId": null|"id", "relatedSubjectId": null|"id" } ] }
+    const modificationPrompt = `You are a conservative task manager. Modify the user's task list BASED ONLY on the explicit instructions. RETURN EXACTLY one JSON object and NOTHING ELSE: { "tasks": [ { "id": "...", "title": "...", "type": "...", "status": "...", "relatedLessonId": null|"id", "relatedSubjectId": null|"id" } ] }. CURRENT TASKS: ${JSON.stringify(currentTasks)}. USER REQUEST: "${escapeForPrompt(userRequest)}". REQUIREMENTS: 1) Output MUST be a single JSON object with key "tasks". 2) Each task MUST include: id, title, type ('review','quiz','new_lesson','practice','study'), status ('pending'|'completed'), relatedLessonId (string|null), relatedSubjectId (string|null). 3) STATUS RULE: use 'completed' only if user explicitly indicates completion or if details.forceStatus === 'completed'. 4) DELETION: if user asked to delete a task, remove it. 5) Preserve tasks not explicitly mentioned. 6) If uncertain, return existing tasks unchanged.`;
 
-CURRENT TASKS:
-${JSON.stringify(currentTasks)}
-
-USER REQUEST (raw):
-"${escapeForPrompt(userRequest)}"
-
-REQUIREMENTS (MUST follow):
-1) Output MUST be a single JSON object with key "tasks".
-2) Each task MUST include: id, title (string), type (one of 'review','quiz','new_lesson','practice','study'), status ('pending'|'completed'), relatedLessonId (string|null), relatedSubjectId (string|null).
-3) TYPE RULE: 'quiz' for tests/quizzes, 'practice' for practice requests, ambiguous -> 'review'.
-4) STATUS RULE: use 'completed' only when user explicitly indicates completion or if details.forceStatus === 'completed'.
-5) DELETION: if user asked to delete a task by id/title, remove it. If asked to delete ALL, return { "tasks": [] }.
-6) Preserve tasks not explicitly mentioned.
-7) Titles short and in user's language.
-8) DO NOT include extra fields or explanation.
-9) If uncertain, return existing tasks unchanged.
-`.trim();
-
-  try {
     const res = await retry(() => generateWithFailover(taskPool, modificationPrompt, 'task modification', CONFIG.TIMEOUT_TASK_MS), CONFIG.MAX_RETRIES, 700);
     const rawText = await extractTextFromResult(res);
     const parsed = parseJSONFromText(rawText);
@@ -420,9 +376,9 @@ REQUIREMENTS (MUST follow):
     const normalized = parsed.tasks.map(t => {
       const type = (t.type || '').toString().toLowerCase();
       let status = (t.status || '').toString().toLowerCase();
-      if (details && details.forceStatus) status = details.forceStatus;
+      if (details?.forceStatus) status = details.forceStatus;
       return {
-        id: t.id || (String(Date.now()) + Math.random().toString(36).slice(2, 9)),
+        id: t.id || crypto.randomUUID(),
         title: (t.title || 'مهمة جديدة').toString(),
         type: VALID_TASK_TYPES.has(type) ? type : 'review',
         status: VALID_STATUS.has(status) ? status : 'pending',
@@ -431,16 +387,17 @@ REQUIREMENTS (MUST follow):
       };
     });
 
-    await db.collection('userProgress').doc(userId).set({ dailyTasks: { tasks: normalized, generatedAt: admin.firestore.FieldValue.serverTimestamp() } }, { merge: true });
-    try { await cacheSet('progress', userId, Object.assign({}, progressSnap.exists ? progressSnap.data() : {}, { dailyTasks: { tasks: normalized } })); } catch (e) {}
+    transaction.set(userProgressRef, { dailyTasks: { tasks: normalized, generatedAt: admin.firestore.FieldValue.serverTimestamp() } }, { merge: true });
+    
+    // Invalidate the cache since the underlying data has changed.
     await cacheDel('progress', userId);
 
     console.log(`[${new Date().toISOString()}] Updated tasks saved for user=${userId}`);
     return normalized;
-  } catch (err) {
-    console.error('handleUpdateTasks failed:', err && err.message ? err.message : err);
+  }).catch(err => {
+    console.error('handleUpdateTasks transaction failed:', err && err.message ? err.message : err);
     throw err;
-  }
+  });
 }
 
 // ---------- handleGenerateDailyTasks ----------
@@ -450,40 +407,35 @@ async function handleGenerateDailyTasks(userId) {
 
   try {
     const weaknesses = await fetchUserWeaknesses(userId);
-    const ctx = weaknesses.length > 0 ? `${weaknesses.map(w => `- ${w.lessonId} (${w.masteryScore}%)`).join('\n')}` : 'No specific weaknesses detected.';
-    const taskPrompt = `
-You are an academic planner. Generate 2-4 personalized tasks for a single study session.
-RETURN EXACTLY one JSON object: { "tasks": [ ... ] } with same task schema as above.
-Context:
-${ctx}
-`.trim();
+    const ctx = weaknesses.length > 0 ? `Weaknesses: ${weaknesses.map(w => `- ${w.lessonId} (${w.masteryScore}%)`).join('\n')}` : 'No specific weaknesses detected.';
+    const taskPrompt = `You are an academic planner. Generate 2-4 personalized tasks for a study session. RETURN EXACTLY one JSON object: { "tasks": [ ... ] } with the required schema (id, title, type, status, relatedLessonId, relatedSubjectId). Context: ${ctx}`;
 
     const res = await retry(() => generateWithFailover(taskPool, taskPrompt, 'task generation', CONFIG.TIMEOUT_TASK_MS), CONFIG.MAX_RETRIES, 700);
     const rawText = await extractTextFromResult(res);
     const parsed = parseJSONFromText(rawText);
-    if (!parsed || !Array.isArray(parsed.tasks) || parsed.tasks.length === 0) throw new Error('Model returned empty tasks');
+    if (!parsed || !Array.isArray(parsed.tasks) || parsed.tasks.length === 0) throw new Error('Model returned empty or invalid tasks');
 
-    const tasksToSave = parsed.tasks.slice(0, 5).map((task, i) => ({
-      id: task.id || (String(Date.now() + i)),
+    const tasksToSave = parsed.tasks.slice(0, 5).map(task => ({
+      id: task.id || crypto.randomUUID(),
       title: (task.title || 'مهمة تعليمية').toString(),
-      type: VALID_TASK_TYPES.has((task.type || '').toString().toLowerCase()) ? (task.type || '').toString().toLowerCase() : 'review',
+      type: VALID_TASK_TYPES.has((task.type || '').toLowerCase()) ? task.type.toLowerCase() : 'review',
       status: 'pending',
       relatedLessonId: task.relatedLessonId || null,
       relatedSubjectId: task.relatedSubjectId || null,
     }));
 
     await db.collection('userProgress').doc(userId).set({ dailyTasks: { tasks: tasksToSave, generatedAt: admin.firestore.FieldValue.serverTimestamp() } }, { merge: true });
-    try { await cacheSet('progress', userId, { dailyTasks: { tasks: tasksToSave } }); } catch (e) {}
+    // Invalidate the cache since the underlying data has changed.
     await cacheDel('progress', userId);
 
     console.log(`[${new Date().toISOString()}] Generated tasks for user=${userId}`);
     return { tasks: tasksToSave, source: 'AI', generatedAt: new Date().toISOString() };
   } catch (err) {
     console.error('handleGenerateDailyTasks failed:', err && err.message ? err.message : err);
-    const fallback = [{ id: String(Date.now()), title: 'مراجعة درس مهم', type: 'review', status: 'pending', relatedLessonId: null, relatedSubjectId: null }];
+    const fallback = [{ id: crypto.randomUUID(), title: 'مراجعة درس مهم', type: 'review', status: 'pending', relatedLessonId: null, relatedSubjectId: null }];
     try {
       await db.collection('userProgress').doc(userId).set({ dailyTasks: { tasks: fallback, generatedAt: admin.firestore.FieldValue.serverTimestamp() } }, { merge: true });
-      await cacheSet('progress', userId, { dailyTasks: { tasks: fallback } }).catch(()=>{});
+      // Invalidate the cache since the underlying data has changed.
       await cacheDel('progress', userId);
       return { tasks: fallback, source: 'fallback', generatedAt: new Date().toISOString() };
     } catch (e) { return { tasks: fallback, source: 'fallback_unsaved', generatedAt: new Date().toISOString() }; }
@@ -493,7 +445,7 @@ ${ctx}
 // ---------- backgroundProcessor (uses parse result and intent-aware notifications) ----------
 async function backgroundProcessor({ userId, userRequest, profile, progress, detectedLang }) {
   try {
-    const currentTasks = (progress && progress.dailyTasks && Array.isArray(progress.dailyTasks.tasks)) ? progress.dailyTasks.tasks : [];
+    const currentTasks = progress?.dailyTasks?.tasks || [];
     const parseResult = await parseUserAction(userRequest, currentTasks);
 
     if (parseResult.action === 'manage_tasks') {
@@ -501,51 +453,36 @@ async function backgroundProcessor({ userId, userRequest, profile, progress, det
       try {
         updatedTasks = await handleUpdateTasks({ userId, userRequest: parseResult.userRequest, details: parseResult.details });
       } catch (err) {
-        const failMsg = detectedLang === 'Arabic' ? `⚠️ فشل تحديث المهام: ${err.message}` : detectedLang === 'French' ? `⚠️ Échec mise à jour: ${err.message}` : `⚠️ Failed to update tasks: ${err.message}`;
+        const failMsg = detectedLang === 'Arabic' ? `⚠️ فشل تحديث المهام: ${err.message}` : `⚠️ Failed to update tasks: ${err.message}`;
         await sendUserNotification(userId, { message: failMsg, lang: detectedLang });
         return;
       }
 
-      // Intent-aware quick notification
       const intent = parseResult.details?.intent || null;
       const forced = parseResult.details?.forceStatus === 'completed';
       let notificationMessage;
       if (intent === 'complete' || forced) {
-        notificationMessage = detectedLang === 'Arabic' ? '🎉 رائع! لقد تم تسجيل إنجاز المهمة.' : detectedLang === 'French' ? '🎉 Super ! La tâche a été marquée comme terminée.' : '🎉 Great! Task marked as completed.';
+        notificationMessage = detectedLang === 'Arabic' ? '🎉 رائع! لقد تم تسجيل إنجاز المهمة.' : '🎉 Great! Task marked as completed.';
       } else if (intent === 'delete') {
-        notificationMessage = detectedLang === 'Arabic' ? '🗑️ تم حذف المهمة كما طلبت.' : detectedLang === 'French' ? '🗑️ Tâche supprimée.' : '🗑️ Task deleted.';
+        notificationMessage = detectedLang === 'Arabic' ? '🗑️ تم حذف المهمة كما طلبت.' : '🗑️ Task deleted.';
       } else if (intent === 'create') {
-        notificationMessage = detectedLang === 'Arabic' ? '✅ تم إضافة المهمة إلى قائمتك.' : detectedLang === 'French' ? '✅ Tâche ajoutée à votre liste.' : '✅ Task added to your list.';
+        notificationMessage = detectedLang === 'Arabic' ? '✅ تم إضافة المهمة إلى قائمتك.' : '✅ Task added to your list.';
       } else {
-        notificationMessage = detectedLang === 'Arabic' ? '✅ تم تحديث قائمة مهامك.' : detectedLang === 'French' ? '✅ Votre liste de tâches a été mise à jour.' : '✅ Your tasks have been updated.';
+        notificationMessage = detectedLang === 'Arabic' ? '✅ تم تحديث قائمة مهامك.' : '✅ Your tasks have been updated.';
       }
-
-      // Send quick notification
       await sendUserNotification(userId, { message: notificationMessage, lang: detectedLang });
 
-      // Then attempt a friendly human follow-up using chat model (optional; non-blocking variant)
       try {
-        const humanSummary = formatTasksHuman(updatedTasks, detectedLang === 'Arabic' ? 'Arabic' : (detectedLang === 'French' ? 'French' : 'English'));
-        const followPrompt = `
-You are EduAI, a warm study companion. Compose a concise friendly follow-up in ${detectedLang} (max 40 words) that:
-- Confirms the operation (use a positive tone).
-- Shows a short bulleted summary (2-4 items) of the updated tasks.
-Return ONLY plain text (no JSON).
-Updated tasks:
-${humanSummary}
-`.trim();
-        const followRes = await retry(() => generateWithFailover(chatPool, followPrompt, 'followup', CONFIG.TIMEOUT_CHAT_MS), CONFIG.MAX_RETRIES, 700);
+        const humanSummary = formatTasksHuman(updatedTasks, detectedLang);
+        const followPrompt = `You are EduAI, a warm study companion. Compose a concise friendly follow-up in ${detectedLang} (max 40 words) that confirms the operation and shows a short summary of the updated tasks. Return ONLY plain text. Updated tasks:\n${humanSummary}`;
+        const followRes = await retry(() => generateWithFailover(chatPool, followPrompt, 'followup', CONFIG.TIMEOUT_CHAT_MS), 2, 500);
         const followText = await extractTextFromResult(followRes);
-        if (followText && followText.trim()) {
-          await sendUserNotification(userId, { message: followText.trim(), lang: detectedLang });
-        } else {
-          // already sent quick notification; nothing more
+        if (followText) {
+          await sendUserNotification(userId, { message: followText, lang: detectedLang });
         }
       } catch (e) {
-        // ignore follow-up failures (we already sent quick notification)
-        console.warn('follow-up generation failed:', e && e.message ? e.message : e);
+        console.warn('Follow-up generation failed:', e && e.message ? e.message : e);
       }
-
       return;
     }
 
@@ -554,18 +491,14 @@ ${humanSummary}
       try {
         result = await handleGenerateDailyTasks(userId);
       } catch (err) {
-        const failMsg = detectedLang === 'Arabic' ? `⚠️ فشل إنشاء الخطة: ${err.message}` : detectedLang === 'French' ? `⚠️ Échec génération: ${err.message}` : `⚠️ Failed to generate plan: ${err.message}`;
+        const failMsg = detectedLang === 'Arabic' ? `⚠️ فشل إنشاء الخطة: ${err.message}` : `⚠️ Failed to generate plan: ${err.message}`;
         await sendUserNotification(userId, { message: failMsg, lang: detectedLang });
         return;
       }
-      const humanSummary = formatTasksHuman(result.tasks, detectedLang === 'Arabic' ? 'Arabic' : (detectedLang === 'French' ? 'French' : 'English'));
-      const notify = detectedLang === 'Arabic' ? '✅ تم إنشاء خطة اليوم.' : detectedLang === 'French' ? '✅ Plan du jour créé.' : '✅ Today\'s plan created.';
+      const humanSummary = formatTasksHuman(result.tasks, detectedLang);
+      const notify = detectedLang === 'Arabic' ? '✅ تم إنشاء خطة اليوم.' : '✅ Today\'s plan created.';
       await sendUserNotification(userId, { message: `${notify}\n${humanSummary}`, lang: detectedLang });
-      return;
     }
-
-    // action none: nothing to do
-    return;
   } catch (err) {
     console.error('[backgroundProcessor] unexpected error:', err && err.stack ? err.stack : err);
     try { await sendUserNotification(userId, { message: detectedLang === 'Arabic' ? '⚠️ حدث خطأ أثناء معالجة طلبك.' : '⚠️ An error occurred processing your request.', lang: detectedLang }); } catch (e) {}
@@ -574,69 +507,51 @@ ${humanSummary}
 
 // ----------------- ROUTES -----------------
 
-/**
- * POST /chat
- *  - Run ambiguity guard (quickAmbiguityCheck). If ambiguous -> return clarify:true and NO background processing.
- *  - Otherwise return an immediate ACK and launch backgroundProcessor asynchronously.
- */
 app.post('/chat', async (req, res) => {
   const start = Date.now();
   try {
-    const { userId, message, history = [] } = req.body || {};
+    const { userId, message } = req.body || {};
     if (!userId || !message) return res.status(400).json({ error: 'Invalid request. userId and message required.' });
 
-    // gather profile/progress/detectedLang in parallel
     const [profile, progress, detectedLang] = await Promise.all([
       getProfile(userId),
       getProgress(userId),
-      (async () => detectLangLocal(message))()
+      Promise.resolve(detectLangLocal(message))
     ]);
 
-    // --- Ambiguity guard: if ambiguous, return clarification question and DO NOT run backgroundProcessor
     const ambiguityQuestion = quickAmbiguityCheck(message, detectedLang);
     if (ambiguityQuestion) {
       req.log(`Ambiguity detected for user=${userId}. Asking clarification.`);
       return res.json({ reply: ambiguityQuestion, clarify: true });
     }
 
-    // Not ambiguous: produce ACK (prefer generated ack)
-    const ackPrompt = `
-You are EduAI. Write a SHORT acknowledgement (<= 25 words) in ${detectedLang} telling the user: "I received your request and will process it; you'll get a notification when it's done."
-Do NOT perform the task here.
-User message: "${escapeForPrompt(safeSnippet(message, 300))}"
-`.trim();
-
-    let ackText = detectedLang === 'Arabic' ? 'جاري العمل على طلبك الآن — سأخبرك عند الانتهاء.' : detectedLang === 'French' ? "Je m'occupe de votre demande — je vous informerai dès que c'est prêt." : 'Working on your request — I will notify you when done.';
+    const ackPrompt = `You are EduAI. Write a SHORT acknowledgement (<= 25 words) in ${detectedLang} telling the user: "I received your request and will process it; you'll get a notification when it's done." Do NOT perform the task. User message: "${escapeForPrompt(safeSnippet(message, 300))}"`;
+    let ackText = detectedLang === 'Arabic' ? 'جاري العمل على طلبك الآن — سأخبرك عند الانتهاء.' : 'Working on your request — I will notify you when done.';
+    
     try {
       if (chatPool.length > 0) {
-        const ackRes = await retry(() => generateWithFailover(chatPool, ackPrompt, 'ack', Math.round(CONFIG.TIMEOUT_CHAT_MS * 0.6)), 2, 200);
+        const ackRes = await retry(() => generateWithFailover(chatPool, ackPrompt, 'ack', Math.round(CONFIG.TIMEOUT_CHAT_MS * 0.5)), 2, 200);
         const t = await extractTextFromResult(ackRes);
-        if (t && t.trim()) ackText = t.trim();
+        if (t) ackText = t;
       }
     } catch (e) {
-      console.warn('ack generation failed, using fallback ackText.');
+      console.warn('Ack generation failed, using fallback ackText.');
     }
 
-    // send ACK
     res.json({ reply: ackText });
 
-    // launch background processing non-blocking
     setImmediate(() => {
       backgroundProcessor({ userId, userRequest: message, profile, progress, detectedLang })
         .catch(err => console.error('backgroundProcessor top-level error:', err && err.stack ? err.stack : err));
     });
 
     console.log(`[${new Date().toISOString()}] /chat handled for user=${userId} in ${Date.now()-start}ms`);
-    return;
   } catch (err) {
     console.error('/chat error:', err && err.stack ? err.stack : err);
-    return res.status(500).json({ error: 'Internal server error.' });
+    res.status(500).json({ error: 'Internal server error.' });
   }
 });
 
-/**
- * POST /update-daily-tasks
- */
 app.post('/update-daily-tasks', async (req, res) => {
   try {
     const { userId, userRequest, details = {} } = req.body || {};
@@ -649,24 +564,18 @@ app.post('/update-daily-tasks', async (req, res) => {
   }
 });
 
-/**
- * POST /generate-daily-tasks
- */
 app.post('/generate-daily-tasks', async (req, res) => {
   try {
     const { userId } = req.body || {};
     if (!userId) return res.status(400).json({ error: 'User ID required.' });
     const result = await handleGenerateDailyTasks(userId);
-    return res.status(200).json({ success: true, tasks: result.tasks, generatedAt: result.generatedAt });
+    return res.status(200).json({ success: true, ...result });
   } catch (err) {
     console.error('/generate-daily-tasks error:', err && err.stack ? err.stack : err);
     return res.status(500).json({ error: 'Failed to generate tasks.' });
   }
 });
 
-/**
- * POST /generate-title
- */
 app.post('/generate-title', async (req, res) => {
   try {
     const { message, language } = req.body || {};
@@ -676,8 +585,7 @@ app.post('/generate-title', async (req, res) => {
 
     const prompt = `Summarize into a short chat title in ${lang}. Return ONLY the title text. Message: "${escapeForPrompt(safeSnippet(message, 1000))}"`;
     const modelRes = await retry(() => generateWithFailover(titlePool, prompt, 'title', CONFIG.TIMEOUT_TITLE_MS), 2, 300);
-    let titleText = await extractTextFromResult(modelRes);
-    if (!titleText) titleText = 'محادثة جديدة';
+    let titleText = await extractTextFromResult(modelRes) || 'محادثة جديدة';
     return res.status(200).json({ title: titleText.trim() });
   } catch (err) {
     console.error('/generate-title error:', err && err.stack ? err.stack : err);
@@ -685,11 +593,9 @@ app.post('/generate-title', async (req, res) => {
   }
 });
 
-/** /health & /metrics */
 app.get('/health', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 app.get('/metrics', (req, res) => res.json({ msg: 'metrics placeholder' }));
 
-// ---------- Graceful shutdown ----------
 // ---------- Graceful shutdown ----------
 let server = null;
 function shutdown(signal) {
@@ -703,7 +609,6 @@ function shutdown(signal) {
       process.exit(0);
     });
 
-    // Force exit if graceful shutdown takes too long
     setTimeout(() => {
       console.warn(`[${new Date().toISOString()}] Forcing shutdown due to timeout.`);
       process.exit(1);
