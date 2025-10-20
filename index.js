@@ -683,7 +683,7 @@ app.post('/generate-title', async (req, res) => {
     console.error('/generate-title error:', err && err.stack ? err.stack : err);
     return res.status(200).json({ title: 'محادثة جديدة' });
   }
-}
+});
 
 /** /health & /metrics */
 app.get('/health', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
