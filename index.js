@@ -571,7 +571,11 @@ app.post('/chat', async (req, res) => {
 
     // quick ack
     let language = /[\u0600-\u06FF]/.test(message) ? 'Arabic' : (/[éèêàç]/i.test(message) ? 'French' : 'English');
-    let ack = language === 'Arabic' ? 'حسناً، أعمل على طلبك الآن.' : language === 'French' ? 'Reçu, je m\\'en occupe.' : 'Got it — working on that.';
+   let ack = language === 'Arabic'
+  ? 'حسناً، أعمل على طلبك الآن.'
+  : language === 'French'
+    ? "Reçu, je m'en occupe."
+    : 'Got it — working on that.';
     try { ack = await runNotificationManager('ack', language); } catch (e) { /* fallback ack */ }
 
     // enqueue job
