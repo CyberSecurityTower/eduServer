@@ -690,25 +690,45 @@ app.get('/health', (req, res) => res.json({ ok: true, time: new Date().toISOStri
 app.get('/metrics', (req, res) => res.json({ msg: 'metrics placeholder' }));
 
 // ---------- Graceful shutdown ----------
+// ---------- Graceful shutdown ----------
 let server = null;
 function shutdown(signal) {
   console.log(`[${new Date().toISOString()}] Received ${signal}. Shutting down...`);
   if (server) {
     server.close(async () => {
-      if (redisClient) try { await redisClient.quit(); } catch (e) {}
+      if (redisClient) {
+        try { await redisClient.quit(); } catch (e) { /* ignore */ }
+      }
+      console.log(`[${new Date().toISOString()}] HTTP server closed.`);
       process.exit(0);
     });
-    setTimeout(() => process.exit(1), CONFIG.SHUTDOWN_TIMEOUT).unref();
-  } else process.exit(0);
+
+    // Force exit if graceful shutdown takes too long
+    setTimeout(() => {
+      console.warn(`[${new Date().toISOString()}] Forcing shutdown due to timeout.`);
+      process.exit(1);
+    }, CONFIG.SHUTDOWN_TIMEOUT).unref();
+  } else {
+    process.exit(0);
+  }
 }
+
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('unhandledRejection', (r, p) => console.error('UnhandledRejection', r, p));
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[unhandledRejection]', reason, promise);
+});
 
-// start
+// --- Start server ---
 server = app.listen(CONFIG.PORT, () => {
   console.log(`[${new Date().toISOString()}] EduAI Brain running on port ${CONFIG.PORT}`);
   console.log(`Pools: chat=${chatPool.length} task=${taskPool.length} title=${titlePool.length}`);
 });
 
-module.exports = { app, handleUpdateTasks, handleGenerateDailyTasks, parseUserAction };
+// Export for tests / external require
+module.exports = {
+  app,
+  handleUpdateTasks,
+  handleGenerateDailyTasks,
+  parseUserAction,
+};
