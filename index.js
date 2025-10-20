@@ -534,11 +534,28 @@ jobWorkerLoop().catch((err) => console.error('jobWorkerLoop startup failed:', er
 
 // ---------------- SYNCHRONOUS QUESTION HANDLER ----------------
 
-async function handleGeneralQuestion(message, language) {
-  const chatPrompt = `You are EduAI, a warm educational assistant. Answer concisely in ${language}. User: "${escapeForPrompt(safeSnippet(message, 2000))}"`;
+async function handleGeneralQuestion(message, language, history = []) {
+  // تأكد من أن history مصفوفة من الكائنات { role: 'user'|'model', text: '...' }
+  const lastFive = (Array.isArray(history) ? history.slice(-5) : [])
+    .map(h => {
+      const who = (h.role === 'model' || h.role === 'assistant') ? 'Assistant' : 'User';
+      // نهرب العلامات وإقتطاع النص لتجنب تجاوز الحصة
+      return `${who}: ${escapeForPrompt(safeSnippet(h.text || '', 500))}`;
+    })
+    .join('\n');
+
+  const historyBlock = lastFive ? `<conversation_history>\n${lastFive}\n</conversation_history>\n` : '';
+
+  const chatPrompt = `You are EduAI, a warm educational assistant. Answer concisely in ${language}.
+${historyBlock}
+User: "${escapeForPrompt(safeSnippet(message, 2000))}"
+Please answer directly and helpfully.`;
+
+  // استدعاء الموديل كما كان
   const res = await generateWithFailover('chat', chatPrompt, { label: 'ResponseManager', timeoutMs: CONFIG.TIMEOUTS.chat });
   let replyText = await extractTextFromResult(res);
 
+  // كالمعتاد: فحص الجودة وإعادة التوليد عند الحاجة
   const review = await runReviewManager(message, replyText);
   if (review && typeof review.score === 'number' && review.score < CONFIG.REVIEW_THRESHOLD) {
     const correctivePrompt = `Previous reply scored ${review.score}/10. Improve it based on: ${escapeForPrompt(review.feedback)}. User: "${escapeForPrompt(safeSnippet(message, 2000))}"`;
@@ -549,28 +566,27 @@ async function handleGeneralQuestion(message, language) {
   return replyText || (language === 'Arabic' ? 'لم أتمكن من الإجابة الآن. هل تريد إعادة الصياغة؟' : 'I could not generate an answer right now.');
 }
 
-// ---------------- ROUTES ----------------
-
+// --- تعديل: /chat route لإرسال history إلى handler ---
 app.post('/chat', async (req, res) => {
   try {
     const userId = req.userId || req.body.userId;
-    const { message } = req.body || {};
+    const { message, history = [] } = req.body || {};
     if (!userId || !message) return res.status(400).json({ error: 'userId and message are required' });
 
-    // 1) Run Traffic Manager immediately
+    // نحدد النية فوراً
     const traffic = await runTrafficManager(message);
     const language = traffic.language || 'Arabic';
     const intent = traffic.intent || 'unclear';
 
     if (intent === 'manage_todo' || intent === 'generate_plan') {
-      // Asynchronous path
+      // نفس المسار الغير متزامن كما كان
       const ack = await runNotificationManager('ack', language);
-      const jobId = await enqueueJob({ userId, type: 'background_chat', payload: { message, intent, language } });
+      const jobId = await enqueueJob({ userId, type: 'background_chat', payload: { message, intent, language, history } });
       return res.json({ reply: ack, jobId, isAction: true });
     }
 
-    // Synchronous path: general questions or unclear
-    const reply = await handleGeneralQuestion(message, language);
+    // مسار متزامن — نمرر history للـ handler (آخر 5 سيتم تضمينها)
+    const reply = await handleGeneralQuestion(message, language, history);
     return res.json({ reply, isAction: false });
   } catch (err) {
     console.error('/chat error:', err && err.stack ? err.stack : err);
