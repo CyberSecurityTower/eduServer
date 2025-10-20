@@ -1,17 +1,20 @@
 'use strict';
 
 /**
- * EduAI Brain — V14 Multi-Model Async (Ultra Max Stable) — REWRITTEN (cleaned + fixes)
- * - Keeps multi-key pools + failover
- * - Stronger prompts for task generation & action parsing (to reduce false positives)
- * - Better error logging and defensive handling
+ * EduAI Brain — V14 Multi-Model Async (Ultra Max Stable) — FINAL
+ * - Multi-key pools + failover + robust retries
+ * - Local heuristics + small-model fallback (gemini-2.5-flash-lite)
+ * - Ambiguity clarifying step before any DB-changing background job
+ * - Longer timeouts & graceful retry/backoff — prefer letting slow models finish
  *
  * Required env:
  * - FIREBASE_SERVICE_ACCOUNT_KEY
  * Optional:
  * - REDIS_URL
- * - GOOGLE_API_KEY_1 .. GOOGLE_API_KEY_4 (preferred)
- * - Fallback: GOOGLE_API_KEY
+ * - GOOGLE_API_KEY_1 .. GOOGLE_API_KEY_4
+ * - GOOGLE_API_KEY
+ *
+ * Usage: place in server.js and run with Node (ensure env vars set).
  */
 
 const express = require('express');
@@ -20,23 +23,29 @@ const admin = require('firebase-admin');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const crypto = require('crypto');
 
-// --- CONFIG ---
+// --- CONFIG (tunable via env) ---
 const CONFIG = {
   PORT: Number(process.env.PORT || 3000),
   CHAT_MODEL_NAME: process.env.CHAT_MODEL_NAME || 'gemini-2.5-flash',
   TASK_MODEL_NAME: process.env.TASK_MODEL_NAME || 'gemini-2.5-pro',
   TITLE_MODEL_NAME: process.env.TITLE_MODEL_NAME || 'gemini-2.5-flash-lite',
-  TIMEOUT_MS: Number(process.env.REQUEST_TIMEOUT_MS || 20000),
+  // default request timeout (ms) used when not overridden; many calls override with larger timeouts
+  TIMEOUT_MS: Number(process.env.REQUEST_TIMEOUT_MS || 45000), // 45s default (can be high)
+  // Per-role timeouts (allow model to finish instead of failing early)
+  TIMEOUT_CHAT_MS: Number(process.env.TIMEOUT_CHAT_MS || 60000),      // 60s
+  TIMEOUT_TASK_MS: Number(process.env.TIMEOUT_TASK_MS || 45000),      // 45s
+  TIMEOUT_ACTION_MS: Number(process.env.TIMEOUT_ACTION_MS || 15000),  // 15s for parser (but local heuristics reduce usage)
+  TIMEOUT_TITLE_MS: Number(process.env.TIMEOUT_TITLE_MS || 10000),    // 10s
   CACHE_TTL: Number(process.env.CACHE_TTL_MS || 30 * 1000),
-  MAX_RETRIES: Number(process.env.MAX_MODEL_RETRIES || 3),
-  BODY_LIMIT: process.env.BODY_LIMIT || '200kb',
-  SHUTDOWN_TIMEOUT: Number(process.env.SHUTDOWN_TIMEOUT || 10000),
+  MAX_RETRIES: Number(process.env.MAX_MODEL_RETRIES || 4),
+  BODY_LIMIT: process.env.BODY_LIMIT || '300kb',
+  SHUTDOWN_TIMEOUT: Number(process.env.SHUTDOWN_TIMEOUT || 15000),
   REDIS_URL: process.env.REDIS_URL || null,
 };
 
-// --- sanity env check for firebase at least ---
+// --- sanity check for firebase secret ---
 if (!process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
-  console.error('Missing FIREBASE_SERVICE_ACCOUNT_KEY env var.');
+  console.error('Missing FIREBASE_SERVICE_ACCOUNT_KEY env var. Exiting.');
   process.exit(1);
 }
 
@@ -54,7 +63,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// --- Cache: optional Redis or in-memory LRU TTL ---
+// --- Cache: redis optional or in-memory LRU ---
 let redisClient = null;
 let useRedis = false;
 if (process.env.REDIS_URL) {
@@ -62,9 +71,9 @@ if (process.env.REDIS_URL) {
     const IORedis = require('ioredis');
     redisClient = new IORedis(process.env.REDIS_URL);
     useRedis = true;
-    console.log('Using Redis cache');
+    console.log(`[${new Date().toISOString()}] Using Redis cache`);
   } catch (e) {
-    console.warn('ioredis not installed or failed to init, falling back to in-memory cache');
+    console.warn(`[${new Date().toISOString()}] ioredis init failed, falling back to in-memory cache`, e && e.message ? e.message : e);
   }
 }
 
@@ -79,7 +88,9 @@ class LRUCache {
     const e = this.map.get(key);
     if (!e) return null;
     if (this._isExpired(e)) { this.map.delete(key); return null; }
-    this.map.delete(key); this.map.set(key, e); return e.v;
+    // refresh recency
+    this.map.delete(key); this.map.set(key, e);
+    return e.v;
   }
   set(key, value) {
     if (this.map.size >= this.limit) this.map.delete(this.map.keys().next().value);
@@ -88,7 +99,6 @@ class LRUCache {
   del(key) { this.map.delete(key); }
   clear() { this.map.clear(); }
 }
-
 const localCache = { profile: new LRUCache(500), progress: new LRUCache(500) };
 
 async function cacheGet(scope, key) {
@@ -111,14 +121,12 @@ async function cacheDel(scope, key) {
 }
 async function cacheClear(scope) {
   if (useRedis && redisClient) {
-    try {
-      // omit pattern deletion for safety
-    } catch (e) { /* ignore */ }
+    try { /* pattern delete omitted for safety */ } catch (e) { /* ignore */ }
   }
   if (localCache[scope]) localCache[scope].clear();
 }
 
-// --- FIREBASE INIT (robust parsing) ---
+// --- FIREBASE ADMIN INIT (robust parsing of service account) ---
 let db;
 try {
   let raw = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
@@ -136,13 +144,13 @@ try {
   }
   admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
   db = admin.firestore();
-  console.log('✅ Firebase Admin initialized.');
+  console.log(`[${new Date().toISOString()}] ✅ Firebase Admin initialized.`);
 } catch (err) {
-  console.error('❌ Firebase initialization failed:', err && err.message ? err.message : err);
+  console.error(`[${new Date().toISOString()}] ❌ Firebase initialization failed:`, err && err.message ? err.message : err);
   process.exit(1);
 }
 
-// --- API key pools and model pools setup ---
+// --- API key pools & model pool builders ---
 const apiKeyCandidates = [];
 for (let i = 1; i <= 4; i++) {
   const k = process.env[`GOOGLE_API_KEY_${i}`];
@@ -152,12 +160,12 @@ if (process.env.GOOGLE_API_KEY && !apiKeyCandidates.includes(process.env.GOOGLE_
   apiKeyCandidates.push(process.env.GOOGLE_API_KEY);
 }
 if (apiKeyCandidates.length === 0) {
-  console.error('No GOOGLE_API_KEY_* nor GOOGLE_API_KEY provided. Please set at least one.');
+  console.error(`[${new Date().toISOString()}] No GOOGLE_API_KEY_* nor GOOGLE_API_KEY provided. Exiting.`);
   process.exit(1);
 }
-console.log(`Using ${apiKeyCandidates.length} Google API key(s) for model pools.`);
+console.log(`[${new Date().toISOString()}] Using ${apiKeyCandidates.length} Google API key(s) for model pools.`);
 
-// Build model pools
+// pools
 const chatPool = [];
 const taskPool = [];
 const titlePool = [];
@@ -168,25 +176,33 @@ for (const key of apiKeyCandidates) {
     try {
       const chatM = client.getGenerativeModel({ model: CONFIG.CHAT_MODEL_NAME });
       chatPool.push({ client, model: chatM, key });
-    } catch (e) { console.warn('Failed create chat model for key, skipping for chat role.'); }
+    } catch (e) { console.warn(`[${new Date().toISOString()}] chat model init failed for a key — skipping for chat.`); }
     try {
       const taskM = client.getGenerativeModel({ model: CONFIG.TASK_MODEL_NAME });
       taskPool.push({ client, model: taskM, key });
-    } catch (e) { console.warn('Failed create task model for key, skipping for task role.'); }
+    } catch (e) { console.warn(`[${new Date().toISOString()}] task model init failed for a key — skipping for task.`); }
     try {
       const titleM = client.getGenerativeModel({ model: CONFIG.TITLE_MODEL_NAME });
       titlePool.push({ client, model: titleM, key });
-    } catch (e) { console.warn('Failed create title model for key, skipping for title role.'); }
+    } catch (e) { console.warn(`[${new Date().toISOString()}] title model init failed for a key — skipping for title.`); }
   } catch (err) {
-    console.warn('Failed initialize GoogleGenerativeAI client for one key — skipping that key.', err && err.message ? err.message : err);
+    console.warn(`[${new Date().toISOString()}] Failed to initialize GoogleGenerativeAI client for a key — skipping that key.`, err && err.message ? err.message : err);
   }
 }
 
 if (chatPool.length === 0 || taskPool.length === 0 || titlePool.length === 0) {
-  console.warn('Model pools may be incomplete. Some features might fail. Check API keys and model availability.');
+  console.warn(`[${new Date().toISOString()}] Warning: some model pools might be empty. Features relying on them may fail.`);
 }
 
-// helpers
+// metrics
+const metrics = { requests: 0, errors: 0, avgLatencyMs: 0, sampleCount: 0 };
+function observeLatency(latMs) {
+  metrics.sampleCount += 1;
+  const n = metrics.sampleCount;
+  metrics.avgLatencyMs = Math.round(((metrics.avgLatencyMs * (n - 1)) + latMs) / n);
+}
+
+// useful helpers
 function shuffledIndices(n) {
   const arr = Array.from({ length: n }, (_, i) => i);
   for (let i = arr.length - 1; i > 0; i--) {
@@ -199,44 +215,52 @@ function shuffledIndices(n) {
 async function withTimeout(promise, ms = CONFIG.TIMEOUT_MS, label = 'operation') {
   return Promise.race([
     promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms))
   ]);
 }
 
+// generateWithFailover (measures latency, retries across keys)
 async function generateWithFailover(pool, prompt, label = 'model', timeoutMs = CONFIG.TIMEOUT_MS) {
   if (!pool || pool.length === 0) throw new Error('No model instances available in pool');
   const order = shuffledIndices(pool.length);
   let lastErr = null;
   for (const idx of order) {
     const inst = pool[idx];
+    const start = Date.now();
     try {
       const call = inst.model.generateContent ? () => inst.model.generateContent(prompt) : () => inst.model.generate(prompt);
       const res = await withTimeout(call(), timeoutMs, `${label} (key ${idx})`);
+      const took = Date.now() - start;
+      reqLogSafe(`[${new Date().toISOString()}] ${label} success keyIdx=${idx} key=${inst.key} took=${took}ms`);
+      observeLatency(took);
       return res;
     } catch (err) {
+      const took = Date.now() - start;
+      reqLogSafe(`[${new Date().toISOString()}] ${label} call failed for key idx=${idx} (${inst.key}) after ${took}ms:`, err && err.message ? err.message : err);
       lastErr = err;
-      console.warn(`[${new Date().toISOString()}] ${label} call failed for key idx=${idx} (${inst.key}):`, err && err.message ? err.message : err);
-      // try next
+      // try next key
     }
   }
   throw lastErr || new Error(`${label} failed with no specific error`);
 }
 
-async function retry(fn, attempts = CONFIG.MAX_RETRIES, initialDelay = 400) {
+async function retry(fn, attempts = CONFIG.MAX_RETRIES, initialDelay = 500) {
   let lastErr;
   let delay = initialDelay;
   for (let i = 0; i < attempts; i++) {
     try { return await fn(); }
     catch (err) {
       lastErr = err;
-      if (i < attempts - 1) await new Promise(r => setTimeout(r, delay));
-      delay = Math.round(delay * 1.8);
+      if (i < attempts - 1) {
+        await new Promise(r => setTimeout(r, delay));
+        delay = Math.round(delay * 1.8);
+      }
     }
   }
   throw lastErr;
 }
 
-// extract helper — robust across various response shapes
+// robust extraction from generative result
 async function extractTextFromResult(result) {
   if (!result) return '';
   try {
@@ -252,7 +276,7 @@ async function extractTextFromResult(result) {
     if (Array.isArray(resp.candidates) && resp.candidates.length) return resp.candidates.map(c => c?.text || '').join('').trim();
     return String(resp).trim();
   } catch (err) {
-    console.error('extractTextFromResult failed:', err && err.message ? err.message : err);
+    console.error(`[${new Date().toISOString()}] extractTextFromResult failed:`, err && err.message ? err.message : err);
     return '';
   }
 }
@@ -273,7 +297,12 @@ function parseJSONFromText(text) {
   }
 }
 
-// language detection (keeps original heuristic)
+// safe request log wrapper (req may be undefined in some callers)
+function reqLogSafe(...args) {
+  try { console.log(...args); } catch (e) { /* ignore */ }
+}
+
+// --- Language detection (local heuristic) ---
 function detectLangLocal(text) {
   if (!text || typeof text !== 'string') return 'Arabic';
   const arabicMatches = (text.match(/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/g) || []).length;
@@ -289,20 +318,22 @@ async function detectLanguage(text) {
   try {
     const local = detectLangLocal(text);
     if (local) return local;
-    const prompt = `What is the primary language of the following text? Respond with only the language name in English (e.g., "Arabic", "English", "French"). Text: "${(text || '').replace(/"/g, '\\"')}"`;
-    const res = await generateWithFailover(titlePool, prompt, 'language detection', 5000);
+    // fallback to titlePool
+    if (!titlePool || titlePool.length === 0) return 'Arabic';
+    const prompt = `What is the primary language of the following text? Respond with only the language name in English (Arabic, English, French). Text: "${(text || '').replace(/"/g, '\\"')}"`;
+    const res = await generateWithFailover(titlePool, prompt, 'language detection', CONFIG.TIMEOUT_TITLE_MS);
     const rawText = await extractTextFromResult(res);
     if (!rawText) return 'Arabic';
     const token = (rawText.split(/[^a-zA-Z]+/).find(Boolean) || '').toLowerCase();
     if (!token) return 'Arabic';
     return token[0].toUpperCase() + token.slice(1);
   } catch (err) {
-    console.error('Language detection failed, fallback Arabic:', err && err.message ? err.message : err);
+    reqLogSafe(`[${new Date().toISOString()}] language detection failed, fallback Arabic:`, err && err.message ? err.message : err);
     return 'Arabic';
   }
 }
 
-// --- Firestore helpers (with cache) ---
+// --- Firestore helpers (with caching) ---
 async function getProfile(userId) {
   try {
     const key = userId;
@@ -313,7 +344,7 @@ async function getProfile(userId) {
     await cacheSet('profile', key, val);
     return val;
   } catch (err) {
-    console.error(`Error fetching memory profile for ${userId}:`, err && err.message ? err.message : err);
+    console.error(`[${new Date().toISOString()}] Error fetching memory profile for ${userId}:`, err && err.message ? err.message : err);
     return 'No available memory.';
   }
 }
@@ -330,7 +361,7 @@ async function getProgress(userId) {
       return val;
     }
   } catch (err) {
-    console.error(`Error fetching progress for ${userId}:`, err && err.message ? err.message : err);
+    console.error(`[${new Date().toISOString()}] Error fetching progress for ${userId}:`, err && err.message ? err.message : err);
   }
   return { stats: { points: 0 }, streakCount: 0, pathProgress: {} };
 }
@@ -341,7 +372,7 @@ async function getLessonContent(lessonId) {
     const doc = await db.collection('lessonsContent').doc(lessonId).get();
     if (doc.exists && doc.data()?.content) return String(doc.data().content);
   } catch (err) {
-    console.error(`Error fetching lesson content for ${lessonId}:`, err && err.message ? err.message : err);
+    console.error(`[${new Date().toISOString()}] Error fetching lesson content for ${lessonId}:`, err && err.message ? err.message : err);
   }
   return null;
 }
@@ -369,12 +400,12 @@ async function fetchUserWeaknesses(userId) {
     }
     return weaknesses;
   } catch (err) {
-    console.error(`Error fetching weaknesses for ${userId}:`, err && err.message ? err.message : err);
+    console.error(`[${new Date().toISOString()}] Error fetching weaknesses for ${userId}:`, err && err.message ? err.message : err);
     return [];
   }
 }
 
-// --- Notifications helper (writes to Firestore + optional FCM if token present) ---
+// --- Notifications helper (Firestore inbox + optional FCM) ---
 async function sendUserNotification(userId, payload) {
   try {
     const notifRef = db.collection('userNotifications').doc(userId).collection('inbox');
@@ -388,44 +419,166 @@ async function sendUserNotification(userId, payload) {
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Failed to write notification for ${userId}:`, err && err.message ? err.message : err);
   }
-  // Optionally: send FCM if fcmToken exists in aiMemoryProfiles
+  // optional FCM
   try {
     const profileDoc = await db.collection('aiMemoryProfiles').doc(userId).get();
     const token = profileDoc.exists ? profileDoc.data()?.fcmToken : null;
     if (token) {
       const message = {
         token,
-        notification: {
-          title: payload.title || 'EduAI',
-          body: payload.message,
-        },
+        notification: { title: payload.title || 'EduAI', body: payload.message },
         data: payload.data || {},
       };
-      try { await admin.messaging().send(message); } catch (e) { /* ignore fcm errors */ }
+      try { await admin.messaging().send(message); } catch (e) { /* ignore FCM errors */ }
     }
   } catch (e) { /* ignore */ }
 }
 
-// --- Tasks formatting ---
+// --- Tasks formatting helper ---
 function formatTasksHuman(tasks, lang = 'Arabic') {
   if (!Array.isArray(tasks)) return '';
-  if (lang === 'English') {
-    return tasks.map((t, i) => `${i + 1}. ${t.title} [${t.type}]`).join('\n');
-  } else if (lang === 'French') {
-    return tasks.map((t, i) => `${i + 1}. ${t.title} [${t.type}]`).join('\n');
-  } else {
-    // Arabic
-    return tasks.map((t, i) => `${i + 1}. ${t.title} [${t.type}]`).join('\n');
-  }
+  return tasks.map((t, i) => `${i + 1}. ${t.title} [${t.type}]`).join('\n');
 }
 
-// --- Business logic (with stricter prompt rules) ---
+// --- Business logic ---
 const VALID_TASK_TYPES = new Set(['review', 'quiz', 'new_lesson', 'practice', 'study']);
 const VALID_STATUS = new Set(['pending', 'completed']);
 
-async function handleUpdateTasks({ userId, userRequest }) {
+// --- Helpers: Arabic normalization & synonym detection ---
+function normalizeArabic(text) {
+  if (!text || typeof text !== 'string') return '';
+  let t = text.normalize('NFC');
+  // remove diacritics
+  t = t.replace(/[\u064B-\u065F\u0610-\u061A\u06D6-\u06ED]/g, '');
+  // normalize alef variants
+  t = t.replace(/[إأآا]/g, 'ا');
+  // normalize ya/taa marbuta/aa
+  t = t.replace(/ى/g, 'ي');
+  t = t.replace(/ة/g, 'ه');
+  // remove tatweel
+  t = t.replace(/ـ+/g, '');
+  // lower & trim
+  t = t.toLowerCase().trim();
+  return t;
+}
+
+const SYNONYMS = {
+  create: ['اضف', 'أضف', 'انشئ', 'أنشئ', 'اضافة', 'أضفلي', 'أضف لي', 'إنشئ', 'أنشئ', 'أضفوا'],
+  complete: ['انجز', 'أنجز', 'انتهى', 'انتهيت', 'أكملت', 'تم', 'أنجزت', 'أتممت', 'انجزت', 'انتهت'],
+  delete: ['حذف', 'امسح', 'أزل', 'ازل', 'امسحلي', 'امسح لي', 'امسح المهمة', 'أحذف'],
+  update: ['عدل', 'عدّل', 'تعديل', 'غيّر', 'غير', 'حدّث', 'حدث', 'حسن'],
+  plan: ['خطة', 'خطط', 'رتب', 'ضع خطة', 'خطتي', 'plan', 'planify', 'plan my day', 'خطة اليوم'],
+};
+
+function includesAnyToken(normalizedText, arr) {
+  return arr.some(k => normalizedText.includes(k));
+}
+
+// --- Quick ambiguity checker: returns a question string or null ---
+function quickAmbiguityCheck(rawMessage, detectedLang = 'Arabic') {
+  if (!rawMessage || typeof rawMessage !== 'string') return null;
+  const norm = normalizeArabic(rawMessage);
+
+  // tokens
+  const praiseTokens = ['رائع', 'مذهل', 'جميل', 'ممتاز', 'عظيم', 'حلو', 'مبهر', 'شكرا', 'شكرًا', 'متابعة جيدة'];
+  const pastTokens = ['امس', 'بالأمس', 'بالأمس', 'مبارح', 'البارحة', 'في الامس', 'في الأمس', 'في البارحة'];
+  const explicitTaskTokens = [...SYNONYMS.create, ...SYNONYMS.complete, ...SYNONYMS.delete, ...SYNONYMS.update, ...SYNONYMS.plan];
+
+  const hasPraise = praiseTokens.some(t => norm.includes(t));
+  const hasPast = pastTokens.some(t => norm.includes(t));
+  const hasTaskVerb = explicitTaskTokens.some(t => norm.includes(t));
+
+  // Ambiguous if mentions past praise/report and no explicit task verb
+  if ((hasPraise || hasPast) && !hasTaskVerb) {
+    if (detectedLang === 'English') {
+      return "Thanks — would you like me to repeat the same plan for today, or were you just sharing feedback?";
+    }
+    if (detectedLang === 'French') {
+      return "Merci — voulez-vous que je répète le même plan pour aujourd'hui, ou partagiez-vous seulement un retour ?";
+    }
+    // Arabic default
+    return "رائع — هل تريد أن أعيد نفس الخطة لليوم أم أنك تشارك ملاحظة فقط؟";
+  }
+  return null;
+}
+
+// --- parseUserAction (heuristic + small-model fallback) ---
+async function parseUserAction(userRequest, currentTasks) {
+  if (!userRequest || typeof userRequest !== 'string' || userRequest.trim().length === 0) {
+    return { action: 'none', userRequest: '', details: {} };
+  }
+
+  const raw = userRequest;
+  const langGuess = detectLangLocal(raw); // note: synchronous
+  const norm = normalizeArabic(raw);
+
+  // local synonyms detection (fast)
+  const wantsCreate = includesAnyToken(norm, SYNONYMS.create);
+  const wantsComplete = includesAnyToken(norm, SYNONYMS.complete);
+  const wantsDelete = includesAnyToken(norm, SYNONYMS.delete);
+  const wantsUpdate = includesAnyToken(norm, SYNONYMS.update);
+  const wantsPlan = includesAnyToken(norm, SYNONYMS.plan);
+
+  if (wantsDelete || wantsComplete || wantsCreate || wantsUpdate) {
+    const details = {};
+    if (wantsComplete) details.forceStatus = 'completed';
+    if (wantsDelete) details.intent = 'delete';
+    if (wantsCreate) details.intent = 'create';
+    return { action: 'manage_tasks', userRequest: raw, details };
+  }
+
+  if (wantsPlan) {
+    return { action: 'generate_plan', userRequest: raw, details: {} };
+  }
+
+  // greeting/casual detection
+  const greetings = ['hello','hi','hey','مرحبا','صباح','مساء','سلام','كيف حالك','what\'s up','bonjour','مرحبا بك'];
+  if (greetings.some(g => norm.includes(g))) return { action: 'none', userRequest: raw, details: {} };
+
+  // fallback to small model (titlePool preferred because it's fast)
+  const fallbackPool = (Array.isArray(titlePool) && titlePool.length > 0) ? titlePool : taskPool;
+  if (!fallbackPool || fallbackPool.length === 0) {
+    reqLogSafe(`[${new Date().toISOString()}] parseUserAction: no model pool available, defaulting to none.`);
+    return { action: 'none', userRequest: raw, details: {} };
+  }
+
+  const prompt = `
+You are a conservative classifier. Decide if the user's message should trigger one of:
+"manage_tasks", "generate_plan", or "none".
+Return EXACTLY a JSON object: { "action": "...", "userRequest": "short summary" } and nothing else.
+Rules:
+- If it's a greeting or simple feedback, return "none".
+- If it explicitly requests adding/deleting/updating/marking tasks, return "manage_tasks".
+- If it requests a study plan or asks to plan the day, return "generate_plan".
+- Be conservative: when in doubt, return "none".
+User message: "${escapeForPrompt(safeSnippet(userRequest, 500))}"
+Current tasks (for context): ${JSON.stringify(currentTasks || [])}
+`.trim();
+
+  try {
+    const res = await retry(() => generateWithFailover(fallbackPool, prompt, 'action parser', CONFIG.TIMEOUT_ACTION_MS), Math.max(1, Math.min(CONFIG.MAX_RETRIES, 3)), 300);
+    const rawText = await extractTextFromResult(res);
+    const parsed = parseJSONFromText(rawText);
+    if (!parsed || !parsed.action) {
+      reqLogSafe(`[${new Date().toISOString()}] parseUserAction: model returned invalid response — raw:`, rawText);
+      return { action: 'none', userRequest: raw, details: {} };
+    }
+    const action = parsed.action;
+    const summary = parsed.userRequest || raw;
+    if (!['manage_tasks','generate_plan','none'].includes(action)) {
+      return { action: 'none', userRequest: raw, details: parsed.details || {} };
+    }
+    return { action, userRequest: summary, details: parsed.details || {} };
+  } catch (err) {
+    reqLogSafe(`[${new Date().toISOString()}] parseUserAction: fallback failed, defaulting to none:`, err && err.message ? err.message : err);
+    return { action: 'none', userRequest: raw, details: {} };
+  }
+}
+
+// --- Core: handleUpdateTasks & handleGenerateDailyTasks ---
+async function handleUpdateTasks({ userId, userRequest, details = {} }) {
   if (!userId || !userRequest) throw new Error('userId and userRequest required');
-  console.log(`[${new Date().toISOString()}] 🔧 handleUpdateTasks for user=${userId}`);
+  reqLogSafe(`[${new Date().toISOString()}] 🔧 handleUpdateTasks user=${userId} details=${JSON.stringify(details)}`);
 
   const progressDocSnap = await db.collection('userProgress').doc(userId).get();
   const currentTasks = progressDocSnap.exists ? (progressDocSnap.data().dailyTasks?.tasks || []) : [];
@@ -441,33 +594,34 @@ USER REQUEST (raw):
 "${escapeForPrompt(userRequest)}"
 
 INSTRUCTIONS (CRITICAL — follow exactly):
-1) The output MUST be a single valid JSON object with key "tasks" containing an array.
-2) Each task object MUST have these properties: id, title (string), type (one of 'review','quiz','new_lesson','practice','study'), status (either 'pending' or 'completed'), relatedLessonId (string|null), relatedSubjectId (string|null).
-3) **TYPE RULE:** If the user asks for a test/exam/quiz use 'quiz'. If asks for practice use 'practice'. If ambiguous, prefer 'review'.
-4) **STATUS RULE:** Use 'completed' only when the user explicitly indicates they finished the task. Use 'pending' otherwise.
-5) **DELETIONS:** If the user asks to delete a specific task by id/title, remove it. If the user asks to delete ALL tasks, return { "tasks": [] }.
-6) Preserve tasks not mentioned by the user unless user explicitly asks to modify or delete them.
-7) Titles should be short and in Arabic if the user's message is in Arabic; otherwise keep language consistent with the user's message.
-8) Do NOT include any explanation, metadata, or extra fields — only the tasks array with the specified fields.
-9) If uncertain, return the existing tasks unchanged (still inside the JSON object).
-
+1) Output a single valid JSON object with key "tasks".
+2) Each task object MUST have: id, title (string), type (one of 'review','quiz','new_lesson','practice','study'), status ('pending' or 'completed'), relatedLessonId (string|null), relatedSubjectId (string|null).
+3) TYPE RULE: If user asks for quiz/test use 'quiz'; for practice use 'practice'; ambiguous => 'review'.
+4) STATUS RULE: set 'completed' only if user explicitly finished it (or details.forceStatus==='completed').
+5) DELETIONS: obey explicit delete requests; if user asked "delete all" return { "tasks": [] }.
+6) Preserve tasks not mentioned unless user explicitly modifies them.
+7) Titles short & in user's language.
+8) DO NOT include extra fields or explanation.
+9) If uncertain, return existing tasks unchanged.
 Output example:
-{ "tasks": [ { "id": "123", "title": "مراجعة الوحدة 1", "type": "review", "status": "pending", "relatedLessonId": null, "relatedSubjectId": null } ] }
+{ "tasks": [ { "id":"123","title":"مراجعة الوحدة 1","type":"review","status":"pending","relatedLessonId":null,"relatedSubjectId":null } ] }
 `.trim();
 
   try {
-    const res = await retry(() => generateWithFailover(taskPool, modificationPrompt, 'task modification', CONFIG.TIMEOUT_MS), CONFIG.MAX_RETRIES, 500);
+    // We prefer letting the task model take its time if needed (long timeout) and multiple retries
+    const res = await retry(() => generateWithFailover(taskPool, modificationPrompt, 'task modification', CONFIG.TIMEOUT_TASK_MS), CONFIG.MAX_RETRIES, 700);
     const rawText = await extractTextFromResult(res);
     const parsed = parseJSONFromText(rawText);
 
     if (!parsed || !Array.isArray(parsed.tasks)) {
-      console.error(`[${new Date().toISOString()}] ❌ Task model returned invalid tasks for ${userId}. raw: ${rawText}`);
+      reqLogSafe(`[${new Date().toISOString()}] ❌ Task model returned invalid tasks:`, rawText);
       throw new Error('Model returned invalid tasks array');
     }
 
     const normalized = parsed.tasks.map((t) => {
       const type = (t.type || '').toString().toLowerCase();
-      const status = (t.status || '').toString().toLowerCase();
+      let status = (t.status || '').toString().toLowerCase();
+      if (details && details.forceStatus) status = details.forceStatus;
       return {
         id: t.id || (String(Date.now()) + Math.random().toString(36).slice(2, 9)),
         title: (t.title || 'مهمة جديدة').toString(),
@@ -485,7 +639,7 @@ Output example:
     try { await cacheSet('progress', userId, Object.assign({}, progressDocSnap.exists ? progressDocSnap.data() : {}, { dailyTasks: { tasks: normalized } })); } catch (e) {}
     await cacheDel('progress', userId);
 
-    console.log(`[${new Date().toISOString()}] ✅ Updated tasks for user=${userId}. New count: ${normalized.length}`);
+    reqLogSafe(`[${new Date().toISOString()}] ✅ Updated tasks for user=${userId}. Count=${normalized.length}`);
     return normalized;
   } catch (err) {
     console.error(`[${new Date().toISOString()}] handleUpdateTasks error for ${userId}:`, err && err.stack ? err.stack : err);
@@ -495,7 +649,7 @@ Output example:
 
 async function handleGenerateDailyTasks(userId) {
   if (!userId) throw new Error('User ID is required');
-  console.log(`[${new Date().toISOString()}] 📅 handleGenerateDailyTasks for ${userId}`);
+  reqLogSafe(`[${new Date().toISOString()}] 📅 handleGenerateDailyTasks for ${userId}`);
 
   try {
     const weaknesses = await fetchUserWeaknesses(userId);
@@ -517,12 +671,12 @@ INSTRUCTIONS:
 4) Output only JSON.
 `.trim();
 
-    const res = await retry(() => generateWithFailover(taskPool, taskPrompt, 'task generation', CONFIG.TIMEOUT_MS), CONFIG.MAX_RETRIES, 500);
+    const res = await retry(() => generateWithFailover(taskPool, taskPrompt, 'task generation', CONFIG.TIMEOUT_TASK_MS), CONFIG.MAX_RETRIES, 700);
     const rawText = await extractTextFromResult(res);
     const parsed = parseJSONFromText(rawText);
 
     if (!parsed || !Array.isArray(parsed.tasks) || parsed.tasks.length === 0) {
-      console.warn(`[${new Date().toISOString()}] ⚠️ Model returned empty/invalid tasks for ${userId}. Using fallback.`);
+      reqLogSafe(`[${new Date().toISOString()}] ⚠️ Model returned empty/invalid tasks — using fallback.`);
       throw new Error('Model returned empty tasks');
     }
 
@@ -542,7 +696,7 @@ INSTRUCTIONS:
     try { await cacheSet('progress', userId, { dailyTasks: { tasks: tasksToSave } }); } catch (e) {}
     await cacheDel('progress', userId);
 
-    console.log(`[${new Date().toISOString()}] ✅ Generated ${tasksToSave.length} tasks for ${userId}`);
+    reqLogSafe(`[${new Date().toISOString()}] ✅ Generated ${tasksToSave.length} tasks for ${userId}`);
     return { tasks: tasksToSave, source: 'AI', generatedAt: new Date().toISOString() };
   } catch (err) {
     console.error(`[${new Date().toISOString()}] ❌ handleGenerateDailyTasks (${userId}) failed:`, err && err.stack ? err.stack : err);
@@ -560,7 +714,7 @@ INSTRUCTIONS:
       }, { merge: true });
       try { await cacheSet('progress', userId, { dailyTasks: { tasks: fallbackTasks } }); } catch (e) {}
       await cacheDel('progress', userId);
-      console.log(`[${new Date().toISOString()}] ✅ Saved fallback task for ${userId}`);
+      reqLogSafe(`[${new Date().toISOString()}] ✅ Saved fallback task for ${userId}`);
       return { tasks: fallbackTasks, source: 'fallback', generatedAt: new Date().toISOString() };
     } catch (saveErr) {
       console.error(`[${new Date().toISOString()}] ⚠️ CRITICAL: Failed to save fallback task for ${userId}:`, saveErr && saveErr.stack ? saveErr.stack : saveErr);
@@ -569,55 +723,23 @@ INSTRUCTIONS:
   }
 }
 
-// --- parseUserAction: stricter, fewer false positives ---
-async function parseUserAction(userRequest, currentTasks) {
-  const prompt = `
-Your job: classify the user's intent. Decide if the request is exactly one of: "manage_tasks", "generate_plan", or "none".
-RETURN EXACTLY and ONLY a JSON object like: { "action": "manage_tasks", "userRequest": "…short summary…" }
-
-IMPORTANT RULES:
-- If the message is a greeting (hello, good morning), a casual chat, or a general question (how are you?, what's up?), return "none".
-- If the message explicitly requests adding, creating, removing, deleting, updating, marking complete/incomplete, or otherwise modifying tasks, return "manage_tasks".
-- If the message explicitly asks for a schedule, plan, or to generate a study plan (phrases like "plan my day", "what should I study today", "generate a plan"), return "generate_plan".
-- Be conservative: when in doubt, return "none".
-- Keep "userRequest" short and precise (one sentence) and in the user's original language if possible.
-
-User message:
-"${escapeForPrompt(userRequest)}"
-
-Current tasks (for context):
-${JSON.stringify(currentTasks || [])}
-`.trim();
-
-  try {
-    const res = await retry(() => generateWithFailover(taskPool, prompt, 'action parser', 4000), 2, 200);
-    const raw = await extractTextFromResult(res);
-    const parsed = parseJSONFromText(raw);
-    if (!parsed || !parsed.action) return { action: 'none', userRequest };
-    const action = (parsed.action || 'none').toString().trim();
-    if (!['manage_tasks', 'generate_plan', 'none'].includes(action)) return { action: 'none', userRequest };
-    return { action, userRequest: parsed.userRequest || userRequest };
-  } catch (err) {
-    console.warn(`[${new Date().toISOString()}] Action parsing failed, defaulting to none:`, err && err.message ? err.message : err);
-    return { action: 'none', userRequest };
-  }
-}
-
-// --- backgroundProcessor (keeps previous behavior) ---
+// --- backgroundProcessor (async) ---
 async function backgroundProcessor({ userId, userRequest, profile, progress, detectedLang }) {
   try {
     const currentTasks = (progress && progress.dailyTasks && Array.isArray(progress.dailyTasks.tasks)) ? progress.dailyTasks.tasks : [];
     const parse = await parseUserAction(userRequest, currentTasks);
 
     if (parse.action === 'manage_tasks') {
-      let updatedTasks;
+      const details = parse.details || {};
+      let updatedTasks = null;
       try {
-        updatedTasks = await handleUpdateTasks({ userId, userRequest: parse.userRequest });
+        updatedTasks = await handleUpdateTasks({ userId, userRequest: parse.userRequest, details });
       } catch (err) {
-        const failMsg = detectedLang === 'English' ? `⚠️ Failed to update tasks: ${err.message}` : detectedLang === 'French' ? `⚠️ Échec de la mise à jour des tâches: ${err.message}` : `⚠️ فشل تحديث المهام: ${err.message}`;
+        const failMsg = detectedLang === 'English' ? `⚠️ Failed to update tasks: ${err.message}` : detectedLang === 'French' ? `⚠️ Échec de la mise à jour: ${err.message}` : `⚠️ فشل تحديث المهام: ${err.message}`;
         await sendUserNotification(userId, { message: failMsg, lang: detectedLang });
         return;
       }
+
       const humanSummary = formatTasksHuman(updatedTasks, detectedLang === 'Arabic' ? 'Arabic' : (detectedLang === 'French' ? 'French' : 'English'));
       const followPrompt = `
 You are EduAI, a warm study companion. Summarize the updated tasks concisely and warmly in ${detectedLang}.
@@ -626,8 +748,9 @@ Do NOT output JSON — only a short human-friendly message (max 60 words).
 Tasks:
 ${humanSummary}
 `.trim();
+
       try {
-        const followRes = await retry(() => generateWithFailover(chatPool, followPrompt, 'chat followup', CONFIG.TIMEOUT_MS), 2, 200);
+        const followRes = await retry(() => generateWithFailover(chatPool, followPrompt, 'chat followup', CONFIG.TIMEOUT_CHAT_MS), CONFIG.MAX_RETRIES, 700);
         const followText = await extractTextFromResult(followRes);
         await sendUserNotification(userId, { message: followText || (detectedLang === 'Arabic' ? '✅ تم تحديث مهامك.' : detectedLang === 'French' ? '✅ Tâches mises à jour.' : '✅ Tasks updated.'), lang: detectedLang });
       } catch (err) {
@@ -642,7 +765,7 @@ ${humanSummary}
       try {
         result = await handleGenerateDailyTasks(userId);
       } catch (err) {
-        const failMsg = detectedLang === 'Arabic' ? `⚠️ فشل إنشاء الخطة: ${err.message}` : detectedLang === 'French' ? `⚠️ Échec de la génération du plan: ${err.message}` : `⚠️ Failed to generate plan: ${err.message}`;
+        const failMsg = detectedLang === 'Arabic' ? `⚠️ فشل إنشاء الخطة: ${err.message}` : detectedLang === 'French' ? `⚠️ Échec de la génération: ${err.message}` : `⚠️ Failed to generate plan: ${err.message}`;
         await sendUserNotification(userId, { message: failMsg, lang: detectedLang });
         return;
       }
@@ -653,7 +776,7 @@ Plan details:
 ${humanSummary}
 `.trim();
       try {
-        const followRes = await retry(() => generateWithFailover(chatPool, followPrompt, 'chat followup', CONFIG.TIMEOUT_MS), 2, 200);
+        const followRes = await retry(() => generateWithFailover(chatPool, followPrompt, 'chat followup', CONFIG.TIMEOUT_CHAT_MS), CONFIG.MAX_RETRIES, 700);
         const followText = await extractTextFromResult(followRes);
         await sendUserNotification(userId, { message: followText || (detectedLang === 'Arabic' ? '✅ تم إنشاء خطة اليوم.' : detectedLang === 'French' ? '✅ Plan créé.' : '✅ Plan created.'), lang: detectedLang });
       } catch (err) {
@@ -663,28 +786,39 @@ ${humanSummary}
       return;
     }
 
-    // action none -> do nothing
+    // none -> do nothing
     return;
   } catch (err) {
     console.error(`[${new Date().toISOString()}] backgroundProcessor error for ${userId}:`, err && err.stack ? err.stack : err);
-    try { await sendUserNotification(userId, { message: detectedLang === 'Arabic' ? '⚠️ حدث خطأ غير متوقع أثناء معالجة طلبك.' : detectedLang === 'French' ? '⚠️ Une erreur est survenue.' : '⚠️ An unexpected error occurred.' , lang: detectedLang }); } catch (e) {}
+    try { await sendUserNotification(userId, { message: `⚠️ An unexpected error occurred.`, lang: 'Arabic' }); } catch (e) {}
   }
 }
 
-// ----------------- ROUTES -----------------
+// ----------------- HTTP ROUTES -----------------
 
 /**
- * /chat
- * - Returns immediate ack and processes in background.
+ * POST /chat
+ * - Performs ambiguity check; if ambiguous returns clarifying question (clarify: true)
+ * - Otherwise returns immediate ACK and launches backgroundProcessor (non-blocking)
  */
 app.post('/chat', async (req, res) => {
+  metrics.requests += 1;
   const start = Date.now();
   try {
     const { userId, message, history = [] } = req.body || {};
     if (!userId || !message) return res.status(400).json({ error: 'Invalid request. userId and message are required.' });
 
-    const [profile, progress, detectedLang] = await Promise.all([getProfile(userId), getProgress(userId), detectLanguage(message)]);
+    const [profile, progress, detectedLang] = await Promise.all([getProfile(userId), getProgress(userId), detectLanguage(message).catch(() => 'Arabic')]);
 
+    // 1) quick ambiguity check -> if ambiguous ask clarifying question immediately and DO NOT run backgroundProcessor
+    const ambiguityQuestion = quickAmbiguityCheck(message, detectedLang);
+    if (ambiguityQuestion) {
+      // return clarifying question and mark clarify:true for client behavior
+      observeLatency(Date.now() - start);
+      return res.json({ reply: ambiguityQuestion, clarify: true });
+    }
+
+    // 2) otherwise produce ACK (prefer generated ack if chatPool available)
     const ackPrompt = `
 You are EduAI, a warm and empathetic study companion. Provide a SHORT (max 25 words) acknowledgement in ${detectedLang} indicating you will process the request and notify when finished. Do NOT perform the task here.
 User message: "${escapeForPrompt(safeSnippet(message, 300))}"
@@ -693,26 +827,29 @@ User message: "${escapeForPrompt(safeSnippet(message, 300))}"
     let ackText = detectedLang === 'Arabic' ? 'جاري العمل على طلبك الآن — سأخبرك عند الانتهاء.' : detectedLang === 'French' ? "Je m'occupe de votre demande — je vous informerai dès que c'est prêt." : 'Working on your request — I will notify you when done.';
     try {
       if (chatPool.length > 0) {
-        const ackRes = await retry(() => generateWithFailover(chatPool, ackPrompt, 'chat ack', Math.round(CONFIG.TIMEOUT_MS * 0.7)), 2, 200);
+        const ackRes = await retry(() => generateWithFailover(chatPool, ackPrompt, 'chat ack', Math.round(CONFIG.TIMEOUT_CHAT_MS * 0.6)), 2, 200);
         const t = await extractTextFromResult(ackRes);
         if (t && t.trim()) ackText = t.trim();
       } else {
         req.log('No chatPool available; using default ack text.');
       }
     } catch (e) {
-      console.warn(`[${new Date().toISOString()}] ack generation failed, using fallback ack text for user=${userId}:`, e && e.message ? e.message : e);
+      reqLogSafe(`[${new Date().toISOString()}] ack generation failed — using fallback ack text:`, e && e.message ? e.message : e);
     }
 
     // send ACK immediately
     res.json({ reply: ackText });
-    // Launch background processing (non-blocking)
+
+    // launch background processing (non-blocking)
     setImmediate(() => {
       backgroundProcessor({ userId, userRequest: message, profile, progress, detectedLang })
         .catch(err => console.error(`[${new Date().toISOString()}] backgroundProcessor top-level error for ${userId}:`, err && err.stack ? err.stack : err));
     });
 
+    observeLatency(Date.now() - start);
     return;
   } catch (err) {
+    metrics.errors += 1;
     console.error(`[${new Date().toISOString()}] ❌ /chat error:`, err && err.stack ? err.stack : err);
     if (err && err.message && err.message.toLowerCase().includes('timed out')) return res.status(504).json({ error: 'Model request timed out.' });
     return res.status(500).json({ error: 'Internal server error.' });
@@ -720,13 +857,13 @@ User message: "${escapeForPrompt(safeSnippet(message, 300))}"
 });
 
 /**
- * /update-daily-tasks
+ * /update-daily-tasks - synchronous direct wrapper
  */
 app.post('/update-daily-tasks', async (req, res) => {
   try {
-    const { userId, userRequest } = req.body || {};
+    const { userId, userRequest, details = {} } = req.body || {};
     if (!userId || !userRequest) return res.status(400).json({ error: 'userId and userRequest are required.' });
-    const updated = await handleUpdateTasks({ userId, userRequest });
+    const updated = await handleUpdateTasks({ userId, userRequest, details });
     return res.status(200).json({ success: true, tasks: updated, generatedAt: new Date().toISOString(), source: 'AI' });
   } catch (err) {
     console.error(`[${new Date().toISOString()}] ❌ Error in /update-daily-tasks:`, err && err.stack ? err.stack : err);
@@ -735,7 +872,7 @@ app.post('/update-daily-tasks', async (req, res) => {
 });
 
 /**
- * /generate-daily-tasks
+ * /generate-daily-tasks - synchronous direct wrapper
  */
 app.post('/generate-daily-tasks', async (req, res) => {
   try {
@@ -753,19 +890,19 @@ app.post('/generate-daily-tasks', async (req, res) => {
  * /generate-title
  */
 app.post('/generate-title', async (req, res) => {
-  const { message, language } = req.body || {};
-  if (!message) return res.status(400).json({ error: 'Message is required.' });
-
   try {
+    const { message, language } = req.body || {};
+    if (!message) return res.status(400).json({ error: 'Message is required.' });
+
     const lang = language || 'Arabic';
     const prompt = `Summarize this message into a short, engaging chat title in ${lang}. Respond with ONLY the title text. NEVER respond with an empty string. Message: "${escapeForPrompt(safeSnippet(message, 1000))}"`;
     if (titlePool.length === 0) {
-      console.warn('Title pool empty — returning fallback title.');
+      reqLogSafe(`[${new Date().toISOString()}] Title pool empty — returning fallback title.`);
       return res.status(200).json({ title: 'محادثة جديدة' });
     }
-    const modelRes = await retry(() => generateWithFailover(titlePool, prompt, 'title generation', 5000), 2, 200);
+    const modelRes = await retry(() => generateWithFailover(titlePool, prompt, 'title generation', CONFIG.TIMEOUT_TITLE_MS), 2, 300);
     let titleText = await extractTextFromResult(modelRes);
-    if (!titleText) { console.warn(`[${new Date().toISOString()}] ⚠️ Title model returned empty. Using fallback.`); titleText = 'محادثة جديدة'; }
+    if (!titleText) { reqLogSafe(`[${new Date().toISOString()}] ⚠️ Title model empty — fallback.`); titleText = 'محادثة جديدة'; }
     return res.status(200).json({ title: titleText.trim() });
   } catch (err) {
     console.error(`[${new Date().toISOString()}] ❌ Title generation failed:`, err && err.stack ? err.stack : err);
@@ -776,17 +913,12 @@ app.post('/generate-title', async (req, res) => {
 /**
  * /metrics
  */
-const metrics = { requests: 0, errors: 0, avgLatencyMs: 0, sampleCount: 0 };
-app.get('/metrics', (req, res) => {
-  res.json(metrics);
-});
+app.get('/metrics', (req, res) => res.json(metrics));
 
 /**
  * /health
  */
-app.get('/health', (req, res) => {
-  res.json({ ok: true, env: process.env.NODE_ENV || 'development', metrics, time: new Date().toISOString() });
-});
+app.get('/health', (req, res) => res.json({ ok: true, env: process.env.NODE_ENV || 'development', metrics, time: new Date().toISOString() }));
 
 // --- Graceful shutdown ---
 let server = null;
@@ -806,14 +938,20 @@ function shutdown(signal) {
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-// --- Start server ---
-server = app.listen(CONFIG.PORT, () => {
-  console.log(`🚀 EduAI Brain (V14 Multi-Model Async) running on port ${CONFIG.PORT}`);
-  console.log(`💬 Chat model (pool size): ${chatPool.length}`);
-  console.log(`🧩 Task/Planner model (pool size): ${taskPool.length}`);
-  console.log(`🏷️ Title model (pool size): ${titlePool.length}`);
+// log unhandled rejections for visibility
+process.on('unhandledRejection', (reason, p) => {
+  console.error(`[${new Date().toISOString()}] Unhandled Rejection at: Promise`, p, 'reason:', reason);
 });
 
+// --- Start server ---
+server = app.listen(CONFIG.PORT, () => {
+  console.log(`[${new Date().toISOString()}] 🚀 EduAI Brain (V14 Multi-Model Async) running on port ${CONFIG.PORT}`);
+  console.log(`[${new Date().toISOString()}] 💬 Chat model (pool size): ${chatPool.length}`);
+  console.log(`[${new Date().toISOString()}] 🧩 Task/Planner model (pool size): ${taskPool.length}`);
+  console.log(`[${new Date().toISOString()}] 🏷️ Title model (pool size): ${titlePool.length}`);
+});
+
+// Export for testing
 module.exports = {
   app,
   handleUpdateTasks,
@@ -821,3 +959,4 @@ module.exports = {
   getProgress,
   getProfile,
 };
+
