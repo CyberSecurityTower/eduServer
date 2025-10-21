@@ -1,19 +1,18 @@
 'use strict';
 
 /**
- * server.js — EduAI Brain V15.5 Final (Bug-free rewrite)
- *
- * - Multi-model pools with key rotation & backoff
+ * server.js — EduAI Brain V15.6
  * - Hybrid sync/async routing (/chat)
- * - Firestore-backed job queue worker
- * - Robust JSON repair & review loop
- * - Safe Firestore writes (no serverTimestamp inside arrays)
+ * - Multi-model pools with key rotation & backoff
+ * - Firestore-backed job queue worker (collection aiJobs)
+ * - /generate-daily-tasks accepts optional pathId
+ * - For general_question: model receives last 5 messages + full user context
  *
  * Required env:
  * - FIREBASE_SERVICE_ACCOUNT_KEY
- * - One or more GOOGLE_API_KEY, or GOOGLE_API_KEY_1 .. GOOGLE_API_KEY_4
+ * - One or more GOOGLE_API_KEY, or GOOGLE_API_KEY_1..4
  *
- * Note: install dependencies:
+ * npm deps:
  *   npm install express cors firebase-admin @google/generative-ai
  */
 
@@ -51,8 +50,9 @@ if (!process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
   console.error('Missing FIREBASE_SERVICE_ACCOUNT_KEY env var. Exiting.');
   process.exit(1);
 }
-const apiKeyCandidates = Array.from({ length: 4 }, (_, i) => process.env[`GOOGLE_API_KEY_${i + 1}`])
-  .filter(Boolean);
+
+// collect API keys (1..4) plus fallback GOOGLE_API_KEY
+const apiKeyCandidates = Array.from({ length: 4 }, (_, i) => process.env[`GOOGLE_API_KEY_${i + 1}`]).filter(Boolean);
 if (process.env.GOOGLE_API_KEY && !apiKeyCandidates.includes(process.env.GOOGLE_API_KEY)) {
   apiKeyCandidates.push(process.env.GOOGLE_API_KEY);
 }
@@ -71,19 +71,15 @@ app.use((req, res, next) => {
   next();
 });
 
+// initialize firebase admin
 let db;
 try {
-  // service account might be raw JSON, base64, or escaped newlines.
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
   let serviceAccount;
-  try {
-    serviceAccount = JSON.parse(raw);
-  } catch (e1) {
-    try {
-      serviceAccount = JSON.parse(Buffer.from(raw, 'base64').toString('utf8'));
-    } catch (e2) {
-      serviceAccount = JSON.parse(raw.replace(/\\n/g, '\n'));
-    }
+  try { serviceAccount = JSON.parse(raw); }
+  catch (e) {
+    try { serviceAccount = JSON.parse(Buffer.from(raw, 'base64').toString('utf8')); }
+    catch (e2) { serviceAccount = JSON.parse(raw.replace(/\\n/g, '\n')); }
   }
   admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
   db = admin.firestore();
@@ -142,9 +138,7 @@ async function generateWithFailover(poolName, prompt, opts = {}) {
   for (const inst of shuffled(pool)) {
     try {
       const k = inst.key;
-      if (keyStates[k] && keyStates[k].backoffUntil > Date.now()) {
-        continue;
-      }
+      if (keyStates[k] && keyStates[k].backoffUntil > Date.now()) continue;
       const call = inst.model.generateContent(prompt);
       const res = await withTimeout(call, timeoutMs, `${label} (key)`);
       if (keyStates[inst.key]) keyStates[inst.key].fails = 0;
@@ -167,12 +161,10 @@ async function generateWithFailover(poolName, prompt, opts = {}) {
 async function extractTextFromResult(result) {
   try {
     if (!result) return '';
-    // many SDK responses expose .response with .text()
     if (result.response && typeof result.response.text === 'function') {
       const t = await result.response.text();
       return (t || '').toString().trim();
     }
-    // fallback if result is string-like
     if (typeof result === 'string') return result.trim();
     if (result.text && typeof result.text === 'string') return result.text.trim();
     if (result.outputText && typeof result.outputText === 'string') return result.outputText.trim();
@@ -189,22 +181,13 @@ function parseJSONFromText(text) {
   if (!match) return null;
   let candidate = match[0].replace(/```(?:json)?/g, '').trim();
   candidate = candidate.replace(/,\s*([}\]])/g, '$1');
-  try {
-    return JSON.parse(candidate);
-  } catch (e) {
-    try {
-      const cleaned = candidate.replace(/[\u0000-\u001F]+/g, '');
-      return JSON.parse(cleaned);
-    } catch (e2) {
-      return null;
-    }
-  }
+  try { return JSON.parse(candidate); } catch (e) { try { const cleaned = candidate.replace(/[\u0000-\u001F]+/g, ''); return JSON.parse(cleaned); } catch (e2) { return null; } }
 }
 
 async function ensureJsonOrRepair(rawText, repairPool = 'review') {
   const parsed = parseJSONFromText(rawText);
   if (parsed) return parsed;
-  const repairPrompt = `The following text is supposed to be a single valid JSON object. Fix it and return ONLY the JSON. If it's impossible, return {}.\n\nTEXT:\n${rawText}`;
+  const repairPrompt = `The following text should be a single valid JSON object. Fix it and return ONLY the JSON. If impossible, return {}.\n\nTEXT:\n${rawText}`;
   try {
     const res = await generateWithFailover(repairPool, repairPrompt, { label: 'JSONRepair', timeoutMs: 5000 });
     const fixed = await extractTextFromResult(res);
@@ -216,34 +199,19 @@ async function ensureJsonOrRepair(rawText, repairPool = 'review') {
 
 // ---------------- CACHE & FIRESTORE HELPERS ----------------
 class LRUCache {
-  constructor(limit = 500, ttl = CONFIG.CACHE_TTL_MS) {
-    this.limit = limit;
-    this.ttl = ttl;
-    this.map = new Map();
-  }
+  constructor(limit = 500, ttl = CONFIG.CACHE_TTL_MS) { this.limit = limit; this.ttl = ttl; this.map = new Map(); }
   _isExpired(e) { return Date.now() - e.t > this.ttl; }
-  get(k) {
-    const e = this.map.get(k);
-    if (!e) return null;
-    if (this._isExpired(e)) { this.map.delete(k); return null; }
-    this.map.delete(k);
-    this.map.set(k, e);
-    return e.v;
-  }
-  set(k, v) {
-    if (this.map.size >= this.limit) this.map.delete(this.map.keys().next().value);
-    this.map.set(k, { v, t: Date.now() });
-  }
+  get(k) { const e = this.map.get(k); if (!e) return null; if (this._isExpired(e)) { this.map.delete(k); return null; } this.map.delete(k); this.map.set(k, e); return e.v; }
+  set(k, v) { if (this.map.size >= this.limit) this.map.delete(this.map.keys().next().value); this.map.set(k, { v, t: Date.now() }); }
   del(k) { this.map.delete(k); }
   clear() { this.map.clear(); }
 }
 const localCache = { profile: new LRUCache(), progress: new LRUCache() };
-
 async function cacheGet(scope, key) { return localCache[scope] ? localCache[scope].get(key) : null; }
 async function cacheSet(scope, key, value) { if (localCache[scope]) localCache[scope].set(key, value); }
 async function cacheDel(scope, key) { if (localCache[scope]) localCache[scope].del(key); }
 
-// getProfile: reads aiMemoryProfiles/{userId}
+// profile, progress, weaknesses, notification helpers
 async function getProfile(userId) {
   try {
     const cached = await cacheGet('profile', userId);
@@ -258,7 +226,6 @@ async function getProfile(userId) {
   }
 }
 
-// getProgress: returns raw document data for userProgress/{userId}
 async function getProgress(userId) {
   try {
     const cached = await cacheGet('progress', userId);
@@ -275,14 +242,15 @@ async function getProgress(userId) {
   return { stats: { points: 0 }, streakCount: 0, pathProgress: {} };
 }
 
-async function fetchUserWeaknesses(userId) {
+async function fetchUserWeaknesses(userId, pathId = null) {
   try {
     const doc = await db.collection('userProgress').doc(userId).get();
     if (!doc.exists) return [];
     const progressData = doc.data()?.pathProgress || {};
     const weaknesses = [];
-    for (const pathId of Object.keys(progressData)) {
-      const pathEntry = progressData[pathId] || {};
+    const pathsToScan = pathId ? [pathId] : Object.keys(progressData);
+    for (const pid of pathsToScan) {
+      const pathEntry = progressData[pid] || {};
       const subjects = pathEntry.subjects || {};
       for (const subjectId of Object.keys(subjects)) {
         const subjectEntry = subjects[subjectId] || {};
@@ -363,19 +331,27 @@ If unclear, return current tasks unchanged.`;
   await db.collection('userProgress').doc(userId).set({
     dailyTasks: { tasks: normalized, generatedAt: admin.firestore.FieldValue.serverTimestamp() },
   }, { merge: true });
-
   try { await cacheSet('progress', userId, { dailyTasks: { tasks: normalized } }); } catch (e) {}
   await cacheDel('progress', userId);
   return normalized;
 }
 
-async function runPlannerManager(userId) {
-  const weaknesses = await fetchUserWeaknesses(userId);
+/**
+ * runPlannerManager(userId, pathId)
+ * - if pathId provided, uses weaknesses limited to that path
+ * - returns { tasks, source }
+ */
+async function runPlannerManager(userId, pathId = null) {
+  const weaknesses = await fetchUserWeaknesses(userId, pathId);
   const weaknessesPrompt = weaknesses.length > 0
     ? `<user_weaknesses>\n${weaknesses.map(w => `- Lesson: ${w.lessonId}, Subject: ${w.subjectId}, Mastery: ${w.masteryScore}%`).join('\n')}\n</user_weaknesses>`
     : '<user_weaknesses>No specific weaknesses found. Suggest a general introductory plan.</user_weaknesses>';
+
+  const extraContext = pathId ? `Using pathId: ${pathId}` : '';
   const prompt = `You are an expert academic planner. ${weaknessesPrompt}
+${extraContext}
 Produce 2-4 personalized daily tasks. Respond ONLY with JSON: { "tasks": [ ... ] } where each task includes id, title (in Arabic), type, status ('pending'), relatedLessonId (nullable), relatedSubjectId (nullable).`;
+
   const res = await generateWithFailover('planner', prompt, { label: 'Planner', timeoutMs: CONFIG.TIMEOUTS.default });
   const raw = await extractTextFromResult(res);
   const parsed = await ensureJsonOrRepair(raw, 'planner');
@@ -410,42 +386,39 @@ Produce 2-4 personalized daily tasks. Respond ONLY with JSON: { "tasks": [ ... ]
 async function runNotificationManager(purpose, language, context = {}) {
   let instruction = '';
   switch (purpose) {
-    case 'ack':
-      instruction = 'Acknowledge the user briefly (<=15 words).';
-      break;
-    case 'todo_success':
-      instruction = 'Confirm to the user that the to-do list was updated. Be brief and encouraging.';
-      break;
-    case 'plan_success':
-      instruction = 'Announce that a new daily plan has been created.';
-      break;
-    case 'error':
-      instruction = 'Apologize and say that an unexpected error occurred.';
-      break;
-    default:
-      instruction = 'Provide a concise, helpful message.';
+    case 'ack': instruction = 'Acknowledge the user briefly (<=15 words).'; break;
+    case 'todo_success': instruction = 'Confirm the to-do list was updated. Be brief and encouraging.'; break;
+    case 'plan_success': instruction = 'Announce that a new daily plan has been created.'; break;
+    case 'error': instruction = 'Apologize and say an unexpected error occurred.'; break;
+    default: instruction = 'Provide a concise, helpful message.'; break;
   }
   const prompt = `You are a Notification Manager. Write one short message in ${language}. Instruction: ${instruction}. Context: ${JSON.stringify(context)}. Respond with only the plain text message.`;
-  const res = await generateWithFailover('notification', prompt, { label: 'NotificationManager', timeoutMs: CONFIG.TIMEOUTS.notification });
-  const text = await extractTextFromResult(res);
-  return text || (language === 'Arabic' ? 'حسناً، أعمل على طلبك الآن.' : language === 'French' ? 'Reçu, je m\u0027en occupe.' : 'Got it — working on that.');
+  try {
+    const res = await generateWithFailover('notification', prompt, { label: 'NotificationManager', timeoutMs: CONFIG.TIMEOUTS.notification });
+    const text = await extractTextFromResult(res);
+    return text || (language === 'Arabic' ? 'حسناً، أعمل على طلبك الآن.' : language === 'French' ? "Reçu, je m'en occupe." : 'Got it — working on that.');
+  } catch (e) {
+    return (language === 'Arabic' ? 'حسناً، أعمل على طلبك الآن.' : language === 'French' ? "Reçu, je m'en occupe." : 'Got it — working on that.');
+  }
 }
 
 async function runReviewManager(userRequest, modelResponseText) {
   const prompt = `You are a Review Manager. Evaluate the AI response for correctness, completeness, and relevance. Score 1..10 and return ONLY JSON: {"score":<number>,"feedback":"..."}.
 USER REQUEST: "${escapeForPrompt(safeSnippet(userRequest, 500))}"
 AI RESPONSE: "${escapeForPrompt(safeSnippet(modelResponseText, 1000))}"`;
-  const res = await generateWithFailover('review', prompt, { label: 'ReviewManager', timeoutMs: CONFIG.TIMEOUTS.review });
-  const raw = await extractTextFromResult(res);
-  const parsed = await ensureJsonOrRepair(raw, 'review');
-  if (!parsed || typeof parsed.score !== 'number') return { score: 10, feedback: 'No reviewer feedback.' };
-  return parsed;
+  try {
+    const res = await generateWithFailover('review', prompt, { label: 'ReviewManager', timeoutMs: CONFIG.TIMEOUTS.review });
+    const raw = await extractTextFromResult(res);
+    const parsed = await ensureJsonOrRepair(raw, 'review');
+    if (!parsed || typeof parsed.score !== 'number') return { score: 10, feedback: 'No reviewer feedback.' };
+    return parsed;
+  } catch (e) {
+    return { score: 10, feedback: 'Reviewer failed.' };
+  }
 }
 
 // ---------------- JOB QUEUE & WORKER ----------------
-
 async function enqueueJob(job) {
-  // job: { userId, type, payload }
   try {
     const docRef = await db.collection('aiJobs').add({
       userId: job.userId,
@@ -470,6 +443,7 @@ async function processJob(jobDoc) {
   const message = payload.message || '';
   const intent = payload.intent || null;
   const language = payload.language || 'Arabic';
+  const history = payload.history || [];
 
   try {
     if (type === 'background_chat') {
@@ -480,12 +454,14 @@ async function processJob(jobDoc) {
         const notif = await runNotificationManager('todo_success', language, { count: updated.length });
         await sendUserNotification(userId, { message: notif, lang: language, meta: { source: 'todo' } });
       } else if (intent === 'generate_plan') {
-        const result = await runPlannerManager(userId);
+        // payload may contain pathId
+        const pathId = payload.pathId || null;
+        const result = await runPlannerManager(userId, pathId);
         const humanSummary = formatTasksHuman(result.tasks, language);
         const notif = await runNotificationManager('plan_success', language, { count: result.tasks.length });
         await sendUserNotification(userId, { message: `${notif}\n${humanSummary}`, lang: language, meta: { source: 'planner' } });
       } else {
-        // unknown or unsupported intent: mark done without action to avoid blocking
+        // unsupported intent — ignore but mark done
         console.log(`processJob: unsupported intent "${intent}" for job ${docRef.id}`);
       }
       await docRef.update({ status: 'done', updatedAt: admin.firestore.FieldValue.serverTimestamp() });
@@ -497,6 +473,7 @@ async function processJob(jobDoc) {
     const attempts = (data.attempts || 0) + 1;
     if (attempts >= 3) {
       await docRef.update({ status: 'failed', error: (err && err.message) ? err.message.slice(0, 1000) : 'error', attempts, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+      await sendUserNotification(userId, { message: '⚠️ حدث خطأ أثناء معالجة طلبك. سنحاول لاحقًا.', lang: language });
     } else {
       await docRef.update({ status: 'pending', attempts, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
     }
@@ -507,16 +484,13 @@ let workerStopped = false;
 async function jobWorkerLoop() {
   while (!workerStopped) {
     try {
-      // Note: requires composite index on aiJobs: status ASC, createdAt ASC
       const jobsSnap = await db.collection('aiJobs').where('status', '==', 'pending').orderBy('createdAt').limit(5).get();
       for (const jobDoc of jobsSnap.docs) {
-        // Transactionally claim the job
         try {
           await db.runTransaction(async (tx) => {
             const fresh = await tx.get(jobDoc.ref);
             if (fresh.exists && fresh.data().status === 'pending') {
               tx.update(jobDoc.ref, { status: 'in_progress', updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-              // detach processing to avoid long transaction
               process.nextTick(() => processJob(jobDoc).catch((e) => console.error('Detached processJob error:', e && e.stack ? e.stack : e)));
             }
           });
@@ -533,29 +507,57 @@ async function jobWorkerLoop() {
 jobWorkerLoop().catch((err) => console.error('jobWorkerLoop startup failed:', err && err.stack ? err.stack : err));
 
 // ---------------- SYNCHRONOUS QUESTION HANDLER ----------------
-
-async function handleGeneralQuestion(message, language, history = []) {
-  // تأكد من أن history مصفوفة من الكائنات { role: 'user'|'model', text: '...' }
+/**
+ * handleGeneralQuestion(message, language, history, userProfile, userProgress)
+ * - history: array of last messages objects { role, text } (we'll take last 5)
+ * - userProfile: string summary
+ * - userProgress: raw progress doc (contains dailyTasks, pathProgress, etc.)
+ * The model receives last 5 messages + user context (tasks, profile, progress)
+ */
+async function handleGeneralQuestion(message, language, history = [], userProfile = 'No available memory.', userProgress = {}) {
   const lastFive = (Array.isArray(history) ? history.slice(-5) : [])
     .map(h => {
       const who = (h.role === 'model' || h.role === 'assistant') ? 'Assistant' : 'User';
-      // نهرب العلامات وإقتطاع النص لتجنب تجاوز الحصة
       return `${who}: ${escapeForPrompt(safeSnippet(h.text || '', 500))}`;
     })
     .join('\n');
 
+  const tasksSummary = (userProgress && userProgress.dailyTasks && Array.isArray(userProgress.dailyTasks.tasks))
+    ? JSON.stringify(userProgress.dailyTasks.tasks.map(t => ({ id: t.id, title: t.title, type: t.type, status: t.status })))
+    : '[]';
+
+  const pathProgressSnippet = safeSnippet(JSON.stringify(userProgress.pathProgress || {}), 2000);
+
   const historyBlock = lastFive ? `<conversation_history>\n${lastFive}\n</conversation_history>\n` : '';
 
-  const chatPrompt = `You are EduAI, a warm educational assistant. Answer concisely in ${language}.
-${historyBlock}
-User: "${escapeForPrompt(safeSnippet(message, 2000))}"
-Please answer directly and helpfully.`;
+  const prompt = `You are EduAI, a warm and precise educational assistant. Answer concisely in ${language}.
+You are given:
+1) Conversation history (last messages)
+2) User profile (short summary)
+3) Current tasks (ids, titles, types, statuses)
+4) Path/progress summary (subjects/lessons truncated)
+Use these to answer the user's question faithfully.
 
-  // استدعاء الموديل كما كان
-  const res = await generateWithFailover('chat', chatPrompt, { label: 'ResponseManager', timeoutMs: CONFIG.TIMEOUTS.chat });
+${historyBlock}
+<user_profile>
+${escapeForPrompt(safeSnippet(userProfile, 1000))}
+</user_profile>
+
+<current_tasks>
+${tasksSummary}
+</current_tasks>
+
+<path_progress>
+${pathProgressSnippet}
+</path_progress>
+
+User question: "${escapeForPrompt(safeSnippet(message, 2000))}"
+
+Answer directly and helpfully (no commentary about internal state).`;
+
+  const res = await generateWithFailover('chat', prompt, { label: 'ResponseManager', timeoutMs: CONFIG.TIMEOUTS.chat });
   let replyText = await extractTextFromResult(res);
 
-  // كالمعتاد: فحص الجودة وإعادة التوليد عند الحاجة
   const review = await runReviewManager(message, replyText);
   if (review && typeof review.score === 'number' && review.score < CONFIG.REVIEW_THRESHOLD) {
     const correctivePrompt = `Previous reply scored ${review.score}/10. Improve it based on: ${escapeForPrompt(review.feedback)}. User: "${escapeForPrompt(safeSnippet(message, 2000))}"`;
@@ -563,30 +565,43 @@ Please answer directly and helpfully.`;
     const improved = await extractTextFromResult(res2);
     if (improved) replyText = improved;
   }
+
   return replyText || (language === 'Arabic' ? 'لم أتمكن من الإجابة الآن. هل تريد إعادة الصياغة؟' : 'I could not generate an answer right now.');
 }
 
-// --- تعديل: /chat route لإرسال history إلى handler ---
+// ---------------- ROUTES ----------------
+
+/**
+ * /chat
+ * - determines intent synchronously
+ * - for actions (manage_todo, generate_plan): enqueue job (background) and return ack
+ * - for general_question/unclear: reply synchronously using handleGeneralQuestion with full context
+ * - client should send optional history array in body
+ */
 app.post('/chat', async (req, res) => {
   try {
     const userId = req.userId || req.body.userId;
     const { message, history = [] } = req.body || {};
     if (!userId || !message) return res.status(400).json({ error: 'userId and message are required' });
 
-    // نحدد النية فوراً
+    // Determine intent
     const traffic = await runTrafficManager(message);
     const language = traffic.language || 'Arabic';
     const intent = traffic.intent || 'unclear';
 
     if (intent === 'manage_todo' || intent === 'generate_plan') {
-      // نفس المسار الغير متزامن كما كان
+      // Async: enqueue job
       const ack = await runNotificationManager('ack', language);
-      const jobId = await enqueueJob({ userId, type: 'background_chat', payload: { message, intent, language, history } });
+      // pass history and (optionally) pathId in payload (client may include pathId)
+      const payload = { message, intent, language, history, pathId: req.body.pathId || null };
+      const jobId = await enqueueJob({ userId, type: 'background_chat', payload });
       return res.json({ reply: ack, jobId, isAction: true });
     }
 
-    // مسار متزامن — نمرر history للـ handler (آخر 5 سيتم تضمينها)
-    const reply = await handleGeneralQuestion(message, language, history);
+    // Synchronous path: build context and reply
+    const userProfile = await getProfile(userId);
+    const userProgress = await getProgress(userId);
+    const reply = await handleGeneralQuestion(message, language, history, userProfile, userProgress);
     return res.json({ reply, isAction: false });
   } catch (err) {
     console.error('/chat error:', err && err.stack ? err.stack : err);
@@ -609,12 +624,12 @@ app.post('/update-daily-tasks', async (req, res) => {
   }
 });
 
-// generate-daily-tasks (direct)
+// generate-daily-tasks now accepts optional pathId and passes it to planner
 app.post('/generate-daily-tasks', async (req, res) => {
   try {
-    const { userId } = req.body || {};
+    const { userId, pathId = null } = req.body || {};
     if (!userId) return res.status(400).json({ error: 'User ID is required.' });
-    const result = await runPlannerManager(userId);
+    const result = await runPlannerManager(userId, pathId);
     return res.status(200).json({ success: true, generatedAt: new Date().toISOString(), source: result.source || 'AI', tasks: result.tasks });
   } catch (err) {
     console.error('/generate-daily-tasks error:', err && err.stack ? err.stack : err);
@@ -622,7 +637,7 @@ app.post('/generate-daily-tasks', async (req, res) => {
   }
 });
 
-// generate-title
+// generate-title uses Traffic Manager to return consistent title
 app.post('/generate-title', async (req, res) => {
   try {
     const { message } = req.body || {};
@@ -639,15 +654,12 @@ app.get('/health', (req, res) => res.json({ ok: true, time: iso() }));
 
 // ---------------- STARTUP & SHUTDOWN ----------------
 const server = app.listen(CONFIG.PORT, () => {
-  console.log(`✅ EduAI Brain V15.5 Final running on port ${CONFIG.PORT}`);
-  // warmup (best-effort)
+  console.log(`✅ EduAI Brain V15.6 running on port ${CONFIG.PORT}`);
   (async () => {
     try {
       await generateWithFailover('titleIntent', 'ping', { label: 'warmup', timeoutMs: 2000 });
       console.log('💡 Model warmup done.');
-    } catch (e) {
-      console.warn('💡 Model warmup skipped/failed (non-fatal).');
-    }
+    } catch (e) { console.warn('💡 Model warmup skipped/failed (non-fatal).'); }
   })();
 });
 
