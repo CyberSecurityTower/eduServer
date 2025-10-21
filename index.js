@@ -653,12 +653,13 @@ Your concise and helpful response:`;
 
 // ---------------- ROUTES ----------------
 // === Route: Update Daily Tasks ===
+// === Route: Update Daily Tasks ===
 app.post('/update-daily-tasks', async (req, res) => {
   try {
-    const { userId, tasks } = req.body || {};
+    const { userId, updatedTasks } = req.body || {};
 
-    if (!userId || !Array.isArray(tasks)) {
-      return res.status(400).json({ error: 'User ID and tasks array are required.' });
+    if (!userId || !Array.isArray(updatedTasks)) {
+      return res.status(400).json({ error: 'User ID and updatedTasks array are required.' });
     }
 
     const userRef = db.collection('users').doc(userId);
@@ -668,45 +669,28 @@ app.post('/update-daily-tasks', async (req, res) => {
       return res.status(404).json({ error: 'User not found.' });
     }
 
-    // Update tasks in Firestore
-    await userRef.update({
-      dailyTasks: tasks,
-      updatedAt: new Date().toISOString(),
-    });
-
-    // Invalidate the cache for this user
-    await cacheDel('progress', userId);
-
-    res.status(200).json({
-      success: true,
-      message: 'Daily tasks updated successfully.',
-    });
-
-  } catch (error) {
-    console.error('/update-daily-tasks error:', error.stack || error);
-    res.status(500).json({ error: 'An error occurred while updating daily tasks.' });
-  }
-});
-
-
     // Update Firestore (use update to avoid overwriting unless you want full replace)
     await userRef.update({
       dailyTasks: updatedTasks,
       lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
     });
 
+    // Invalidate cache for user
+    await cacheDel('progress', userId);
+
     // Respond with success and confirmation payload
     res.status(200).json({
+      success: true,
       message: 'Daily tasks updated successfully.',
       updatedCount: updatedTasks.length,
       timestamp: new Date().toISOString(),
     });
+
   } catch (error) {
     console.error('/update-daily-tasks error:', error && error.stack ? error.stack : error);
     res.status(500).json({ error: 'An error occurred while updating daily tasks.' });
   }
 });
-
 app.post('/generate-daily-tasks', async (req, res) => {
   try {
     const { userId, pathId = null } = req.body || {};
