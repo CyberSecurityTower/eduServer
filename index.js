@@ -654,25 +654,27 @@ Your concise and helpful response:`;
 // ---------------- ROUTES ----------------
 app.post('/update-daily-tasks', async (req, res) => {
   try {
-    const { userId, updatedTasks } = req.body;
+    const { userId, tasks } = req.body || {};
 
-    if (!userId || !Array.isArray(updatedTasks)) {
-      return res.status(400).json({ error: 'Invalid input. Must include userId and updatedTasks[]' });
+    if (!userId || !Array.isArray(tasks)) {
+      return res.status(400).json({ error: 'User ID and tasks array are required.' });
     }
 
-    const progressRef = db.collection('userProgress').doc(userId);
-     // Use set with merge:true to update the dailyTasks object without overwriting other fields
-    await progressRef.set({
-      dailyTasks: {
-        tasks: tasks,
-        generatedAt: admin.firestore.FieldValue.serverTimestamp(), // It's good practice to update the timestamp
-      }
-    }, { merge: true });
+    const userRef = db.collection('users').doc(userId);
+    const userDoc = await userRef.get();
+
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    // Update tasks
+    await userRef.update({ dailyTasks: tasks, updatedAt: new Date().toISOString() });
 
     // Invalidate the cache for this user
     await cacheDel('progress', userId);
 
     res.status(200).json({ success: true, message: 'Daily tasks updated successfully.' });
+
   } catch (error) {
     console.error('/update-daily-tasks error:', error.stack);
     res.status(500).json({ error: 'An error occurred while updating daily tasks.' });
