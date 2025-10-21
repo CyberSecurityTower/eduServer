@@ -652,6 +652,7 @@ Your concise and helpful response:`;
 
 
 // ---------------- ROUTES ----------------
+// === Route: Update Daily Tasks ===
 app.post('/update-daily-tasks', async (req, res) => {
   try {
     const { userId, tasks } = req.body || {};
@@ -667,23 +668,25 @@ app.post('/update-daily-tasks', async (req, res) => {
       return res.status(404).json({ error: 'User not found.' });
     }
 
-    // Update tasks
-    await userRef.update({ dailyTasks: tasks, updatedAt: new Date().toISOString() });
+    // Update tasks in Firestore
+    await userRef.update({
+      dailyTasks: tasks,
+      updatedAt: new Date().toISOString(),
+    });
 
     // Invalidate the cache for this user
     await cacheDel('progress', userId);
 
-    res.status(200).json({ success: true, message: 'Daily tasks updated successfully.' });
+    res.status(200).json({
+      success: true,
+      message: 'Daily tasks updated successfully.',
+    });
 
   } catch (error) {
-    console.error('/update-daily-tasks error:', error.stack);
+    console.error('/update-daily-tasks error:', error.stack || error);
     res.status(500).json({ error: 'An error occurred while updating daily tasks.' });
   }
 });
-const userDoc = await userRef.get();
-if (!userDoc.exists) {
-  return res.status(404).json({ error: 'User not found.' });
-}
 
 
     // Update Firestore (use update to avoid overwriting unless you want full replace)
