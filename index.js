@@ -1,11 +1,16 @@
 'use strict';
 
 /**
- * server.js — EduAI Brain V17.0 (cleaned & corrected)
+ * server.js — EduAI Brain V17.5 (Merged & Final)
  *
- * - Single-file cleaned version (no duplicated blocks).
- * - Keep required env vars: FIREBASE_SERVICE_ACCOUNT_KEY, GOOGLE_API_KEY*.
- * - Dependencies: express, cors, firebase-admin, @google/generative-ai
+ * - Merged V17.0 and V17.2 fixes.
+ * - Robust model call shapes + failover/backoff across multiple API keys.
+ * - JSON repair, LRU cache, job worker, notification + review managers.
+ * - Routes: /chat, /update-daily-tasks, /generate-daily-tasks, /generate-title, /analyze-quiz, /health
+ *
+ * Required env:
+ * - FIREBASE_SERVICE_ACCOUNT_KEY
+ * - GOOGLE_API_KEY or GOOGLE_API_KEY_1 .. GOOGLE_API_KEY_5
  */
 
 const express = require('express');
@@ -24,7 +29,7 @@ const CONFIG = {
     titleIntent: process.env.MODEL_TITLE || 'gemini-2.5-flash-lite',
     notification: process.env.MODEL_NOTIFICATION || 'gemini-2.5-flash-lite',
     review: process.env.MODEL_REVIEW || 'gemini-2.5-pro',
-    analysis: process.env.MODEL_ANALYSIS || 'gemini-2.5-flash',
+    analysis: process.env.MODEL_ANALYSIS || 'gemini-2.5-pro',
   },
   TIMEOUTS: {
     default: Number(process.env.TIMEOUT_DEFAULT_MS || 25000),
@@ -90,8 +95,12 @@ for (const key of apiKeyCandidates) {
     const client = new GoogleGenerativeAI(key);
     keyStates[key] = { fails: 0, backoffUntil: 0 };
     for (const pool of poolNames) {
-      const instance = client.getGenerativeModel({ model: CONFIG.MODEL[pool] });
-      modelPools[pool].push({ client, model: instance, key });
+      try {
+        const instance = client.getGenerativeModel({ model: CONFIG.MODEL[pool] });
+        modelPools[pool].push({ client, model: instance, key });
+      } catch (e) {
+        console.warn(`Failed to create model instance for pool ${pool} with a key — skipping that pool instance.`, e && e.message ? e.message : e);
+      }
     }
   } catch (e) {
     console.warn('GoogleGenerativeAI init failed for a key — skipping it.', e && e.message ? e.message : e);
@@ -130,45 +139,50 @@ async function generateWithFailover(poolName, prompt, opts = {}) {
   for (const inst of shuffled(pool)) {
     try {
       const k = inst.key;
-      if (keyStates[k] && keyStates[k].backoffUntil > Date.now()) continue;
-
-      let callPromise;
-      if (inst.model?.generateContent) {
-        callPromise = inst.model.generateContent(prompt);
-      } else if (inst.model?.generate) {
-        callPromise = inst.model.generate(prompt);
-      } else if (inst.client?.responses?.generate) {
-        callPromise = inst.client.responses.generate({
-          model: CONFIG.MODEL[poolName],
-          input: prompt
-        });
-      } else {
-        throw new Error('No known model call shape on instance');
+      if (keyStates[k] && keyStates[k].backoffUntil > Date.now()) {
+        // مفتاح في وضع backoff — تخطيه مؤقتًا
+        continue;
       }
 
-      const res = await withTimeout(callPromise, timeoutMs, `${label} (key:${k})`);
-      if (keyStates[k]) keyStates[k].fails = 0;
-      return res;
+      // حاول أشكال الاستدعاء الشائعة للمولد
+      let callPromise;
+      try {
+        if (inst.model && typeof inst.model.generateContent === 'function') {
+          callPromise = inst.model.generateContent(prompt);
+        } else if (inst.model && typeof inst.model.generate === 'function') {
+          callPromise = inst.model.generate(prompt);
+        } else if (inst.client && inst.client.responses && typeof inst.client.responses.generate === 'function') {
+          const payload = { model: CONFIG.MODEL[poolName], input: prompt };
+          callPromise = inst.client.responses.generate(payload);
+        } else {
+          throw new Error('No known model call shape on instance');
+        }
+      } catch (innerErr) {
+        throw innerErr;
+      }
 
+      // نفّذ النداء مع timeout
+      const res = await withTimeout(callPromise, timeoutMs, `${label} (key:${k})`);
+      if (keyStates[inst.key]) keyStates[inst.key].fails = 0;
+      return res;
     } catch (err) {
       lastErr = err;
-      if (inst?.key && keyStates[inst.key]) {
+      if (inst && inst.key && keyStates[inst.key]) {
         keyStates[inst.key].fails = (keyStates[inst.key].fails || 0) + 1;
         const backoff = Math.min(1000 * (2 ** keyStates[inst.key].fails), 10 * 60 * 1000);
         keyStates[inst.key].backoffUntil = Date.now() + backoff;
-        console.warn(`${iso()} ${poolName} failed for key ${inst.key}:`, err.message || err);
+        console.warn(`${iso()} ${poolName} failed for key (fails=${keyStates[inst.key].fails}), backoff ${backoff}ms:`, err && err.message ? err.message : err);
       } else {
-        console.warn(`${iso()} ${poolName} instance failed:`, err && err.message ? err.message : err);
+        console.warn(`${iso()} ${poolName} failed for an instance:`, err && err.message ? err.message : err);
       }
-      // Try next instance instead of throwing immediately
+      // تابع بالمفتاح/المولد التالي
       continue;
     }
   }
 
-  // If we reach here, all instances failed
   throw lastErr || new Error(`${label} failed for all available keys`);
 }
-      
+
 async function extractTextFromResult(result) {
   try {
     if (!result) return '';
@@ -189,7 +203,6 @@ async function extractTextFromResult(result) {
     // 3) شكل client.responses.generate أو أشكال بلوكات المحتوى
     // مثال: result.output[0].content = [{ type: 'output_text', text: '...' }, ...]
     if (result.output && Array.isArray(result.output)) {
-      // اجمع كل النصوص الممكنة من المحتويات
       const collected = [];
       for (const block of result.output) {
         if (block.content && Array.isArray(block.content)) {
@@ -206,7 +219,13 @@ async function extractTextFromResult(result) {
 
     // 4) بعض ردود Google الحديثة تحتوي على output[0].content[...] أو candidates
     if (result.candidates && Array.isArray(result.candidates) && result.candidates.length) {
-      const candTexts = result.candidates.map(c => (typeof c.text === 'string' ? c.text : (c.message && c.message.content && c.message.content[0] && c.message.content[0].text) || '')).filter(Boolean);
+      const candTexts = result.candidates.map(c => {
+        if (typeof c.text === 'string') return c.text;
+        if (c.message && c.message.content && Array.isArray(c.message.content)) {
+          return c.message.content.map(cc => cc.text || cc.parts && cc.parts.join('')).filter(Boolean).join('');
+        }
+        return '';
+      }).filter(Boolean);
       if (candTexts.length) return candTexts.join('\n').trim();
     }
 
@@ -224,6 +243,7 @@ async function extractTextFromResult(result) {
     return '';
   }
 }
+
 function parseJSONFromText(text) {
   if (typeof text !== 'string') return null;
   const match = text.match(/\{[\s\S]*\}/);
@@ -361,29 +381,88 @@ function formatTasksHuman(tasks = [], lang = 'Arabic') {
 }
 
 // ---------------- MANAGERS ----------------
-async function runToDoManager(userId, userRequest, currentTasks = []) {
-  // [!] الإصلاح: تم تنظيف وتوحيد الأمر
-  const prompt = `You are an expert To-Do List Manager AI. Modify the CURRENT TASKS based on the USER REQUEST.
+async function runTrafficManager(message, lang = 'Arabic') {
+  const prompt = `Analyze the user's message to determine its intent and generate a suitable chat title.
 <rules>
-1.  **Precision:** You MUST only modify, add, or delete tasks explicitly mentioned in the user request.
-2.  **Preservation:** You MUST preserve the exact original title, type, and language of all other tasks that were not mentioned in the request. This is a critical rule.
-3.  **Output Format:** Respond ONLY with a valid JSON object: { "tasks": [ ... ] }. Each task must have all required fields (id, title, type, status, etc.).
+1.  **Intent:** Classify the intent as 'manage_todo', 'generate_plan', 'question', or 'unclear'.
+2.  **Title:** Create a very short, concise title (2-4 words) in ${lang} that summarizes the message.
+3.  **Language:** Detect the primary language of the message ('Arabic', 'English', etc.).
+4.  **Output:** You MUST respond with ONLY a valid JSON object: { "intent": "...", "title": "...", "language": "..." }.
 </rules>
 
-CURRENT TASKS:
-${JSON.stringify(currentTasks)}
+User Message: "${escapeForPrompt(message)}"`;
 
-USER REQUEST:
-"${escapeForPrompt(userRequest)}"`;
   const res = await generateWithFailover('titleIntent', prompt, { label: 'TrafficManager', timeoutMs: CONFIG.TIMEOUTS.notification });
   const raw = await extractTextFromResult(res);
   const parsed = await ensureJsonOrRepair(raw, 'titleIntent');
-  if (!parsed || !parsed.intent) return { language: 'Arabic', intent: 'unclear', title: 'محادثة' };
+
+  // Fallback in case of parsing failure
+  if (!parsed || !parsed.intent) {
+    return {
+      intent: 'question',
+      title: message ? (message.substring(0, 30)) : (lang === 'Arabic' ? 'محادثة جديدة' : 'New Chat'),
+      language: lang
+    };
+  }
   return parsed;
 }
 
+async function runReviewManager(question, answer, lang = 'Arabic') {
+  const prompt = `You are an AI Quality Control specialist. Review the AI's answer to the user's question.
+<rules>
+1.  **Score:** Rate the answer's helpfulness, accuracy, and relevance on a scale of 1-10.
+2.  **Feedback:** Provide brief, constructive feedback in ${lang} on how to improve the answer. If it's good, say so.
+3.  **Output:** You MUST respond with ONLY a valid JSON object: { "score": <number>, "feedback": "..." }.
+</rules>
+
+User Question: "${escapeForPrompt(question)}"
+AI's Answer: "${escapeForPrompt(answer)}"`;
+
+  try {
+    const res = await generateWithFailover('review', prompt, { label: 'ReviewManager', timeoutMs: CONFIG.TIMEOUTS.review });
+    const raw = await extractTextFromResult(res);
+    const parsed = await ensureJsonOrRepair(raw, 'review');
+
+    if (parsed && typeof parsed.score === 'number') {
+      return parsed;
+    }
+    // Return a default high score if parsing fails, to avoid unnecessary retries
+    return { score: 9, feedback: 'Reviewer failed; assuming good.' };
+  } catch (err) {
+    console.error('runReviewManager failed:', err && err.message ? err.message : err);
+    return { score: 9, feedback: 'Reviewer exception; assuming good.' };
+  }
+}
+
+async function runNotificationManager(type, lang = 'Arabic', data = {}) {
+  let prompt;
+  const commonRules = `\n<rules>\n1. Respond in natural, encouraging ${lang}.\n2. Be concise.\n3. Do NOT include any formatting like markdown or JSON.\n</rules>`;
+
+  switch (type) {
+    case 'plan_success':
+      prompt = `Create a notification telling the user their new study plan with ${data.count || 'a few'} tasks is ready.`;
+      break;
+    case 'todo_success':
+      prompt = `Create a notification confirming that the user's to-do list has been successfully updated. It now has ${data.count || 'some'} tasks.`;
+      break;
+    case 'ack':
+      prompt = `Acknowledge the user's request briefly (<=10 words).`;
+      break;
+    default:
+      return (lang === 'Arabic') ? "تم تحديث طلبك بنجاح." : 'Your request has been updated.';
+  }
+
+  try {
+    const res = await generateWithFailover('notification', prompt + commonRules, { label: 'NotificationManager', timeoutMs: CONFIG.TIMEOUTS.notification });
+    const text = await extractTextFromResult(res);
+    return text || ((lang === 'Arabic') ? "تم تحديث طلبك بنجاح." : 'Done.');
+  } catch (err) {
+    console.error('runNotificationManager failed:', err && err.message ? err.message : err);
+    return (lang === 'Arabic') ? "تم تحديث طلبك بنجاح." : 'Done.';
+  }
+}
+
 async function runToDoManager(userId, userRequest, currentTasks = []) {
-  // [!] الإصلاح #2: تم تنظيف وتوحيد الأمر
   const prompt = `You are an expert To-Do List Manager AI. Modify the CURRENT TASKS based on the USER REQUEST.
 <rules>
 1.  **Precision:** You MUST only modify, add, or delete tasks explicitly mentioned in the user request.
@@ -602,23 +681,40 @@ async function jobWorkerLoop() {
 jobWorkerLoop().catch((err) => console.error('jobWorkerLoop startup failed:', err && err.stack ? err.stack : err));
 
 // ---------------- NOTIFICATION & REVIEW (UTILS) ----------------
+async function runReviewManagerForSync(question, answer) {
+  // wrapper to match previous naming conventions used around the code
+  return runReviewManager(question, answer);
+}
 
+// ---------------- SYNC QUESTION HANDLER ----------------
 async function handleGeneralQuestion(message, language, history = [], userProfile = 'No available memory.', userProgress = {}, userId = null) {
-  const lastFive = (Array.isArray(history) ? history.slice(-5) : []).map(h => `${h.role === 'model' ? 'You' : 'User'}: ${safeSnippet(h.text || '', 500)}`).join('\n');
-  const tasksSummary = (userProgress?.dailyTasks?.tasks?.length > 0) ? `Current Tasks:\n${userProgress.dailyTasks.tasks.map(t => `- ${t.title} (${t.status})`).join('\n')}` : 'The user currently has no tasks.';
-  
+  const lastFive = (Array.isArray(history) ? history.slice(-5) : [])
+    .map(h => {
+      const who = (h.role === 'model' || h.role === 'assistant') ? 'Assistant' : 'User';
+      return `${who}: ${escapeForPrompt(safeSnippet(h.text || '', 500))}`;
+    })
+    .join('\n');
+
+  const tasksSummary = (userProgress && userProgress.dailyTasks && Array.isArray(userProgress.dailyTasks.tasks) && userProgress.dailyTasks.tasks.length > 0)
+    ? `Current Tasks:\n${userProgress.dailyTasks.tasks.map(t => `- ${t.title} (${t.status})`).join('\n')}`
+    : 'The user currently has no tasks.';
+
   let weaknesses = [];
   if (userId) {
-      try { weaknesses = await fetchUserWeaknesses(userId); } catch (e) { weaknesses = []; }
+    try { weaknesses = await fetchUserWeaknesses(userId); } catch (e) { weaknesses = []; }
   }
-  const weaknessesSummary = weaknesses.length > 0 ? `Identified Weaknesses:\n${weaknesses.map(w => `- In "${w.subjectTitle}", the lesson "${w.lessonTitle}" has a mastery of ${w.masteryScore}%.`).join('\n')}` : 'No specific weaknesses have been identified.';
+  const weaknessesSummary = weaknesses.length > 0
+    ? `Identified Weaknesses:\n${weaknesses.map(w => `- In "${w.subjectTitle}", the lesson "${w.lessonTitle}" has a mastery of ${w.masteryScore}%.`).join('\n')}`
+    : 'No specific weaknesses have been identified.';
 
-  // [!] الإصلاح: تم تنظيف وتوحيد الأمر
+  const pathProgressSnippet = safeSnippet(JSON.stringify(userProgress.pathProgress || {}), 2000);
+
   const prompt = `You are EduAI, an expert, empathetic, and highly intelligent educational assistant. Your primary role is to help the user by leveraging the academic context provided to you. You are NOT a generic AI; you are a specialized tutor with access to the user's learning journey.
+
 <rules>
 1.  **Your Persona:** You are helpful, encouraging, and you ALWAYS use the context provided below to answer questions related to the user's progress, tasks, or study plan.
 2.  **Use the Context:** The following information is your operational knowledge about the user. It is NOT private data; it is your tool to provide personalized help. You MUST use it to answer relevant questions.
-3.  **Handling Unclear Input:** If the user's message is nonsensical, a random string, or just emojis, you MUST respond with a simple, friendly message like "لم أفهم طلبك، هل يمكنك إعادة صياغته؟". DO NOT try to guess or use the context to invent a response.
+3.  **Handling Unclear Input:** If the user's message is nonsensical, a random string, or just emojis, you MUST respond with a simple, friendly message like "لم أفهم طلبك، هل يمكنك إعادة صياغته؟".
 4.  **Language:** You MUST respond in ${language}.
 </rules>
 
@@ -634,13 +730,27 @@ ${lastFive}
 
 User's new question: "${escapeForPrompt(safeSnippet(message, 1000))}"
 
-Your concise and helpful response:`;
+Answer directly and helpfully (no commentary about internal state).
+<user_profile>
+${escapeForPrompt(safeSnippet(userProfile, 1000))}
+</user_profile>
 
+<current_tasks>
+${tasksSummary}
+</current_tasks>
+
+<path_progress>
+${pathProgressSnippet}
+</path_progress>
+
+User question: "${escapeForPrompt(safeSnippet(message, 2000))}"`;
+
+  // Call the chat model through generateWithFailover
   const modelResp = await generateWithFailover('chat', prompt, { label: 'ResponseManager', timeoutMs: CONFIG.TIMEOUTS.chat });
   let replyText = await extractTextFromResult(modelResp);
 
   const review = await runReviewManager(message, replyText);
-  if (review?.score < CONFIG.REVIEW_THRESHOLD) {
+  if (review && typeof review.score === 'number' && review.score < CONFIG.REVIEW_THRESHOLD) {
     const correctivePrompt = `Previous reply scored ${review.score}/10. Improve it based on: ${escapeForPrompt(review.feedback)}. User: "${escapeForPrompt(safeSnippet(message, 2000))}"`;
     const res2 = await generateWithFailover('chat', correctivePrompt, { label: 'ResponseRetry', timeoutMs: CONFIG.TIMEOUTS.chat });
     const improved = await extractTextFromResult(res2);
@@ -650,10 +760,34 @@ Your concise and helpful response:`;
   return replyText || (language === 'Arabic' ? 'لم أتمكن من الإجابة الآن. هل تريد إعادة الصياغة؟' : 'I could not generate an answer right now.');
 }
 
-
 // ---------------- ROUTES ----------------
-// === Route: Update Daily Tasks ===
-// === Route: Update Daily Tasks ===
+app.post('/chat', async (req, res) => {
+  try {
+    const userId = req.body.userId || req.userId;
+    const { message, history = [] } = req.body || {};
+    if (!userId || !message) return res.status(400).json({ error: 'userId and message are required' });
+
+    const traffic = await runTrafficManager(message);
+    const language = traffic.language || 'Arabic';
+    const intent = traffic.intent || 'unclear';
+
+    if (intent === 'manage_todo' || intent === 'generate_plan') {
+      const ack = await runNotificationManager('ack', language);
+      const payload = { message, intent, language, history, pathId: req.body.pathId || null };
+      const jobId = await enqueueJob({ userId, type: 'background_chat', payload });
+      return res.json({ reply: ack, jobId, isAction: true });
+    }
+
+    const userProfile = await getProfile(userId);
+    const userProgress = await getProgress(userId);
+    const reply = await handleGeneralQuestion(message, language, history, userProfile, userProgress, userId);
+    return res.json({ reply, isAction: false });
+  } catch (err) {
+    console.error('/chat error:', err && err.stack ? err.stack : err);
+    return res.status(500).json({ error: 'An internal server error occurred while processing your request.' });
+  }
+});
+
 app.post('/update-daily-tasks', async (req, res) => {
   try {
     const { userId, updatedTasks } = req.body || {};
@@ -662,59 +796,41 @@ app.post('/update-daily-tasks', async (req, res) => {
       return res.status(400).json({ error: 'User ID and updatedTasks array are required.' });
     }
 
-    const userRef = db.collection('users').doc(userId);
-    const userDoc = await userRef.get();
+    // Write to userProgress collection (keeps structure consistent with other parts)
+    await db.collection('userProgress').doc(userId).set({
+      dailyTasks: { tasks: updatedTasks, generatedAt: admin.firestore.FieldValue.serverTimestamp() }
+    }, { merge: true });
 
-    if (!userDoc.exists) {
-      return res.status(404).json({ error: 'User not found.' });
-    }
-
-    // Update Firestore (use update to avoid overwriting unless you want full replace)
-    await userRef.update({
-      dailyTasks: updatedTasks,
-      lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    // Invalidate cache for user
     await cacheDel('progress', userId);
 
-    // Respond with success and confirmation payload
     res.status(200).json({
       success: true,
       message: 'Daily tasks updated successfully.',
       updatedCount: updatedTasks.length,
       timestamp: new Date().toISOString(),
     });
-
   } catch (error) {
     console.error('/update-daily-tasks error:', error && error.stack ? error.stack : error);
     res.status(500).json({ error: 'An error occurred while updating daily tasks.' });
   }
 });
+
 app.post('/generate-daily-tasks', async (req, res) => {
   try {
     const { userId, pathId = null } = req.body || {};
     if (!userId) return res.status(400).json({ error: 'User ID is required.' });
-
     const result = await runPlannerManager(userId, pathId);
-
-    res.status(200).json({
-      source: result.source,
-      taskCount: result.tasks.length,
-      tasks: result.tasks,
-    });
+    return res.status(200).json({ success: true, generatedAt: new Date().toISOString(), source: result.source || 'AI', tasks: result.tasks });
   } catch (err) {
     console.error('/generate-daily-tasks error:', err && err.stack ? err.stack : err);
-    res.status(500).json({ error: 'An error occurred while generating tasks.' });
+    return res.status(500).json({ error: 'Failed to generate tasks.' });
   }
 });
 
-// === Route: Generate Title ===
 app.post('/generate-title', async (req, res) => {
   try {
     const { message } = req.body || {};
     if (!message) return res.status(400).json({ error: 'Message is required.' });
-
     const traffic = await runTrafficManager(message);
     return res.status(200).json({ title: traffic.title || 'New Chat' });
   } catch (err) {
@@ -723,8 +839,6 @@ app.post('/generate-title', async (req, res) => {
   }
 });
 
-
-// ---------------- ANALYZE QUIZ ----------------
 app.post('/analyze-quiz', async (req, res) => {
   const start = Date.now();
   try {
@@ -744,49 +858,14 @@ app.post('/analyze-quiz', async (req, res) => {
     return res.status(500).json({ error: 'An internal server error occurred during quiz analysis.' });
   }
 });
-//--------------CHAT---------------
-app.post('/chat', async (req, res) => {
-  const start = Date.now();
-  try {
-    const { userId, message, history = [], language = 'Arabic' } = req.body || {};
 
-    if (!userId || !message) {
-      return res.status(400).json({ error: 'User ID and message are required.' });
-    }
-
-    // استخدم الدوال المساعدة التي قمت ببنائها بالفعل
-    const userProfile = await getProfile(userId);
-    const userProgress = await getProgress(userId);
-
-    // استدعاء الدالة الرئيسية لمعالجة المحادثة
-    const replyText = await handleGeneralQuestion(message, language, history, userProfile, userProgress, userId);
-
-    const took = Date.now() - start;
-    res.setHeader('X-Response-Time-ms', String(took));
-    
-    // أعد الرد بصيغة JSON كما يتوقعها تطبيقك
-    return res.status(200).json({ reply: replyText });
-
-  } catch (err) {
-    console.error('/chat error:', err && err.stack ? err.stack : err);
-    // في حالة حدوث خطأ، أعد رسالة خطأ واضحة
-    return res.status(500).json({ 
-        error: 'An internal server error occurred.',
-        // أعد رسالة افتراضية لطيفة للواجهة الأمامية
-        reply: 'عذراً، حدث خطأ ما. يرجى المحاولة مرة أخرى.' 
-    });
-  }
-});
-// ---------------- HEALTH ----------------
 app.get('/health', (req, res) => res.json({ ok: true, time: iso(), pools: Object.fromEntries(poolNames.map(p => [p, modelPools[p]?.length || 0])) }));
 
 // ---------------- STARTUP & SHUTDOWN ----------------
-// Start single HTTP server (avoid multiple app.listen calls)
 const server = app.listen(CONFIG.PORT, () => {
-  console.log(`✅ EduAI Brain V17.0 running on port ${CONFIG.PORT}`);
+  console.log(`✅ EduAI Brain V17.5 running on port ${CONFIG.PORT}`);
   (async () => {
     try {
-      // warm up one of the lightweight models (non-fatal)
       await generateWithFailover('titleIntent', 'ping', { label: 'warmup', timeoutMs: 2000 });
       console.log('💡 Model warmup done.');
     } catch (e) {
@@ -798,18 +877,15 @@ const server = app.listen(CONFIG.PORT, () => {
 function shutdown(sig) {
   console.log(`${iso()} Received ${sig}, shutting down...`);
   workerStopped = true;
-  // stop accepting new connections
   server.close(async (err) => {
     if (err) {
       console.error('Error closing HTTP server:', err);
       process.exit(1);
     }
     console.log(`${iso()} HTTP server closed.`);
-    // give some time for background tasks to finish
     try { await sleep(500); } catch (e) {}
     process.exit(0);
   });
-  // force exit if graceful shutdown takes too long
   setTimeout(() => {
     console.error('Graceful shutdown timed out. Forcing exit.');
     process.exit(1);
@@ -821,7 +897,6 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('unhandledRejection', (r) => console.error('unhandledRejection', r));
 process.on('uncaughtException', (err) => {
   console.error('uncaughtException', err && err.stack ? err.stack : err);
-  // attempt graceful shutdown on fatal exceptions
   try { shutdown('uncaughtException'); } catch (e) { process.exit(1); }
 });
 
