@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * server.js — EduAI Brain V17.0 (cleaned)
+ * server.js — EduAI Brain V17.0 (cleaned & corrected)
  *
  * - Single-file cleaned version (no duplicated blocks).
  * - Keep required env vars: FIREBASE_SERVICE_ACCOUNT_KEY, GOOGLE_API_KEY*.
@@ -126,12 +126,30 @@ async function generateWithFailover(poolName, prompt, opts = {}) {
   const label = opts.label || poolName;
 
   let lastErr = null;
-  for (const inst of shuffled(pool)) {
+ for (const inst of shuffled(pool)) {
     try {
       const k = inst.key;
       if (keyStates[k] && keyStates[k].backoffUntil > Date.now()) continue;
-      const call = inst.model.generateContent(prompt);
-      const res = await withTimeout(call, timeoutMs, `${label} (key)`);
+
+      // try common call shapes
+      let callPromise;
+      try {
+        if (inst.model && typeof inst.model.generateContent === 'function') {
+          callPromise = inst.model.generateContent(prompt);
+        } else if (inst.model && typeof inst.model.generate === 'function') {
+          callPromise = inst.model.generate(prompt);
+        } else if (inst.client && inst.client.responses && typeof inst.client.responses.generate === 'function') {
+          // fallback to client.responses.generate shape
+          callPromise = inst.client.responses.generate({ model: CONFIG.MODEL[poolName], input: prompt });
+        } else {
+          throw new Error('No known model call shape on instance');
+        }
+      } catch (inner) {
+        // if constructing callPromise threw, rethrow to outer catch
+        throw inner;
+      }
+
+      const res = await withTimeout(callPromise, timeoutMs, `${label} (key)`);
       if (keyStates[inst.key]) keyStates[inst.key].fails = 0;
       return res;
     } catch (err) {
@@ -146,20 +164,32 @@ async function generateWithFailover(poolName, prompt, opts = {}) {
       }
     }
   }
-  throw lastErr || new Error(`${label} failed for all available keys`);
-}
-
 async function extractTextFromResult(result) {
   try {
     if (!result) return '';
+    // 1) response.text (stream-like)
     if (result.response && typeof result.response.text === 'function') {
       const t = await result.response.text();
       return (t || '').toString().trim();
     }
+    // 2) direct text properties
     if (typeof result === 'string') return result.trim();
     if (result.text && typeof result.text === 'string') return result.text.trim();
     if (result.outputText && typeof result.outputText === 'string') return result.outputText.trim();
-    return '';
+    if (result.output && Array.isArray(result.output) && result.output[0] && result.output[0].content) {
+      // google responses sometimes put content blocks
+      const first = result.output[0].content.find(c => typeof c.text === 'string' || (c.parts && c.parts.length));
+      if (first) return (first.text || (first.parts && first.parts.join('')) || '').trim();
+    }
+    if (result.output && typeof result.output === 'string') return result.output.trim();
+    if (result.data && typeof result.data === 'string') return result.data.trim();
+    // 3) client.responses.generate style
+    if (result.output && result.output[0] && result.output[0].content) {
+      const parts = result.output[0].content.map(c => c.text || (c.parts && c.parts.join(''))).filter(Boolean);
+      if (parts.length) return parts.join('\n').trim();
+    }
+    // fallback: try JSON-stringify small useful slice
+    return JSON.stringify(result).slice(0, 2000);
   } catch (err) {
     console.error('extractTextFromResult failed:', err && err.message ? err.message : err);
     return '';
@@ -348,7 +378,7 @@ async function runPlannerManager(userId, pathId = null) {
     ? `<context>\nThe user has shown weaknesses in the following areas:\n${weaknesses.map(w => `- Subject: "${w.subjectTitle}", Lesson: "${w.lessonTitle}" (ID: ${w.lessonId}), Current Mastery: ${w.masteryScore}%`).join('\n')}\n</context>`
     : '<context>The user is new or has no specific weaknesses. Suggest a general introductory plan to get them started.</context>';
 
-  const prompt = `You are an elite academic coach. Create an engaging, personalized study plan.\n${weaknessesPrompt}\n<rules>\n1.  Generate 2-4 daily tasks.\n2.  All task titles MUST be in clear, user-friendly Arabic.\n3.  **Clarity:** If a task is for a specific subject (e.g., "Physics"), mention it in the title, like "مراجعة الدرس الأول في الفيزياء".\n4.  You MUST create a variety of task types.\n5.  Each task MUST include 'relatedLessonId' and 'relatedSubjectId'.\n6.  Output MUST be ONLY a valid JSON object: { "tasks": [ ... ] }\n</rules>`;`;
+  const prompt = `You are an elite academic coach. Create an engaging, personalized study plan.\n${weaknessesPrompt}\n<rules>\n1.  Generate 2-4 daily tasks.\n2.  All task titles MUST be in clear, user-friendly Arabic.\n3.  **Clarity:** If a task is for a specific subject (e.g., "Physics"), mention it in the title, like "مراجعة الدرس الأول في الفيزياء".\n4.  You MUST create a variety of task types.\n5.  Each task MUST include 'relatedLessonId' and 'relatedSubjectId'.\n6.  Output MUST be ONLY a valid JSON object: { "tasks": [ ... ] }\n</rules>`;
 
   const res = await generateWithFailover('planner', prompt, { label: 'Planner', timeoutMs: CONFIG.TIMEOUTS.default });
   const raw = await extractTextFromResult(res);
@@ -553,31 +583,36 @@ async function runReviewManager(userRequest, modelResponseText) {
     if (!parsed || typeof parsed.score !== 'number') return { score: 10, feedback: 'No reviewer feedback.' };
     return parsed;
   } catch (e) {
-    return { score: 10, feedback: 'Reviewer failed.' };
+    return { score: 5, feedback: 'Review model unavailable, skipping check.' };
   }
 }
 
 // ---------------- SYNC QUESTION HANDLER ----------------
-async function handleGeneralQuestion(message, language, history = [], userProfile = 'No available memory.', userProgress = {}) {
-    const lastFive = (Array.isArray(history) ? history.slice(-5) : [])
-        .map(h => `${h.role === 'model' ? 'You' : 'User'}: ${safeSnippet(h.text || '', 500)}`)
-        .join('\n');
+async function handleGeneralQuestion(message, language, history = [], userProfile = 'No available memory.', userProgress = {}, userId = null) {
+  const lastFive = (Array.isArray(history) ? history.slice(-5) : [])
+    .map(h => {
+      const who = (h.role === 'model' || h.role === 'assistant') ? 'Assistant' : 'User';
+      return `${who}: ${escapeForPrompt(safeSnippet(h.text || '', 500))}`;
+    })
+    .join('\n');
 
-    const tasksSummary = (userProgress?.dailyTasks?.tasks?.length > 0)
-        ? `Current Tasks:\n${userProgress.dailyTasks.tasks.map(t => `- ${t.title} (${t.status})`).join('\n')}`
-        : 'The user currently has no tasks.';
-    
-    // [!] تحسين: تحويل نقاط الضعف إلى نص طبيعي بدلاً من JSON
-    const weaknesses = await fetchUserWeaknesses(userProgress.userId); // Assuming userId is available
-    const weaknessesSummary = weaknesses.length > 0
-        ? `Identified Weaknesses:\n${weaknesses.map(w => `- In "${w.subjectTitle}", the lesson "${w.lessonTitle}" has a mastery of ${w.masteryScore}%.`).join('\n')}`
-        : 'No specific weaknesses have been identified.';
+  const tasksSummary = (userProgress && userProgress.dailyTasks && Array.isArray(userProgress.dailyTasks.tasks) && userProgress.dailyTasks.tasks.length > 0)
+    ? `Current Tasks:\n${userProgress.dailyTasks.tasks.map(t => `- ${t.title} (${t.status})`).join('\n')}`
+    : 'The user currently has no tasks.';
+
+  // Use userId to fetch weaknesses if available
+  let weaknesses = [];
+  if (userId) {
+    try { weaknesses = await fetchUserWeaknesses(userId); } catch (e) { weaknesses = []; }
+  }
+  const weaknessesSummary = weaknesses.length > 0
+    ? `Identified Weaknesses:\n${weaknesses.map(w => `- In "${w.subjectTitle}", the lesson "${w.lessonTitle}" has a mastery of ${w.masteryScore}%.`).join('\n')}`
+    : 'No specific weaknesses have been identified.';
 
   const pathProgressSnippet = safeSnippet(JSON.stringify(userProgress.pathProgress || {}), 2000);
   const historyBlock = lastFive ? `<conversation_history>\n${lastFive}\n</conversation_history>\n` : '';
 
-  
-    const prompt = `You are EduAI, an expert, empathetic, and highly intelligent educational assistant. Your primary role is to help the user by leveraging the academic context provided to you. You are NOT a generic AI; you are a specialized tutor with access to the user's learning journey.
+  const prompt = `You are EduAI, an expert, empathetic, and highly intelligent educational assistant. Your primary role is to help the user by leveraging the academic context provided to you. You are NOT a generic AI; you are a specialized tutor with access to the user's learning journey.
 
 <rules>
 1.  **Your Persona:** You are helpful, encouraging, and you ALWAYS use the context provided below to answer questions related to the user's progress, tasks, or study plan.
@@ -598,9 +633,9 @@ ${lastFive}
 
 User's new question: "${escapeForPrompt(safeSnippet(message, 1000))}"
 
-Your concise and helpful response:;
-
-${historyBlock}<user_profile>
+Answer directly and helpfully (no commentary about internal state).
+${historyBlock}
+<user_profile>
 ${escapeForPrompt(safeSnippet(userProfile, 1000))}
 </user_profile>
 
@@ -612,12 +647,11 @@ ${tasksSummary}
 ${pathProgressSnippet}
 </path_progress>
 
-User question: "${escapeForPrompt(safeSnippet(message, 2000))}"
+User question: "${escapeForPrompt(safeSnippet(message, 2000))}"`;
 
-Answer directly and helpfully (no commentary about internal state).`;
-
-  const res = await generateWithFailover('chat', prompt, { label: 'ResponseManager', timeoutMs: CONFIG.TIMEOUTS.chat });
-  let replyText = await extractTextFromResult(res);
+  // Call the chat model through generateWithFailover
+  const modelResp = await generateWithFailover('chat', prompt, { label: 'ResponseManager', timeoutMs: CONFIG.TIMEOUTS.chat });
+  let replyText = await extractTextFromResult(modelResp);
 
   const review = await runReviewManager(message, replyText);
   if (review && typeof review.score === 'number' && review.score < CONFIG.REVIEW_THRESHOLD) {
@@ -633,7 +667,7 @@ Answer directly and helpfully (no commentary about internal state).`;
 // ---------------- ROUTES ----------------
 app.post('/chat', async (req, res) => {
   try {
-    const userId = req.userId || req.body.userId;
+    const userId = req.body.userId || req.userId;
     const { message, history = [] } = req.body || {};
     if (!userId || !message) return res.status(400).json({ error: 'userId and message are required' });
 
@@ -650,7 +684,7 @@ app.post('/chat', async (req, res) => {
 
     const userProfile = await getProfile(userId);
     const userProgress = await getProgress(userId);
-    const reply = await handleGeneralQuestion(message, language, history, userProfile, userProgress);
+    const reply = await handleGeneralQuestion(message, language, history, userProfile, userProgress, userId);
     return res.json({ reply, isAction: false });
   } catch (err) {
     console.error('/chat error:', err && err.stack ? err.stack : err);
@@ -660,15 +694,34 @@ app.post('/chat', async (req, res) => {
 
 app.post('/update-daily-tasks', async (req, res) => {
   try {
-    const { userId, userRequest } = req.body || {};
-    if (!userId || !userRequest) return res.status(400).json({ error: 'userId and userRequest are required.' });
-    const progress = await getProgress(userId);
-    const currentTasks = progress?.dailyTasks?.tasks || [];
-    const updated = await runToDoManager(userId, userRequest, currentTasks);
-    return res.status(200).json({ success: true, tasks: updated });
-  } catch (err) {
-    console.error('/update-daily-tasks error:', err && err.stack ? err.stack : err);
-    return res.status(500).json({ error: 'Failed to update tasks.' });
+    const { userId, updatedTasks } = req.body;
+
+    if (!userId || !Array.isArray(updatedTasks)) {
+      return res.status(400).json({ error: 'Invalid input. Must include userId and updatedTasks[]' });
+    }
+
+    const userRef = db.collection('users').doc(userId); // << use db here
+    const userDoc = await userRef.get();
+
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    // Update Firestore (use update to avoid overwriting unless you want full replace)
+    await userRef.update({
+      dailyTasks: updatedTasks,
+      lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Respond with success and confirmation payload
+    res.status(200).json({
+      message: 'Daily tasks updated successfully.',
+      updatedCount: updatedTasks.length,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('/update-daily-tasks error:', error && error.stack ? error.stack : error);
+    res.status(500).json({ error: 'An error occurred while updating daily tasks.' });
   }
 });
 
@@ -689,13 +742,14 @@ app.post('/generate-title', async (req, res) => {
     const { message } = req.body || {};
     if (!message) return res.status(400).json({ error: 'Message is required.' });
     const traffic = await runTrafficManager(message);
-    return res.status(200).json({ title: traffic.title || 'محادثة جديدة' });
+    return res.status(200).json({ title: traffic.title || 'New Chat' });
   } catch (err) {
     console.error('/generate-title error:', err && err.stack ? err.stack : err);
-    return res.status(200).json({ title: 'محادثة جديدة' });
+    return res.status(200).json({ title: 'New Chat' });
   }
 });
 
+// ---------------- ANALYZE QUIZ ----------------
 app.post('/analyze-quiz', async (req, res) => {
   const start = Date.now();
   try {
@@ -704,7 +758,7 @@ app.post('/analyze-quiz', async (req, res) => {
       return res.status(400).json({ error: 'Invalid or incomplete quiz data provided.' });
     }
     if (quizQuestions.length !== userAnswers.length) {
-      req.log('Warning: quizQuestions.length != userAnswers.length');
+      req.log && req.log('Warning: quizQuestions.length != userAnswers.length');
     }
     const analysis = await runQuizAnalyzer({ lessonTitle, quizQuestions, userAnswers, totalScore });
     const took = Date.now() - start;
@@ -716,33 +770,53 @@ app.post('/analyze-quiz', async (req, res) => {
   }
 });
 
-app.get('/health', (req, res) => res.json({ ok: true, time: iso() }));
+// ---------------- HEALTH ----------------
+app.get('/health', (req, res) => res.json({ ok: true, time: iso(), pools: Object.fromEntries(poolNames.map(p => [p, modelPools[p]?.length || 0])) }));
 
 // ---------------- STARTUP & SHUTDOWN ----------------
+// Start single HTTP server (avoid multiple app.listen calls)
 const server = app.listen(CONFIG.PORT, () => {
   console.log(`✅ EduAI Brain V17.0 running on port ${CONFIG.PORT}`);
   (async () => {
     try {
+      // warm up one of the lightweight models (non-fatal)
       await generateWithFailover('titleIntent', 'ping', { label: 'warmup', timeoutMs: 2000 });
       console.log('💡 Model warmup done.');
-    } catch (e) { console.warn('💡 Model warmup skipped/failed (non-fatal).'); }
+    } catch (e) {
+      console.warn('💡 Model warmup skipped/failed (non-fatal).');
+    }
   })();
 });
 
 function shutdown(sig) {
   console.log(`${iso()} Received ${sig}, shutting down...`);
   workerStopped = true;
-  server.close(async () => {
+  // stop accepting new connections
+  server.close(async (err) => {
+    if (err) {
+      console.error('Error closing HTTP server:', err);
+      process.exit(1);
+    }
     console.log(`${iso()} HTTP server closed.`);
+    // give some time for background tasks to finish
+    try { await sleep(500); } catch (e) {}
     process.exit(0);
   });
+  // force exit if graceful shutdown takes too long
   setTimeout(() => {
     console.error('Graceful shutdown timed out. Forcing exit.');
     process.exit(1);
   }, 10000).unref();
 }
+
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('unhandledRejection', (r) => console.error('unhandledRejection', r));
+process.on('uncaughtException', (err) => {
+  console.error('uncaughtException', err && err.stack ? err.stack : err);
+  // attempt graceful shutdown on fatal exceptions
+  try { shutdown('uncaughtException'); } catch (e) { process.exit(1); }
+});
 
-module.exports = { app };
+// export app for tests / serverless adapters
+module.exports = { app, server };
