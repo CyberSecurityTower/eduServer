@@ -744,7 +744,39 @@ app.post('/analyze-quiz', async (req, res) => {
     return res.status(500).json({ error: 'An internal server error occurred during quiz analysis.' });
   }
 });
+//--------------CHAT---------------
+app.post('/chat', async (req, res) => {
+  const start = Date.now();
+  try {
+    const { userId, message, history = [], language = 'Arabic' } = req.body || {};
 
+    if (!userId || !message) {
+      return res.status(400).json({ error: 'User ID and message are required.' });
+    }
+
+    // استخدم الدوال المساعدة التي قمت ببنائها بالفعل
+    const userProfile = await getProfile(userId);
+    const userProgress = await getProgress(userId);
+
+    // استدعاء الدالة الرئيسية لمعالجة المحادثة
+    const replyText = await handleGeneralQuestion(message, language, history, userProfile, userProgress, userId);
+
+    const took = Date.now() - start;
+    res.setHeader('X-Response-Time-ms', String(took));
+    
+    // أعد الرد بصيغة JSON كما يتوقعها تطبيقك
+    return res.status(200).json({ reply: replyText });
+
+  } catch (err) {
+    console.error('/chat error:', err && err.stack ? err.stack : err);
+    // في حالة حدوث خطأ، أعد رسالة خطأ واضحة
+    return res.status(500).json({ 
+        error: 'An internal server error occurred.',
+        // أعد رسالة افتراضية لطيفة للواجهة الأمامية
+        reply: 'عذراً، حدث خطأ ما. يرجى المحاولة مرة أخرى.' 
+    });
+  }
+});
 // ---------------- HEALTH ----------------
 app.get('/health', (req, res) => res.json({ ok: true, time: iso(), pools: Object.fromEntries(poolNames.map(p => [p, modelPools[p]?.length || 0])) }));
 
