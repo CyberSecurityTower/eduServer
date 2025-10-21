@@ -678,11 +678,11 @@ app.post('/update-daily-tasks', async (req, res) => {
     res.status(500).json({ error: 'An error occurred while updating daily tasks.' });
   }
 });
-    const userDoc = await userRef.get();
+const userDoc = await userRef.get();
+if (!userDoc.exists) {
+  return res.status(404).json({ error: 'User not found.' });
+}
 
-    if (!userDoc.exists) {
-      return res.status(404).json({ error: 'User not found.' });
-    }
 
     // Update Firestore (use update to avoid overwriting unless you want full replace)
     await userRef.update({
