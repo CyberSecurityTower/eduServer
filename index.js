@@ -313,7 +313,12 @@ async function runTrafficManager(userMessage) {
 }
 
 async function runToDoManager(userId, userRequest, currentTasks = []) {
-  const prompt = `You are an expert To-Do List Manager AI. Modify the CURRENT TASKS per USER REQUEST.\nCURRENT TASKS: ${JSON.stringify(currentTasks)}\nUSER REQUEST: "${escapeForPrompt(userRequest)}"\nRules:\n1) Respond ONLY with JSON: { "tasks": [ ... ] } and no extra text.\n2) Each task must have id,title,type ('review'|'quiz'|'new_lesson'|'practice'|'study'),status ('pending'|'completed'),relatedLessonId (string|null),relatedSubjectId (string|null).\n3) Preserve existing IDs for modified tasks. Create new UUIDs for new tasks.\nIf unclear, return current tasks unchanged.`;
+  const prompt = `You are an expert To-Do List Manager AI. Modify the CURRENT TASKS per USER REQUEST <rules>
+1.  **Precision:** You MUST only modify, add, or delete tasks explicitly mentioned in the user request.
+2.  **Preservation:** You MUST preserve the exact original title, type, and language of all other tasks that were not mentioned in the request. This is a critical rule.
+3.  **Output Format:** Respond ONLY with a valid JSON object: { "tasks": [ ... ] }. Each task must have all required fields (id, title, type, status, etc.).
+.\nCURRENT TASKS: ${JSON.stringify(currentTasks)}\nUSER REQUEST: "${escapeForPrompt(userRequest)}"\nRules:\n1) Respond ONLY with JSON: { "tasks": [ ... ] } and no extra text.\n2) Each task must have id,title,type ('review'|'quiz'|'new_lesson'|'practice'|'study'),status ('pending'|'completed'),relatedLessonId (string|null),relatedSubjectId (string|null).\n3) Preserve existing IDs for modified tasks. Create new UUIDs for new tasks.\nIf unclear, return current tasks unchanged.
+</rules>`;
   const res = await generateWithFailover('todo', prompt, { label: 'ToDoManager', timeoutMs: CONFIG.TIMEOUTS.default });
   const raw = await extractTextFromResult(res);
   const parsed = await ensureJsonOrRepair(raw, 'todo');
@@ -343,7 +348,7 @@ async function runPlannerManager(userId, pathId = null) {
     ? `<context>\nThe user has shown weaknesses in the following areas:\n${weaknesses.map(w => `- Subject: "${w.subjectTitle}", Lesson: "${w.lessonTitle}" (ID: ${w.lessonId}), Current Mastery: ${w.masteryScore}%`).join('\n')}\n</context>`
     : '<context>The user is new or has no specific weaknesses. Suggest a general introductory plan to get them started.</context>';
 
-  const prompt = `You are an elite academic coach, an expert in creating engaging and effective study plans. Your persona is encouraging, clear, and precise.\n${weaknessesPrompt}\n<rules>\n1.  Goal: Generate 2-4 personalized daily tasks.\n2.  All task titles MUST be Arabic and user-friendly.\n3.  NEVER use internal IDs in titles.\n4.  Provide a variety of types (review, quiz, new_lesson, practice, study).\n5.  Each task must include relatedLessonId and relatedSubjectId (nullable).\n6.  Output MUST be ONLY a JSON object: { \"tasks\": [ ... ] }\n</rules>`;
+  const prompt = `You are an elite academic coach. Create an engaging, personalized study plan.\n${weaknessesPrompt}\n<rules>\n1.  Generate 2-4 daily tasks.\n2.  All task titles MUST be in clear, user-friendly Arabic.\n3.  **Clarity:** If a task is for a specific subject (e.g., "Physics"), mention it in the title, like "مراجعة الدرس الأول في الفيزياء".\n4.  You MUST create a variety of task types.\n5.  Each task MUST include 'relatedLessonId' and 'relatedSubjectId'.\n6.  Output MUST be ONLY a valid JSON object: { "tasks": [ ... ] }\n</rules>`;`;
 
   const res = await generateWithFailover('planner', prompt, { label: 'Planner', timeoutMs: CONFIG.TIMEOUTS.default });
   const raw = await extractTextFromResult(res);
@@ -554,27 +559,46 @@ async function runReviewManager(userRequest, modelResponseText) {
 
 // ---------------- SYNC QUESTION HANDLER ----------------
 async function handleGeneralQuestion(message, language, history = [], userProfile = 'No available memory.', userProgress = {}) {
-  const lastFive = (Array.isArray(history) ? history.slice(-5) : [])
-    .map(h => {
-      const who = (h.role === 'model' || h.role === 'assistant') ? 'Assistant' : 'User';
-      return `${who}: ${escapeForPrompt(safeSnippet(h.text || '', 500))}`;
-    })
-    .join('\n');
+    const lastFive = (Array.isArray(history) ? history.slice(-5) : [])
+        .map(h => `${h.role === 'model' ? 'You' : 'User'}: ${safeSnippet(h.text || '', 500)}`)
+        .join('\n');
 
-  const tasksSummary = (userProgress && userProgress.dailyTasks && Array.isArray(userProgress.dailyTasks.tasks))
-    ? JSON.stringify(userProgress.dailyTasks.tasks.map(t => ({ id: t.id, title: t.title, type: t.type, status: t.status })))
-    : '[]';
+    const tasksSummary = (userProgress?.dailyTasks?.tasks?.length > 0)
+        ? `Current Tasks:\n${userProgress.dailyTasks.tasks.map(t => `- ${t.title} (${t.status})`).join('\n')}`
+        : 'The user currently has no tasks.';
+    
+    // [!] تحسين: تحويل نقاط الضعف إلى نص طبيعي بدلاً من JSON
+    const weaknesses = await fetchUserWeaknesses(userProgress.userId); // Assuming userId is available
+    const weaknessesSummary = weaknesses.length > 0
+        ? `Identified Weaknesses:\n${weaknesses.map(w => `- In "${w.subjectTitle}", the lesson "${w.lessonTitle}" has a mastery of ${w.masteryScore}%.`).join('\n')}`
+        : 'No specific weaknesses have been identified.';
 
   const pathProgressSnippet = safeSnippet(JSON.stringify(userProgress.pathProgress || {}), 2000);
   const historyBlock = lastFive ? `<conversation_history>\n${lastFive}\n</conversation_history>\n` : '';
 
-  const prompt = `You are EduAI, a warm and precise educational assistant. Answer concisely in ${language}.
-You are given:
-1) Conversation history (last messages)
-2) User profile (short summary)
-3) Current tasks (ids, titles, types, statuses)
-4) Path/progress summary (subjects/lessons truncated)
-Use these to answer the user's question faithfully.
+  
+    const prompt = `You are EduAI, an expert, empathetic, and highly intelligent educational assistant. Your primary role is to help the user by leveraging the academic context provided to you. You are NOT a generic AI; you are a specialized tutor with access to the user's learning journey.
+
+<rules>
+1.  **Your Persona:** You are helpful, encouraging, and you ALWAYS use the context provided below to answer questions related to the user's progress, tasks, or study plan.
+2.  **Use the Context:** The following information is your operational knowledge about the user. It is NOT private data; it is your tool to provide personalized help. You MUST use it to answer relevant questions.
+3.  **Handling Unclear Input:** If the user's message is nonsensical, a random string, or just emojis, you MUST respond with a simple, friendly message like "لم أفهم طلبك، هل يمكنك إعادة صياغته؟" or "I couldn't understand that, could you please rephrase?". DO NOT try to guess or use the context to invent a response.
+4.  **Language:** You MUST respond in ${language}.
+</rules>
+
+<academic_context>
+${tasksSummary}
+${weaknessesSummary}
+User Profile Summary: ${safeSnippet(userProfile, 500)}
+</academic_context>
+
+<conversation_history>
+${lastFive}
+</conversation_history>
+
+User's new question: "${escapeForPrompt(safeSnippet(message, 1000))}"
+
+Your concise and helpful response:;
 
 ${historyBlock}<user_profile>
 ${escapeForPrompt(safeSnippet(userProfile, 1000))}
