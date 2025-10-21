@@ -24,7 +24,7 @@ const CONFIG = {
     titleIntent: process.env.MODEL_TITLE || 'gemini-2.5-flash-lite',
     notification: process.env.MODEL_NOTIFICATION || 'gemini-2.5-flash-lite',
     review: process.env.MODEL_REVIEW || 'gemini-2.5-pro',
-    analysis: process.env.MODEL_ANALYSIS || 'gemini-2.5-pro',
+    analysis: process.env.MODEL_ANALYSIS || 'gemini-2.5-flash',
   },
   TIMEOUTS: {
     default: Number(process.env.TIMEOUT_DEFAULT_MS || 25000),
@@ -45,10 +45,10 @@ if (!process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
   process.exit(1);
 }
 
-const apiKeyCandidates = Array.from({ length: 4 }, (_, i) => process.env[`GOOGLE_API_KEY_${i + 1}`]).filter(Boolean);
+const apiKeyCandidates = Array.from({ length: 5 }, (_, i) => process.env[`GOOGLE_API_KEY_${i + 1}`]).filter(Boolean);
 if (process.env.GOOGLE_API_KEY && !apiKeyCandidates.includes(process.env.GOOGLE_API_KEY)) apiKeyCandidates.push(process.env.GOOGLE_API_KEY);
 if (apiKeyCandidates.length === 0) {
-  console.error('No Google API keys found (GOOGLE_API_KEY or GOOGLE_API_KEY_1..4). Exiting.');
+  console.error('No Google API keys found (GOOGLE_API_KEY or GOOGLE_API_KEY_1..5). Exiting.');
   process.exit(1);
 }
 
