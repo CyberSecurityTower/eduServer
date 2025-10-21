@@ -126,76 +126,104 @@ async function generateWithFailover(poolName, prompt, opts = {}) {
   const label = opts.label || poolName;
 
   let lastErr = null;
- for (const inst of shuffled(pool)) {
+
+  for (const inst of shuffled(pool)) {
     try {
       const k = inst.key;
       if (keyStates[k] && keyStates[k].backoffUntil > Date.now()) continue;
 
-      // try common call shapes
       let callPromise;
-      try {
-        if (inst.model && typeof inst.model.generateContent === 'function') {
-          callPromise = inst.model.generateContent(prompt);
-        } else if (inst.model && typeof inst.model.generate === 'function') {
-          callPromise = inst.model.generate(prompt);
-        } else if (inst.client && inst.client.responses && typeof inst.client.responses.generate === 'function') {
-          // fallback to client.responses.generate shape
-          callPromise = inst.client.responses.generate({ model: CONFIG.MODEL[poolName], input: prompt });
-        } else {
-          throw new Error('No known model call shape on instance');
-        }
-      } catch (inner) {
-        // if constructing callPromise threw, rethrow to outer catch
-        throw inner;
+      if (inst.model?.generateContent) {
+        callPromise = inst.model.generateContent(prompt);
+      } else if (inst.model?.generate) {
+        callPromise = inst.model.generate(prompt);
+      } else if (inst.client?.responses?.generate) {
+        callPromise = inst.client.responses.generate({
+          model: CONFIG.MODEL[poolName],
+          input: prompt
+        });
+      } else {
+        throw new Error('No known model call shape on instance');
       }
 
-      const res = await withTimeout(callPromise, timeoutMs, `${label} (key)`);
-      if (keyStates[inst.key]) keyStates[inst.key].fails = 0;
+      const res = await withTimeout(callPromise, timeoutMs, `${label} (key:${k})`);
+      if (keyStates[k]) keyStates[k].fails = 0;
       return res;
+
     } catch (err) {
       lastErr = err;
-      if (inst && inst.key && keyStates[inst.key]) {
+      if (inst?.key && keyStates[inst.key]) {
         keyStates[inst.key].fails = (keyStates[inst.key].fails || 0) + 1;
         const backoff = Math.min(1000 * (2 ** keyStates[inst.key].fails), 10 * 60 * 1000);
         keyStates[inst.key].backoffUntil = Date.now() + backoff;
-        console.warn(`${iso()} ${poolName} failed for key (fails=${keyStates[inst.key].fails}), backoff ${backoff}ms:`, err && err.message ? err.message : err);
+        console.warn(`${iso()} ${poolName} failed for key ${inst.key}:`, err.message || err);
       } else {
-        console.warn(`${iso()} ${poolName} failed for an instance:`, err && err.message ? err.message : err);
+        console.warn(`${iso()} ${poolName} instance failed:`, err && err.message ? err.message : err);
       }
+      // Try next instance instead of throwing immediately
+      continue;
     }
   }
+
+  // If we reach here, all instances failed
+  throw lastErr || new Error(`${label} failed for all available keys`);
+}
+      
 async function extractTextFromResult(result) {
   try {
     if (!result) return '';
-    // 1) response.text (stream-like)
+
+    // 1) شكل يحتوي على response.text (stream-like / Response object)
     if (result.response && typeof result.response.text === 'function') {
       const t = await result.response.text();
       return (t || '').toString().trim();
     }
-    // 2) direct text properties
+
+    // 2) نص مباشر
     if (typeof result === 'string') return result.trim();
     if (result.text && typeof result.text === 'string') return result.text.trim();
     if (result.outputText && typeof result.outputText === 'string') return result.outputText.trim();
-    if (result.output && Array.isArray(result.output) && result.output[0] && result.output[0].content) {
-      // google responses sometimes put content blocks
-      const first = result.output[0].content.find(c => typeof c.text === 'string' || (c.parts && c.parts.length));
-      if (first) return (first.text || (first.parts && first.parts.join('')) || '').trim();
-    }
     if (result.output && typeof result.output === 'string') return result.output.trim();
     if (result.data && typeof result.data === 'string') return result.data.trim();
-    // 3) client.responses.generate style
+
+    // 3) شكل client.responses.generate أو أشكال بلوكات المحتوى
+    // مثال: result.output[0].content = [{ type: 'output_text', text: '...' }, ...]
+    if (result.output && Array.isArray(result.output)) {
+      // اجمع كل النصوص الممكنة من المحتويات
+      const collected = [];
+      for (const block of result.output) {
+        if (block.content && Array.isArray(block.content)) {
+          for (const c of block.content) {
+            if (typeof c.text === 'string' && c.text.trim()) collected.push(c.text.trim());
+            else if (c.parts && Array.isArray(c.parts)) collected.push(c.parts.join('').trim());
+          }
+        } else if (typeof block.text === 'string' && block.text.trim()) {
+          collected.push(block.text.trim());
+        }
+      }
+      if (collected.length) return collected.join('\n').trim();
+    }
+
+    // 4) بعض ردود Google الحديثة تحتوي على output[0].content[...] أو candidates
+    if (result.candidates && Array.isArray(result.candidates) && result.candidates.length) {
+      const candTexts = result.candidates.map(c => (typeof c.text === 'string' ? c.text : (c.message && c.message.content && c.message.content[0] && c.message.content[0].text) || '')).filter(Boolean);
+      if (candTexts.length) return candTexts.join('\n').trim();
+    }
+
+    // 5) تحقق من result.output[0].content[0].text الشكل الشائع
     if (result.output && result.output[0] && result.output[0].content) {
       const parts = result.output[0].content.map(c => c.text || (c.parts && c.parts.join(''))).filter(Boolean);
       if (parts.length) return parts.join('\n').trim();
     }
-    // fallback: try JSON-stringify small useful slice
-    return JSON.stringify(result).slice(0, 2000);
+
+    // 6) كحل أخير، حاول stringify مقطع صغير من النتيجة لتسهيل التشخيص
+    const dumped = JSON.stringify(result);
+    return (dumped && dumped.length) ? dumped.slice(0, 2000) : '';
   } catch (err) {
     console.error('extractTextFromResult failed:', err && err.message ? err.message : err);
     return '';
   }
 }
-
 function parseJSONFromText(text) {
   if (typeof text !== 'string') return null;
   const match = text.match(/\{[\s\S]*\}/);
@@ -343,12 +371,20 @@ async function runTrafficManager(userMessage) {
 }
 
 async function runToDoManager(userId, userRequest, currentTasks = []) {
-  const prompt = `You are an expert To-Do List Manager AI. Modify the CURRENT TASKS per USER REQUEST <rules>
+  // [!] الإصلاح #2: تم تنظيف وتوحيد الأمر
+  const prompt = `You are an expert To-Do List Manager AI. Modify the CURRENT TASKS based on the USER REQUEST.
+<rules>
 1.  **Precision:** You MUST only modify, add, or delete tasks explicitly mentioned in the user request.
 2.  **Preservation:** You MUST preserve the exact original title, type, and language of all other tasks that were not mentioned in the request. This is a critical rule.
 3.  **Output Format:** Respond ONLY with a valid JSON object: { "tasks": [ ... ] }. Each task must have all required fields (id, title, type, status, etc.).
-.\nCURRENT TASKS: ${JSON.stringify(currentTasks)}\nUSER REQUEST: "${escapeForPrompt(userRequest)}"\nRules:\n1) Respond ONLY with JSON: { "tasks": [ ... ] } and no extra text.\n2) Each task must have id,title,type ('review'|'quiz'|'new_lesson'|'practice'|'study'),status ('pending'|'completed'),relatedLessonId (string|null),relatedSubjectId (string|null).\n3) Preserve existing IDs for modified tasks. Create new UUIDs for new tasks.\nIf unclear, return current tasks unchanged.
-</rules>`;
+</rules>
+
+CURRENT TASKS:
+${JSON.stringify(currentTasks)}
+
+USER REQUEST:
+"${escapeForPrompt(userRequest)}"`;
+
   const res = await generateWithFailover('todo', prompt, { label: 'ToDoManager', timeoutMs: CONFIG.TIMEOUTS.default });
   const raw = await extractTextFromResult(res);
   const parsed = await ensureJsonOrRepair(raw, 'todo');
@@ -367,7 +403,6 @@ async function runToDoManager(userId, userRequest, currentTasks = []) {
   await db.collection('userProgress').doc(userId).set({
     dailyTasks: { tasks: normalized, generatedAt: admin.firestore.FieldValue.serverTimestamp() },
   }, { merge: true });
-  try { await cacheSet('progress', userId, { dailyTasks: { tasks: normalized } }); } catch (e) {}
   await cacheDel('progress', userId);
   return normalized;
 }
@@ -555,69 +590,23 @@ async function jobWorkerLoop() {
 jobWorkerLoop().catch((err) => console.error('jobWorkerLoop startup failed:', err && err.stack ? err.stack : err));
 
 // ---------------- NOTIFICATION & REVIEW (UTILS) ----------------
-async function runNotificationManager(purpose, language, context = {}) {
-  let instruction = '';
-  switch (purpose) {
-    case 'ack': instruction = 'Acknowledge the user briefly (<=15 words).'; break;
-    case 'todo_success': instruction = 'Confirm the to-do list was updated. Be brief and encouraging.'; break;
-    case 'plan_success': instruction = 'Announce that a new daily plan has been created.'; break;
-    case 'error': instruction = 'Apologize and say an unexpected error occurred.'; break;
-    default: instruction = 'Provide a concise, helpful message.'; break;
-  }
-  const prompt = `You are a Notification Manager. Write one short message in ${language}. Instruction: ${instruction}. Context: ${JSON.stringify(context)}. Respond with only the plain text message.`;
-  try {
-    const res = await generateWithFailover('notification', prompt, { label: 'NotificationManager', timeoutMs: CONFIG.TIMEOUTS.notification });
-    const text = await extractTextFromResult(res);
-    return text || (language === 'Arabic' ? 'حسناً، أعمل على طلبك الآن.' : language === 'French' ? "Reçu, je m'en occupe." : 'Got it — working on that.');
-  } catch (e) {
-    return (language === 'Arabic' ? 'حسناً، أعمل على طلبك الآن.' : language === 'French' ? "Reçu, je m'en occupe." : 'Got it — working on that.');
-  }
-}
 
-async function runReviewManager(userRequest, modelResponseText) {
-  const prompt = `You are a Review Manager. Evaluate the AI response for correctness, completeness, and relevance. Score 1..10 and return ONLY JSON: {"score":<number>,"feedback":"..."}.\nUSER REQUEST: "${escapeForPrompt(safeSnippet(userRequest, 500))}"\nAI RESPONSE: "${escapeForPrompt(safeSnippet(modelResponseText, 1000))}"`;
-  try {
-    const res = await generateWithFailover('review', prompt, { label: 'ReviewManager', timeoutMs: CONFIG.TIMEOUTS.review });
-    const raw = await extractTextFromResult(res);
-    const parsed = await ensureJsonOrRepair(raw, 'review');
-    if (!parsed || typeof parsed.score !== 'number') return { score: 10, feedback: 'No reviewer feedback.' };
-    return parsed;
-  } catch (e) {
-    return { score: 5, feedback: 'Review model unavailable, skipping check.' };
-  }
-}
-
-// ---------------- SYNC QUESTION HANDLER ----------------
 async function handleGeneralQuestion(message, language, history = [], userProfile = 'No available memory.', userProgress = {}, userId = null) {
-  const lastFive = (Array.isArray(history) ? history.slice(-5) : [])
-    .map(h => {
-      const who = (h.role === 'model' || h.role === 'assistant') ? 'Assistant' : 'User';
-      return `${who}: ${escapeForPrompt(safeSnippet(h.text || '', 500))}`;
-    })
-    .join('\n');
-
-  const tasksSummary = (userProgress && userProgress.dailyTasks && Array.isArray(userProgress.dailyTasks.tasks) && userProgress.dailyTasks.tasks.length > 0)
-    ? `Current Tasks:\n${userProgress.dailyTasks.tasks.map(t => `- ${t.title} (${t.status})`).join('\n')}`
-    : 'The user currently has no tasks.';
-
-  // Use userId to fetch weaknesses if available
+  const lastFive = (Array.isArray(history) ? history.slice(-5) : []).map(h => `${h.role === 'model' ? 'You' : 'User'}: ${safeSnippet(h.text || '', 500)}`).join('\n');
+  const tasksSummary = (userProgress?.dailyTasks?.tasks?.length > 0) ? `Current Tasks:\n${userProgress.dailyTasks.tasks.map(t => `- ${t.title} (${t.status})`).join('\n')}` : 'The user currently has no tasks.';
+  
   let weaknesses = [];
   if (userId) {
-    try { weaknesses = await fetchUserWeaknesses(userId); } catch (e) { weaknesses = []; }
+      try { weaknesses = await fetchUserWeaknesses(userId); } catch (e) { weaknesses = []; }
   }
-  const weaknessesSummary = weaknesses.length > 0
-    ? `Identified Weaknesses:\n${weaknesses.map(w => `- In "${w.subjectTitle}", the lesson "${w.lessonTitle}" has a mastery of ${w.masteryScore}%.`).join('\n')}`
-    : 'No specific weaknesses have been identified.';
+  const weaknessesSummary = weaknesses.length > 0 ? `Identified Weaknesses:\n${weaknesses.map(w => `- In "${w.subjectTitle}", the lesson "${w.lessonTitle}" has a mastery of ${w.masteryScore}%.`).join('\n')}` : 'No specific weaknesses have been identified.';
 
-  const pathProgressSnippet = safeSnippet(JSON.stringify(userProgress.pathProgress || {}), 2000);
-  const historyBlock = lastFive ? `<conversation_history>\n${lastFive}\n</conversation_history>\n` : '';
-
+  // [!] الإصلاح #2: تم تنظيف وتوحيد الأمر
   const prompt = `You are EduAI, an expert, empathetic, and highly intelligent educational assistant. Your primary role is to help the user by leveraging the academic context provided to you. You are NOT a generic AI; you are a specialized tutor with access to the user's learning journey.
-
 <rules>
 1.  **Your Persona:** You are helpful, encouraging, and you ALWAYS use the context provided below to answer questions related to the user's progress, tasks, or study plan.
 2.  **Use the Context:** The following information is your operational knowledge about the user. It is NOT private data; it is your tool to provide personalized help. You MUST use it to answer relevant questions.
-3.  **Handling Unclear Input:** If the user's message is nonsensical, a random string, or just emojis, you MUST respond with a simple, friendly message like "لم أفهم طلبك، هل يمكنك إعادة صياغته؟" or "I couldn't understand that, could you please rephrase?". DO NOT try to guess or use the context to invent a response.
+3.  **Handling Unclear Input:** If the user's message is nonsensical, a random string, or just emojis, you MUST respond with a simple, friendly message like "لم أفهم طلبك، هل يمكنك إعادة صياغته؟". DO NOT try to guess or use the context to invent a response.
 4.  **Language:** You MUST respond in ${language}.
 </rules>
 
@@ -633,65 +622,26 @@ ${lastFive}
 
 User's new question: "${escapeForPrompt(safeSnippet(message, 1000))}"
 
-Answer directly and helpfully (no commentary about internal state).
-${historyBlock}
-<user_profile>
-${escapeForPrompt(safeSnippet(userProfile, 1000))}
-</user_profile>
+Your concise and helpful response:`;
 
-<current_tasks>
-${tasksSummary}
-</current_tasks>
-
-<path_progress>
-${pathProgressSnippet}
-</path_progress>
-
-User question: "${escapeForPrompt(safeSnippet(message, 2000))}"`;
-
-  // Call the chat model through generateWithFailover
   const modelResp = await generateWithFailover('chat', prompt, { label: 'ResponseManager', timeoutMs: CONFIG.TIMEOUTS.chat });
   let replyText = await extractTextFromResult(modelResp);
 
   const review = await runReviewManager(message, replyText);
-  if (review && typeof review.score === 'number' && review.score < CONFIG.REVIEW_THRESHOLD) {
+  if (review?.score < CONFIG.REVIEW_THRESHOLD) {
     const correctivePrompt = `Previous reply scored ${review.score}/10. Improve it based on: ${escapeForPrompt(review.feedback)}. User: "${escapeForPrompt(safeSnippet(message, 2000))}"`;
     const res2 = await generateWithFailover('chat', correctivePrompt, { label: 'ResponseRetry', timeoutMs: CONFIG.TIMEOUTS.chat });
     const improved = await extractTextFromResult(res2);
     if (improved) replyText = improved;
   }
 
-  return replyText || (language === 'Arabic' ? 'لم أتمكن من الإجابة الآن. هل تريد إعادة الصياغة؟' : 'I could not generate an answer right now.');
+   return replyText || (language === 'Arabic'
+    ? 'لم أفهم السؤال جيدا. هل تريد إعادة الصياغة؟'
+    : 'I could not understand well, can you clarify ?');
 }
 
+
 // ---------------- ROUTES ----------------
-app.post('/chat', async (req, res) => {
-  try {
-    const userId = req.body.userId || req.userId;
-    const { message, history = [] } = req.body || {};
-    if (!userId || !message) return res.status(400).json({ error: 'userId and message are required' });
-
-    const traffic = await runTrafficManager(message);
-    const language = traffic.language || 'Arabic';
-    const intent = traffic.intent || 'unclear';
-
-    if (intent === 'manage_todo' || intent === 'generate_plan') {
-      const ack = await runNotificationManager('ack', language);
-      const payload = { message, intent, language, history, pathId: req.body.pathId || null };
-      const jobId = await enqueueJob({ userId, type: 'background_chat', payload });
-      return res.json({ reply: ack, jobId, isAction: true });
-    }
-
-    const userProfile = await getProfile(userId);
-    const userProgress = await getProgress(userId);
-    const reply = await handleGeneralQuestion(message, language, history, userProfile, userProgress, userId);
-    return res.json({ reply, isAction: false });
-  } catch (err) {
-    console.error('/chat error:', err && err.stack ? err.stack : err);
-    return res.status(500).json({ error: 'An internal server error occurred while processing your request.' });
-  }
-});
-
 app.post('/update-daily-tasks', async (req, res) => {
   try {
     const { userId, updatedTasks } = req.body;
@@ -729,18 +679,26 @@ app.post('/generate-daily-tasks', async (req, res) => {
   try {
     const { userId, pathId = null } = req.body || {};
     if (!userId) return res.status(400).json({ error: 'User ID is required.' });
+
     const result = await runPlannerManager(userId, pathId);
-    return res.status(200).json({ success: true, generatedAt: new Date().toISOString(), source: result.source || 'AI', tasks: result.tasks });
+
+    res.status(200).json({
+      source: result.source,
+      taskCount: result.tasks.length,
+      tasks: result.tasks,
+    });
   } catch (err) {
     console.error('/generate-daily-tasks error:', err && err.stack ? err.stack : err);
-    return res.status(500).json({ error: 'Failed to generate tasks.' });
+    res.status(500).json({ error: 'An error occurred while generating tasks.' });
   }
 });
 
+// === Route: Generate Title ===
 app.post('/generate-title', async (req, res) => {
   try {
     const { message } = req.body || {};
     if (!message) return res.status(400).json({ error: 'Message is required.' });
+
     const traffic = await runTrafficManager(message);
     return res.status(200).json({ title: traffic.title || 'New Chat' });
   } catch (err) {
@@ -748,6 +706,7 @@ app.post('/generate-title', async (req, res) => {
     return res.status(200).json({ title: 'New Chat' });
   }
 });
+
 
 // ---------------- ANALYZE QUIZ ----------------
 app.post('/analyze-quiz', async (req, res) => {
