@@ -361,8 +361,20 @@ function formatTasksHuman(tasks = [], lang = 'Arabic') {
 }
 
 // ---------------- MANAGERS ----------------
-async function runTrafficManager(userMessage) {
-  const prompt = `You are a Traffic Manager. Identify dominant language ("Arabic","English","French"), intent from ["manage_todo","generate_plan","general_question","unclear"], and a short title (<=4 words) in that language.\nRespond with EXACTLY a JSON object: {"language":"...","intent":"...","title":"..."}\nUser message: "${escapeForPrompt(safeSnippet(userMessage, 500))}"`;
+async function runToDoManager(userId, userRequest, currentTasks = []) {
+  // [!] الإصلاح: تم تنظيف وتوحيد الأمر
+  const prompt = `You are an expert To-Do List Manager AI. Modify the CURRENT TASKS based on the USER REQUEST.
+<rules>
+1.  **Precision:** You MUST only modify, add, or delete tasks explicitly mentioned in the user request.
+2.  **Preservation:** You MUST preserve the exact original title, type, and language of all other tasks that were not mentioned in the request. This is a critical rule.
+3.  **Output Format:** Respond ONLY with a valid JSON object: { "tasks": [ ... ] }. Each task must have all required fields (id, title, type, status, etc.).
+</rules>
+
+CURRENT TASKS:
+${JSON.stringify(currentTasks)}
+
+USER REQUEST:
+"${escapeForPrompt(userRequest)}"`;
   const res = await generateWithFailover('titleIntent', prompt, { label: 'TrafficManager', timeoutMs: CONFIG.TIMEOUTS.notification });
   const raw = await extractTextFromResult(res);
   const parsed = await ensureJsonOrRepair(raw, 'titleIntent');
@@ -601,7 +613,7 @@ async function handleGeneralQuestion(message, language, history = [], userProfil
   }
   const weaknessesSummary = weaknesses.length > 0 ? `Identified Weaknesses:\n${weaknesses.map(w => `- In "${w.subjectTitle}", the lesson "${w.lessonTitle}" has a mastery of ${w.masteryScore}%.`).join('\n')}` : 'No specific weaknesses have been identified.';
 
-  // [!] الإصلاح #2: تم تنظيف وتوحيد الأمر
+  // [!] الإصلاح: تم تنظيف وتوحيد الأمر
   const prompt = `You are EduAI, an expert, empathetic, and highly intelligent educational assistant. Your primary role is to help the user by leveraging the academic context provided to you. You are NOT a generic AI; you are a specialized tutor with access to the user's learning journey.
 <rules>
 1.  **Your Persona:** You are helpful, encouraging, and you ALWAYS use the context provided below to answer questions related to the user's progress, tasks, or study plan.
@@ -635,9 +647,7 @@ Your concise and helpful response:`;
     if (improved) replyText = improved;
   }
 
-   return replyText || (language === 'Arabic'
-    ? 'لم أفهم السؤال جيدا. هل تريد إعادة الصياغة؟'
-    : 'I could not understand well, can you clarify ?');
+  return replyText || (language === 'Arabic' ? 'لم أتمكن من الإجابة الآن. هل تريد إعادة الصياغة؟' : 'I could not generate an answer right now.');
 }
 
 
@@ -650,7 +660,24 @@ app.post('/update-daily-tasks', async (req, res) => {
       return res.status(400).json({ error: 'Invalid input. Must include userId and updatedTasks[]' });
     }
 
-    const userRef = db.collection('users').doc(userId); // << use db here
+    const progressRef = db.collection('userProgress').doc(userId);
+     // Use set with merge:true to update the dailyTasks object without overwriting other fields
+    await progressRef.set({
+      dailyTasks: {
+        tasks: tasks,
+        generatedAt: admin.firestore.FieldValue.serverTimestamp(), // It's good practice to update the timestamp
+      }
+    }, { merge: true });
+
+    // Invalidate the cache for this user
+    await cacheDel('progress', userId);
+
+    res.status(200).json({ success: true, message: 'Daily tasks updated successfully.' });
+  } catch (error) {
+    console.error('/update-daily-tasks error:', error.stack);
+    res.status(500).json({ error: 'An error occurred while updating daily tasks.' });
+  }
+});
     const userDoc = await userRef.get();
 
     if (!userDoc.exists) {
