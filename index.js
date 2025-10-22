@@ -687,26 +687,16 @@ async function runReviewManagerForSync(question, answer) {
 }
 
 // ---------------- SYNC QUESTION HANDLER ----------------
-async function handleGeneralQuestion(message, language, history = [], userProfile = 'No available memory.', userProgress = {}, userId = null) {
-  const lastFive = (Array.isArray(history) ? history.slice(-5) : [])
-    .map(h => {
-      const who = (h.role === 'model' || h.role === 'assistant') ? 'Assistant' : 'User';
-      return `${who}: ${escapeForPrompt(safeSnippet(h.text || '', 500))}`;
-    })
-    .join('\n');
+async function handleGeneralQuestion(message, language, history = [], userProfile = 'No profile.', userProgress = {}, weaknesses = []) {
+  const lastFive = (Array.isArray(history) ? history.slice(-5) : []).map(h => `${h.role === 'model' ? 'You' : 'User'}: ${safeSnippet(h.text || '', 500)}`).join('\n');
+  const tasksSummary = (userProgress?.dailyTasks?.tasks?.length > 0) ? `Current Tasks:\n${userProgress.dailyTasks.tasks.map(t => `- ${t.title} (${t.status})`).join('\n')}` : 'The user currently has no tasks.';
+  const weaknessesSummary = weaknesses.length > 0 ? `Identified Weaknesses:\n${weaknesses.map(w => `- In "${w.subjectTitle}", the lesson "${w.lessonTitle}" has a mastery of ${w.masteryScore}%.`).join('\n')}` : 'No specific weaknesses have been identified.';
 
-  const tasksSummary = (userProgress && userProgress.dailyTasks && Array.isArray(userProgress.dailyTasks.tasks) && userProgress.dailyTasks.tasks.length > 0)
-    ? `Current Tasks:\n${userProgress.dailyTasks.tasks.map(t => `- ${t.title} (${t.status})`).join('\n')}`
-    : 'The user currently has no tasks.';
-
-  let weaknesses = [];
-  if (userId) {
-    try { weaknesses = await fetchUserWeaknesses(userId); } catch (e) { weaknesses = []; }
-  }
-  const weaknessesSummary = weaknesses.length > 0
-    ? `Identified Weaknesses:\n${weaknesses.map(w => `- In "${w.subjectTitle}", the lesson "${w.lessonTitle}" has a mastery of ${w.masteryScore}%.`).join('\n')}`
-    : 'No specific weaknesses have been identified.';
-
+  // [!] الإضافة الجديدة: ملخص الألعاب والشخصية
+  const gamificationSummary = `User Stats:
+- Points: ${userProgress?.stats?.points || 0}
+- Rank: "${userProgress?.stats?.rank || 'Beginner'}"
+- Current Streak: ${userProgress?.streakCount || 0} days`;
   const pathProgressSnippet = safeSnippet(JSON.stringify(userProgress.pathProgress || {}), 2000);
 
   const prompt = `You are EduAI, an expert, empathetic, and highly intelligent educational assistant. Your primary role is to help the user by leveraging the academic context provided to you. You are NOT a generic AI; you are a specialized tutor with access to the user's learning journey.
@@ -721,6 +711,7 @@ async function handleGeneralQuestion(message, language, history = [], userProfil
 <academic_context>
 ${tasksSummary}
 ${weaknessesSummary}
+${gamificationSummary} 
 User Profile Summary: ${safeSnippet(userProfile, 500)}
 </academic_context>
 
@@ -729,6 +720,8 @@ ${lastFive}
 </conversation_history>
 
 User's new question: "${escapeForPrompt(safeSnippet(message, 1000))}"
+
+Your concise and helpful response:`;
 
 Answer directly and helpfully (no commentary about internal state).
 <user_profile>
@@ -778,13 +771,18 @@ app.post('/chat', async (req, res) => {
       return res.json({ reply: ack, jobId, isAction: true });
     }
 
-    const userProfile = await getProfile(userId);
-    const userProgress = await getProgress(userId);
-    const reply = await handleGeneralQuestion(message, language, history, userProfile, userProgress, userId);
+    const [userProfile, userProgress, weaknesses] = await Promise.all([
+      getProfile(userId),
+      getProgress(userId),
+      fetchUserWeaknesses(userId)
+    ]);
+
+    // تمرير userProgress كاملاً هنا لأن handleGeneralQuestion سيقوم باستخلاص ما يحتاجه
+    const reply = await handleGeneralQuestion(message, language, history, userProfile, userProgress, weaknesses);
     return res.json({ reply, isAction: false });
   } catch (err) {
-    console.error('/chat error:', err && err.stack ? err.stack : err);
-    return res.status(500).json({ error: 'An internal server error occurred while processing your request.' });
+    console.error('/chat error:', err.stack);
+    return res.status(500).json({ error: 'An internal server error occurred.' });
   }
 });
 
