@@ -281,6 +281,54 @@ async function cacheSet(scope, key, value) { if (localCache[scope]) localCache[s
 async function cacheDel(scope, key) { if (localCache[scope]) localCache[scope].del(key); }
 
 // ---------------- DATA HELPERS ----------------
+async function formatProgressForAI(userId) {
+  try {
+    const userProgressDoc = await db.collection('userProgress').doc(userId).get();
+    if (!userProgressDoc.exists) return 'No progress data found.';
+
+    const userProgressData = userProgressDoc.data()?.pathProgress || {};
+    if (Object.keys(userProgressData).length === 0) return 'User has not started any educational path yet.';
+
+    const summaryLines = [];
+    const pathDataCache = new Map();
+    const pathsToScan = Object.keys(userProgressData);
+
+    for (const pathId of pathsToScan) {
+      // Fetch educational path if not already in cache
+      if (!pathDataCache.has(pathId)) {
+        try {
+          const pathDoc = await db.collection('educationalPaths').doc(pathId).get();
+          pathDataCache.set(pathId, pathDoc.exists ? pathDoc.data() : null);
+        } catch (e) {
+          pathDataCache.set(pathId, null);
+        }
+      }
+      
+      const educationalPath = pathDataCache.get(pathId);
+      if (!educationalPath) continue;
+
+      const pathProgress = userProgressData[pathId] || {};
+      const subjectsProgress = pathProgress.subjects || {};
+
+      for (const subjectId in subjectsProgress) {
+        const subjectProgressData = subjectsProgress[subjectId];
+        const subjectData = Array.isArray(educationalPath.subjects) ? educationalPath.subjects.find(s => s.id === subjectId) : null;
+        
+        // Use the title if found, otherwise fallback to the ID as a last resort
+        const subjectTitle = subjectData?.title || subjectId;
+        const masteryScore = subjectProgressData.masteryScore || 0;
+
+        summaryLines.push(`- Subject: "${subjectTitle}", Mastery: ${masteryScore}%`);
+      }
+    }
+    
+    return summaryLines.length > 0 ? summaryLines.join('\n') : 'No specific subject progress to show.';
+  } catch (err) {
+    console.error('Error in formatProgressForAI:', err.stack);
+    return 'Could not format user progress.';
+  }
+}
+
 async function getProfile(userId) {
   try {
     const cached = await cacheGet('profile', userId);
@@ -687,7 +735,7 @@ async function runReviewManagerForSync(question, answer) {
 }
 
 // ---------------- SYNC QUESTION HANDLER ----------------
-async function handleGeneralQuestion(message, language, history = [], userProfile = 'No profile.', userProgress = {}, weaknesses = []) {
+async function handleGeneralQuestion(message, language, history = [], userProfile = 'No profile.', userProgress = {}, weaknesses = [], formattedProgress = '') {
   const lastFive = (Array.isArray(history) ? history.slice(-5) : []).map(h => `${h.role === 'model' ? 'You' : 'User'}: ${safeSnippet(h.text || '', 500)}`).join('\n');
   const tasksSummary = (userProgress?.dailyTasks?.tasks?.length > 0) ? `Current Tasks:\n${userProgress.dailyTasks.tasks.map(t => `- ${t.title} (${t.status})`).join('\n')}` : 'The user currently has no tasks.';
   const weaknessesSummary = weaknesses.length > 0 ? `Identified Weaknesses:\n${weaknesses.map(w => `- In "${w.subjectTitle}", the lesson "${w.lessonTitle}" has a mastery of ${w.masteryScore}%.`).join('\n')}` : 'No specific weaknesses have been identified.';
@@ -696,15 +744,14 @@ async function handleGeneralQuestion(message, language, history = [], userProfil
 - Points: ${userProgress?.stats?.points || 0}
 - Rank: "${userProgress?.stats?.rank || 'Beginner'}"
 - Current Streak: ${userProgress?.streakCount || 0} days`;
-  const pathProgressSnippet = safeSnippet(JSON.stringify(userProgress.pathProgress || {}), 2000);
 
-  // [!] PROMPT النهائي والمُنقح: بنية واضحة، بدون تكرار، وقواعد صارمة.
+  // [!] تم استبدال البيانات الخام بالملخص النظيف
   const prompt = `You are EduAI, a specialized AI tutor. The information provided below in the <user_context> is YOUR MEMORY of the student you are tutoring. It is not external data; it is part of your operational knowledge. Your entire purpose is to use this memory to provide personalized help.
 
 <rules>
 1.  **Identity & Persona:** You MUST strictly maintain the persona of EduAI, an encouraging and helpful tutor. The user knows you have this information.
 2.  **ABSOLUTE RULE:** You are FORBIDDEN from saying "I cannot access your data," "I don't know your streak," or any similar phrase denying knowledge. The user's data (streak, points, progress) IS provided below in your memory. It is your primary job to find it and report it when asked.
-3.  **Action:** When asked about points, streak, rank, or tasks, locate the answer within the <user_context> and state it directly and confidently.
+3.  **Action:** When asked about points, streak, rank, or tasks, locate the answer within the <user_context> and state it directly and confidently. Use the human-readable subject and lesson titles.
 4.  **Handling Unclear Input:** If the user's message is nonsensical, a random string, or just emojis, you MUST respond with a simple, friendly message in the correct language, like "لم أفهم طلبك، هل يمكنك إعادة صياغته؟".
 5.  **Language:** Your response MUST be in ${language}.
 </rules>
@@ -723,9 +770,9 @@ async function handleGeneralQuestion(message, language, history = [], userProfil
     ${safeSnippet(userProfile, 1000)}
   </user_profile_summary>
 
-  <detailed_path_progress>
-    ${pathProgressSnippet}
-  </detailed_path_progress>
+  <detailed_progress_summary>
+    ${formattedProgress}
+  </detailed_progress_summary>
 </user_context>
 
 <conversation_history>
@@ -737,7 +784,7 @@ The user's new message is: "${escapeForPrompt(safeSnippet(message, 2000))}"
 Your direct and helpful response as EduAI:`;
 
   // Call the chat model through generateWithFailover
-  const modelResp = await generateWithFailover('chat', prompt, { label: 'ResponseManager', timeoutMs: CONFIG.TIMEOUTS.chat });
+   const modelResp = await generateWithFailover('chat', prompt, { label: 'ResponseManager', timeoutMs: CONFIG.TIMEOUTS.chat });
   let replyText = await extractTextFromResult(modelResp);
 
   const review = await runReviewManager(message, replyText);
@@ -750,6 +797,7 @@ Your direct and helpful response as EduAI:`;
 
   return replyText || (language === 'Arabic' ? 'لم أتمكن من الإجابة الآن. هل تريد إعادة الصياغة؟' : 'I could not generate an answer right now.');
 }
+
 
 // ---------------- ROUTES ----------------
 app.post('/chat', async (req, res) => {
@@ -769,14 +817,15 @@ app.post('/chat', async (req, res) => {
       return res.json({ reply: ack, jobId, isAction: true });
     }
 
-    const [userProfile, userProgress, weaknesses] = await Promise.all([
+    // [!] استدعاء كل دوال جلب البيانات معًا
+    const [userProfile, userProgress, weaknesses, formattedProgress] = await Promise.all([
       getProfile(userId),
       getProgress(userId),
-      fetchUserWeaknesses(userId)
+      fetchUserWeaknesses(userId),
+      formatProgressForAI(userId) // استدعاء الدالة الجديدة
     ]);
 
-    // تمرير userProgress كاملاً هنا لأن handleGeneralQuestion سيقوم باستخلاص ما يحتاجه
-    const reply = await handleGeneralQuestion(message, language, history, userProfile, userProgress, weaknesses);
+    const reply = await handleGeneralQuestion(message, language, history, userProfile, userProgress, weaknesses, formattedProgress);
     return res.json({ reply, isAction: false });
   } catch (err) {
     console.error('/chat error:', err.stack);
