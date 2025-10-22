@@ -23,13 +23,13 @@ const crypto = require('crypto');
 const CONFIG = {
   PORT: Number(process.env.PORT || 3000),
   MODEL: {
-    chat: process.env.MODEL_CHAT || 'gemini-1.5-pro-latest',
-    todo: process.env.MODEL_TODO || 'gemini-1.5-flash-latest',
-    planner: process.env.MODEL_PLANNER || 'gemini-1.5-pro-latest',
-    titleIntent: process.env.MODEL_TITLE || 'gemini-1.5-flash-latest',
-    notification: process.env.MODEL_NOTIFICATION || 'gemini-1.5-flash-latest',
-    review: process.env.MODEL_REVIEW || 'gemini-1.5-flash-latest',
-    analysis: process.env.MODEL_ANALYSIS || 'gemini-1.5-flash-latest',
+    chat: process.env.MODEL_CHAT || 'gemini-2.5-pro',
+    todo: process.env.MODEL_TODO || 'gemini-2.5-flash',
+    planner: process.env.MODEL_PLANNER || 'gemini-2.5-flash',
+    titleIntent: process.env.MODEL_TITLE || 'gemini-2.5-flash-lite',
+    notification: process.env.MODEL_NOTIFICATION || 'gemini-2.5-flash-lite',
+    review: process.env.MODEL_REVIEW || 'gemini-2.5-flash',
+    analysis: process.env.MODEL_ANALYSIS || 'gemini-2.5-flash-lite',
   },
   TIMEOUTS: {
     default: Number(process.env.TIMEOUT_DEFAULT_MS || 25000),
