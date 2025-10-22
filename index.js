@@ -34,7 +34,7 @@ const CONFIG = {
   TIMEOUTS: {
     default: Number(process.env.TIMEOUT_DEFAULT_MS || 25000),
     chat: Number(process.env.TIMEOUT_CHAT_MS || 30000),
-    notification: Number(process.env.TIMEOUT_NOTIFICATION_MS || 10000),
+    notification: Number(process.env.TIMEOUT_NOTIFICATION_MS || 25000),
     review: Number(process.env.TIMEOUT_REVIEW_MS || 20000),
     analysis: Number(process.env.TIMEOUT_ANALYSIS_MS || 24000),
   },
@@ -393,7 +393,27 @@ async function sendUserNotification(userId, payload) {
 
 // ---------------- MANAGERS (restored + new) ----------------
 async function runTrafficManager(message, lang = 'Arabic') {
-  const prompt = `You are an expert intent classification system. Analyze the user's message and return a structured JSON object.\n<rules>\n1.  **Intent Classification:** Classify the intent into ONE of the following: 'analyze_performance', 'question', 'manage_todo', 'generate_plan', or 'unclear'.\n2.  **Title Generation:** Create a short title (2-4 words) in the detected language.\n3.  **Language Detection:** Identify the primary language (e.g., 'Arabic', 'English').\n4.  **Output Format:** Respond with ONLY a single, valid JSON object: { "intent": "...", "title": "...", "language": "..." }\n</rules>\nUser Message: "${escapeForPrompt(message)}"`;
+  const prompt = `You are an expert intent classification system. Analyze the user's message and return a structured JSON object.
+
+<rules>
+1.  **Intent Classification:** Classify the intent into ONE of the following: 'analyze_performance', 'question', 'manage_todo', 'generate_plan', or 'unclear'.
+2.  **Title Generation:** Create a short title (2-4 words) in the detected language.
+3.  **Language Detection:** Identify the primary language (e.g., 'Arabic', 'English').
+4.  **Output Format:** Respond with ONLY a single, valid JSON object. Do not add any extra text or explanations.
+</rules>
+
+<example>
+User Message: "مرحبا، كيف يمكنني مراجعة أدائي الدراسي لهذا الأسبوع؟"
+Your JSON Response:
+{
+  "intent": "analyze_performance",
+  "title": "مراجعة الأداء الدراسي",
+  "language": "Arabic"
+}
+</example>
+
+User Message: "${escapeForPrompt(message)}"
+Your JSON Response:`;
   try {
     const res = await generateWithFailover('titleIntent', prompt, { label: 'TrafficManager', timeoutMs: CONFIG.TIMEOUTS.notification });
     const raw = await extractTextFromResult(res);
@@ -401,7 +421,8 @@ async function runTrafficManager(message, lang = 'Arabic') {
     if (parsed?.intent) return parsed;
     console.warn(`TrafficManager fallback for: "${message}"`);
     return { intent: 'question', title: message.substring(0, 30), language: lang };
-  } catch (err) {
+  } catch (err)
+   {
     console.error('runTrafficManager critical failure:', err.message);
     return { intent: 'question', title: message.substring(0, 30), language: lang };
   }
