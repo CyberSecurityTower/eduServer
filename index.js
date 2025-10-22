@@ -490,40 +490,105 @@ let workerStopped = false;
 async function processJob(jobDoc) {
   const id = jobDoc.id;
   const data = jobDoc.data();
+
   try {
-    await jobDoc.ref.update({ status: 'processing', startedAt: admin.firestore.FieldValue.serverTimestamp() });
+    await jobDoc.ref.update({ 
+      status: 'processing', 
+      startedAt: admin.firestore.FieldValue.serverTimestamp() 
+    });
+
     const { userId, type, payload } = data;
 
+    // ✅ تحقق من وجود payload لتفادي undefined
+    if (!payload || typeof payload !== 'object') {
+      console.warn(`⚠️ Job ${id} has invalid payload:`, payload);
+      await jobDoc.ref.update({ 
+        status: 'failed', 
+        lastError: 'Missing or invalid payload', 
+        finishedAt: admin.firestore.FieldValue.serverTimestamp() 
+      });
+      return;
+    }
+
+    // ✅ إزالة أي قيم undefined داخل payload
+    Object.keys(payload).forEach(key => {
+      if (payload[key] === undefined) delete payload[key];
+    });
+
     if (type === 'background_chat') {
-      // payload.intent may guide the job
       if (payload.intent === 'manage_todo') {
         const todoResult = await runToDoManager(userId, payload.message, payload);
-        // store result and notify user
-        await jobDoc.ref.update({ result: todoResult, status: 'done', finishedAt: admin.firestore.FieldValue.serverTimestamp() });
-        await sendUserNotification(userId, { message: todoResult.message || 'Task processed', meta: { jobId: id } });
-     } else if (payload.intent === 'generate_plan') {
-    // استدعِ نقاط الضعف أولاً لجعل الخطة أكثر ذكاءً
-    const weaknesses = await fetchUserWeaknesses(userId); 
-    const plan = await runPlannerManager(userId, payload.message, weaknesses);
-    await jobDoc.ref.update({ result: plan, status: 'done', finishedAt: admin.firestore.FieldValue.serverTimestamp() });
-    await sendUserNotification(userId, { message: 'تم إنشاء الخطة الدراسية.', meta: { plan, jobId: id } });
-}
+        await jobDoc.ref.update({ 
+          result: todoResult, 
+          status: 'done', 
+          finishedAt: admin.firestore.FieldValue.serverTimestamp() 
+        });
+        await sendUserNotification(userId, { 
+          message: todoResult.message || 'Task processed', 
+          meta: { jobId: id } 
+        });
+
+      } else if (payload.intent === 'generate_plan') {
+        const weaknesses = await fetchUserWeaknesses(userId);
+        const plan = await runPlannerManager(userId, payload.message, weaknesses);
+        await jobDoc.ref.update({ 
+          result: plan, 
+          status: 'done', 
+          finishedAt: admin.firestore.FieldValue.serverTimestamp() 
+        });
+        await sendUserNotification(userId, { 
+          message: 'تم إنشاء الخطة الدراسية.', 
+          meta: { plan, jobId: id } 
+        });
+
       } else {
-        // default: generate an assistant reply and save
+        // Default assistant reply
         const [userProfile, userProgress, weaknesses, formattedProgress, userName] = await Promise.all([
-          getProfile(userId), getProgress(userId), fetchUserWeaknesses(userId), formatProgressForAI(userId), getUserDisplayName(userId)
+          getProfile(userId), 
+          getProgress(userId), 
+          fetchUserWeaknesses(userId), 
+          formatProgressForAI(userId), 
+          getUserDisplayName(userId)
         ]);
-        const reply = await handleGeneralQuestion(payload.message, payload.language || 'Arabic', payload.history || [], userProfile, userProgress, weaknesses, formattedProgress, userName);
-        await jobDoc.ref.update({ result: { reply }, status: 'done', finishedAt: admin.firestore.FieldValue.serverTimestamp() });
-        await sendUserNotification(userId, { message: reply, meta: { jobId: id } });
+
+        const reply = await handleGeneralQuestion(
+          payload.message,
+          payload.language || 'Arabic',
+          payload.history || [],
+          userProfile,
+          userProgress,
+          weaknesses,
+          formattedProgress,
+          userName
+        );
+
+        await jobDoc.ref.update({ 
+          result: { reply }, 
+          status: 'done', 
+          finishedAt: admin.firestore.FieldValue.serverTimestamp() 
+        });
+
+        await sendUserNotification(userId, { 
+          message: reply, 
+          meta: { jobId: id } 
+        });
       }
+
     } else {
-      await jobDoc.ref.update({ status: 'skipped', finishedAt: admin.firestore.FieldValue.serverTimestamp() });
+      await jobDoc.ref.update({ 
+        status: 'skipped', 
+        finishedAt: admin.firestore.FieldValue.serverTimestamp() 
+      });
     }
+
   } catch (err) {
     console.error('processJob error for', id, err.message || err);
     const attempts = (data.attempts || 0) + 1;
-    const update = { attempts, lastError: String(err.message || err), status: attempts >= 3 ? 'failed' : 'queued' };
+    const update = { 
+      attempts, 
+      lastError: String(err.message || err), 
+      status: attempts >= 3 ? 'failed' : 'queued' 
+    };
     if (attempts >= 3) update.finishedAt = admin.firestore.FieldValue.serverTimestamp();
     await jobDoc.ref.update(update);
   }
