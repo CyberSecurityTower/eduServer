@@ -24,12 +24,12 @@ const CONFIG = {
   PORT: Number(process.env.PORT || 3000),
   MODEL: {
     chat: process.env.MODEL_CHAT || 'gemini-2.5-flash',
-    todo: process.env.MODEL_TODO || 'gemini-2.5-pro',
-    planner: process.env.MODEL_PLANNER || 'gemini-2.5-pro',
+    todo: process.env.MODEL_TODO || 'gemini-2.5-flash',
+    planner: process.env.MODEL_PLANNER || 'gemini-2.5-flash',
     titleIntent: process.env.MODEL_TITLE || 'gemini-2.5-flash-lite',
     notification: process.env.MODEL_NOTIFICATION || 'gemini-2.5-flash-lite',
-    review: process.env.MODEL_REVIEW || 'gemini-2.5-pro',
-    analysis: process.env.MODEL_ANALYSIS || 'gemini-2.5-pro',
+    review: process.env.MODEL_REVIEW || 'gemini-2.5-flash',
+    analysis: process.env.MODEL_ANALYSIS || 'gemini-2.5-flash-lite',
   },
   TIMEOUTS: {
     default: Number(process.env.TIMEOUT_DEFAULT_MS || 25000),
@@ -692,13 +692,13 @@ async function handleGeneralQuestion(message, language, history = [], userProfil
   const tasksSummary = (userProgress?.dailyTasks?.tasks?.length > 0) ? `Current Tasks:\n${userProgress.dailyTasks.tasks.map(t => `- ${t.title} (${t.status})`).join('\n')}` : 'The user currently has no tasks.';
   const weaknessesSummary = weaknesses.length > 0 ? `Identified Weaknesses:\n${weaknesses.map(w => `- In "${w.subjectTitle}", the lesson "${w.lessonTitle}" has a mastery of ${w.masteryScore}%.`).join('\n')}` : 'No specific weaknesses have been identified.';
 
-  // [!] الإضافة الجديدة: ملخص الألعاب والشخصية
   const gamificationSummary = `User Stats:
 - Points: ${userProgress?.stats?.points || 0}
 - Rank: "${userProgress?.stats?.rank || 'Beginner'}"
 - Current Streak: ${userProgress?.streakCount || 0} days`;
   const pathProgressSnippet = safeSnippet(JSON.stringify(userProgress.pathProgress || {}), 2000);
 
+  // [!] تم دمج كل شيء داخل template literal واحد هنا
   const prompt = `You are EduAI, an expert, empathetic, and highly intelligent educational assistant. Your primary role is to help the user by leveraging the academic context provided to you. You are NOT a generic AI; you are a specialized tutor with access to the user's learning journey.
 
 <rules>
@@ -719,11 +719,6 @@ User Profile Summary: ${safeSnippet(userProfile, 500)}
 ${lastFive}
 </conversation_history>
 
-User's new question: "${escapeForPrompt(safeSnippet(message, 1000))}"
-
-Your concise and helpful response:`;
-
-Answer directly and helpfully (no commentary about internal state).
 <user_profile>
 ${escapeForPrompt(safeSnippet(userProfile, 1000))}
 </user_profile>
@@ -736,7 +731,9 @@ ${tasksSummary}
 ${pathProgressSnippet}
 </path_progress>
 
-User question: "${escapeForPrompt(safeSnippet(message, 2000))}"`;
+User's new question: "${escapeForPrompt(safeSnippet(message, 2000))}"
+
+Answer directly and helpfully (no commentary about internal state).`;
 
   // Call the chat model through generateWithFailover
   const modelResp = await generateWithFailover('chat', prompt, { label: 'ResponseManager', timeoutMs: CONFIG.TIMEOUTS.chat });
