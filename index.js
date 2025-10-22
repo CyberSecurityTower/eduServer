@@ -34,7 +34,7 @@ const CONFIG = {
   TIMEOUTS: {
     default: Number(process.env.TIMEOUT_DEFAULT_MS || 25000),
     chat: Number(process.env.TIMEOUT_CHAT_MS || 30000),
-    notification: Number(process.env.TIMEOUT_NOTIFICATION_MS || 7000),
+    notification: Number(process.env.TIMEOUT_NOTIFICATION_MS || 10000),
     review: Number(process.env.TIMEOUT_REVIEW_MS || 20000),
     analysis: Number(process.env.TIMEOUT_ANALYSIS_MS || 24000),
   },
