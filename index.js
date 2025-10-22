@@ -201,8 +201,18 @@ async function extractTextFromResult(result) {
       if (parts.length) return parts.join('\n').trim();
     }
 
-    const dumped = JSON.stringify(result);
-    return dumped ? dumped.slice(0, 2000) : '';
+   let dumped = '';
+try {
+  dumped = JSON.stringify(result);
+} catch (e) {
+  try {
+    dumped = String(result);
+  } catch (e2) {
+    dumped = '';
+  }
+}
+return dumped ? dumped.slice(0, 2000) : '';
+
   } catch (err) {
     console.error('extractTextFromResult failed:', err && err.message ? err.message : err);
     return '';
