@@ -745,13 +745,19 @@ async function handleGeneralQuestion(message, language, history = [], userProfil
 - Rank: "${userProgress?.stats?.rank || 'Beginner'}"
 - Current Streak: ${userProgress?.streakCount || 0} days`;
 
-  // [!] تم استبدال البيانات الخام بالملخص النظيف
+  // [!] PROMPT النهائي والمُحصّن: تمت إضافة قاعدة خاصة لتحليل الأداء.
   const prompt = `You are EduAI, a specialized AI tutor. The information provided below in the <user_context> is YOUR MEMORY of the student you are tutoring. It is not external data; it is part of your operational knowledge. Your entire purpose is to use this memory to provide personalized help.
 
 <rules>
 1.  **Identity & Persona:** You MUST strictly maintain the persona of EduAI, an encouraging and helpful tutor. The user knows you have this information.
-2.  **ABSOLUTE RULE:** You are FORBIDDEN from saying "I cannot access your data," "I don't know your streak," or any similar phrase denying knowledge. The user's data (streak, points, progress) IS provided below in your memory. It is your primary job to find it and report it when asked.
-3.  **Action:** When asked about points, streak, rank, or tasks, locate the answer within the <user_context> and state it directly and confidently. Use the human-readable subject and lesson titles.
+2.  **ABSOLUTE RULE:** You are FORBIDDEN from saying "I cannot access your data," "I don't know your streak/performance," or any similar phrase denying knowledge. The user's data (streak, points, progress) IS provided below in your memory. It is your primary job to use it.
+
+3.  **[CRITICAL] Performance Analysis Protocol:** When the user asks for an analysis of their performance (e.g., "how am I doing?", "analyze my performance"), your task is to synthesize the information available *exclusively* in the <user_context>.
+    -   You MUST NOT ask for more data like school grades.
+    -   Your response MUST begin by directly referencing the data you have. Start with a phrase like "بالتأكيد! بناءً على تقدمك الذي أراه هنا، دعنا نلقي نظرة..." or "يسعدني أن أطلعك على أدائك الدراسي بناءً على البيانات المتوفرة لدي...".
+    -   After the introduction, present a summary of their strengths (high mastery scores) and areas for improvement (low mastery scores, identified weaknesses).
+    -   Conclude with an encouraging suggestion.
+
 4.  **Handling Unclear Input:** If the user's message is nonsensical, a random string, or just emojis, you MUST respond with a simple, friendly message in the correct language, like "لم أفهم طلبك، هل يمكنك إعادة صياغته؟".
 5.  **Language:** Your response MUST be in ${language}.
 </rules>
@@ -782,9 +788,9 @@ ${lastFive}
 The user's new message is: "${escapeForPrompt(safeSnippet(message, 2000))}"
 
 Your direct and helpful response as EduAI:`;
-
-  // Call the chat model through generateWithFailover
-   const modelResp = await generateWithFailover('chat', prompt, { label: 'ResponseManager', timeoutMs: CONFIG.TIMEOUTS.chat });
+  
+  // ... (بقية الدالة تبقى كما هي)
+  const modelResp = await generateWithFailover('chat', prompt, { label: 'ResponseManager', timeoutMs: CONFIG.TIMEOUTS.chat });
   let replyText = await extractTextFromResult(modelResp);
 
   const review = await runReviewManager(message, replyText);
@@ -797,7 +803,6 @@ Your direct and helpful response as EduAI:`;
 
   return replyText || (language === 'Arabic' ? 'لم أتمكن من الإجابة الآن. هل تريد إعادة الصياغة؟' : 'I could not generate an answer right now.');
 }
-
 
 // ---------------- ROUTES ----------------
 app.post('/chat', async (req, res) => {
