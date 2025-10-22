@@ -23,7 +23,7 @@ const crypto = require('crypto');
 const CONFIG = {
   PORT: Number(process.env.PORT || 3000),
   MODEL: {
-    chat: process.env.MODEL_CHAT || 'gemini-2.5-flash-latest',
+    chat: process.env.MODEL_CHAT || 'gemini-2.5-flash',
     todo: process.env.MODEL_TODO || 'gemini-2.5-flash',
     planner: process.env.MODEL_PLANNER || 'gemini-2.5-flash',
     titleIntent: process.env.MODEL_TITLE || 'gemini-2.5-flash-lite',
