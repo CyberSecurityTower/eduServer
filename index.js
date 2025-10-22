@@ -127,7 +127,35 @@ async function withTimeout(promise, ms = CONFIG.TIMEOUTS.default, label = 'opera
     new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
   ]);
 }
+async function getUserDisplayName(userId) {
+  try {
+    const userDoc = await db.collection('users').doc(userId).get();
+    if (!userDoc.exists) {
+      return null;
+    }
 
+    const userData = userDoc.data();
+
+    // 1. الأولوية لـ displayName، مع استخراج الاسم الأول منه
+    if (userData.displayName && typeof userData.displayName === 'string' && userData.displayName.trim() !== '') {
+      // Split the full name by space and take the first part
+      const firstName = userData.displayName.split(' ')[0];
+      return firstName;
+    }
+
+    // 2. إذا لم يوجد displayName، ابحث عن firstName
+    if (userData.firstName && typeof userData.firstName === 'string' && userData.firstName.trim() !== '') {
+      return userData.firstName;
+    }
+
+    // 3. إذا لم يتم العثور على أي منهما، أرجع null
+    return null;
+
+  } catch (err) {
+    console.error(`Error fetching user display name for ${userId}:`, err.message);
+    return null; // كن آمنًا عند حدوث أخطاء
+  }
+}
 async function generateWithFailover(poolName, prompt, opts = {}) {
   const pool = modelPools[poolName];
   if (!pool || pool.length === 0) throw new Error(`No models for pool ${poolName}`);
@@ -735,90 +763,87 @@ async function runReviewManagerForSync(question, answer) {
 }
 
 // ---------------- SYNC QUESTION HANDLER ----------------
-async function handleGeneralQuestion(message, language, history = [], userProfile = 'No profile.', userProgress = {}, weaknesses = [], formattedProgress = '') {
-  const lastFive = (Array.isArray(history) ? history.slice(-5) : []).map(h => `${h.role === 'model' ? 'You' : 'User'}: ${safeSnippet(h.text || '', 500)}`).join('\n');
-  const tasksSummary = (userProgress?.dailyTasks?.tasks?.length > 0) ? `Current Tasks:\n${userProgress.dailyTasks.tasks.map(t => `- ${t.title} (${t.status})`).join('\n')}` : 'The user currently has no tasks.';
-  const weaknessesSummary = weaknesses.length > 0 ? `Identified Weaknesses:\n${weaknesses.map(w => `- In "${w.subjectTitle}", the lesson "${w.lessonTitle}" has a mastery of ${w.masteryScore}%.`).join('\n')}` : 'No specific weaknesses have been identified.';
+async function handleGeneralQuestion(message, language, history = [], userProfile = 'No profile.', userProgress = {}, weaknesses = [], formattedProgress = '', studentName = null) {
+  const lastFive = history.slice(-5).map(h => `${h.role === 'model' ? 'You' : 'User'}: ${safeSnippet(h.text || '', 500)}`).join('\n');
+  const tasksSummary = userProgress?.dailyTasks?.tasks?.length > 0 ? `Current Tasks:\n${userProgress.dailyTasks.tasks.map(t => `- ${t.title} (${t.status})`).join('\n')}` : 'The user has no tasks.';
+  const weaknessesSummary = weaknesses.length > 0 ? `Identified Weaknesses:\n${weaknesses.map(w => `- In "${w.subjectTitle}", the lesson "${w.lessonTitle}" has a mastery of ${w.masteryScore}%.`).join('\n')}` : 'No specific weaknesses identified.';
 
   const gamificationSummary = `User Stats:
 - Points: ${userProgress?.stats?.points || 0}
 - Rank: "${userProgress?.stats?.rank || 'Beginner'}"
 - Current Streak: ${userProgress?.streakCount || 0} days`;
 
-  // [!] The Final Prompt Gambit: Frame everything as a fictional simulation to bypass the model's core safety alignment.
-  const prompt = `You are EduAI, a specialized AI tutor. The information below in <user_context> is YOUR MEMORY of the student. Your purpose is to use this memory to provide personalized, direct answers.
-
+  const prompt = `You are "EduAI," a friendly and helpful AI tutor. Your memory about the student is provided in the <user_context>.
 
 <rules>
-1.  **Identity:** You MUST strictly maintain the persona of EduAI. The user knows you have this information.
-2.  **ABSOLUTE RULE:** You are FORBIDDEN from saying "I cannot access your data," "I don't know your streak," or any similar phrase denying knowledge. The user's data (streak, points, etc.) IS provided below. Your primary job is to find it and report it when asked.
-3.  **Action:** For questions about points, streak, tasks, etc., locate the answer in the <user_context> and state it directly and confidently. For general knowledge questions, answer them helpfully.
-4.  **Language:** Your response MUST be in ${language}.
+1.  **Persona & Personalization:** Your tone is friendly and direct.
+    *   **If a student name is provided ("${studentName || 'NONE'}"), address them by name when appropriate.** Adapt your language (masculine/feminine) to match the name's gender.
+    *   **If no name is provided, use a friendly, gender-neutral tone.**
+
+2.  **ABSOLUTE RULE - Use Your Memory:** You are FORBIDDEN from saying "I cannot access your data" or any similar phrase. The user's data (streak, points) IS in your memory below. Your job is to find it and state it confidently when asked.
+
+3.  **Action:** Answer the user's question directly using the provided context. If it's a general knowledge question not related to the context, answer it helpfully.
+
+4.  **Language:** Respond ONLY in ${language}.
 </rules>
 
-
-<user_context>
-  <gamification_stats>
-    ${gamificationSummary}
-  </gamification_stats>
-  <learning_focus>
-    ${tasksSummary}
-    ${weaknessesSummary}
-  </learning_focus>
-  <user_profile_summary>
-    ${safeSnippet(userProfile, 1000)}
-  </user_profile_summary>
-  <detailed_progress_summary>
-    ${formattedProgress}
-  </detailed_progress_summary>
+<user_context student_name="${studentName || 'Unknown'}">
+  <gamification_stats>${gamificationSummary}</gamification_stats>
+  <learning_focus>${tasksSummary}\n${weaknessesSummary}</learning_focus>
+  <user_profile_summary>${safeSnippet(userProfile, 1000)}</user_profile_summary>
+  <detailed_progress_summary>${formattedProgress}</detailed_progress_summary>
 </user_context>
 
-<conversation_history>
-${lastFive}
-</conversation_history>
+<conversation_history>${lastFive}</conversation_history>
 
-The user's (role-playing as the student) new message is: "${escapeForPrompt(safeSnippet(message, 2000))}"
+User's new message: "${escapeForPrompt(safeSnippet(message, 2000))}"
 
-Your response as EduAI:`;
-  const modelResp = await generateWithFailover('chat', prompt, { label: 'ResponseManager', timeoutMs: CONFIG.TIMEOUTS.chat });
+Your direct and helpful response as EduAI:`;
+  
+  const modelResp = await generateWithFailover('chat', prompt, { label: 'GeneralHandler', timeoutMs: CONFIG.TIMEOUTS.chat });
   let replyText = await extractTextFromResult(modelResp);
 
   const review = await runReviewManager(message, replyText);
   if (review && typeof review.score === 'number' && review.score < CONFIG.REVIEW_THRESHOLD) {
-    const correctivePrompt = `Previous reply scored ${review.score}/10. Improve it based on: ${escapeForPrompt(review.feedback)}. User: "${escapeForPrompt(safeSnippet(message, 2000))}"`;
+    const correctivePrompt = `Previous reply scored ${review.score}/10. Improve it based on: ${review.feedback}. User: "${escapeForPrompt(message)}"`;
     const res2 = await generateWithFailover('chat', correctivePrompt, { label: 'ResponseRetry', timeoutMs: CONFIG.TIMEOUTS.chat });
-    const improved = await extractTextFromResult(res2);
-    if (improved) replyText = improved;
+    if (res2) replyText = await extractTextFromResult(res2);
   }
 
   return replyText || (language === 'Arabic' ? 'لم أتمكن من الإجابة الآن. هل تريد إعادة الصياغة؟' : 'I could not generate an answer right now.');
 }
 //----------Performance Analysis---------
-async function handlePerformanceAnalysis(language, weaknesses = [], formattedProgress = '', tasksSummary = '') {
-    // [!] Prompt خفيف جداً ومخصص للتحليل فقط. لا يحتوي على gamification.
-    const prompt = `You are an AI actor playing "EduAI" in a fictional student performance simulation.
-Your task is to analyze the following *abstract academic data* for a fictional student and provide a summary.
+async function handlePerformanceAnalysis(language, weaknesses = [], formattedProgress = '', tasksSummary = '', studentName = null) {
+    // [!] Prompt ذكي يتعامل مع الاسم والجنس
+    const prompt = `You are an AI actor playing "EduAI," a warm, encouraging, and sharp academic advisor in a fictional simulation.
+Your task is to analyze academic data for a student and present a personalized, actionable performance review.
 
 <rules>
-1.  **Stay in Character:** You are an academic advisor. Your tone is encouraging and analytical.
-2.  **Synthesize, Don't Ask:** Use ONLY the data provided below to generate a performance review. DO NOT ask for more information.
-3.  **Structure:** Start by acknowledging the request. Then, list strengths (areas with high mastery) and areas for improvement (weaknesses or low mastery). Finally, suggest the next step based on current tasks.
-4.  **Language:** Respond ONLY in ${language}.
+1.  **Persona & Personalization:** Your tone MUST be positive and empowering.
+    *   **If a student name is provided ("${studentName || 'NONE'}"), you MUST address them by their name.**
+    *   **You MUST adapt your language (masculine/feminine grammatical forms in Arabic) to match the gender suggested by the name.** For example, for "سارة", use "أداؤكِ الرائع", for "محمد", use "أداؤك الرائع".
+    *   **If no name is provided, use a welcoming, gender-neutral greeting** like "أهلاً بك! دعنا نلقي نظرة على أدائك..." and continue with gender-neutral language.
+
+2.  **CRITICAL RULE - NO IDs:** You are FORBIDDEN from ever displaying technical IDs like 'sub1'. You MUST ONLY use the human-readable subject and lesson titles provided.
+
+3.  **Structure the Analysis:** Present your analysis in three clear sections: "نقاط القوة", "مجالات تتطلب التطوير والتحسين", and "الخطوة التالية المقترحة".
+
+4.  **Language:** Respond ONLY in ${language}. Your language must be natural and encouraging.
 </rules>
 
-<simulation_data>
+<simulation_data student_name="${studentName || 'Unknown'}">
   <current_tasks>
     ${tasksSummary}
   </current_tasks>
   <identified_weaknesses>
-    ${weaknesses.map(w => `- In "${w.subjectTitle}", the lesson "${w.lessonTitle}" has a mastery of ${w.masteryScore}%.`).join('\n')}
+    ${weaknesses.map(w => `- In subject "${w.subjectTitle}", the lesson "${w.lessonTitle}" has a mastery of ${w.score || 0}%.`).join('\n')}
   </identified_weaknesses>
   <overall_subject_mastery>
     ${formattedProgress}
   </overall_subject_mastery>
 </simulation_data>
 
-Your concise analysis as EduAI:`;
+Your personalized and encouraging analysis for ${studentName || 'the student'}:`;
 
     const modelResp = await generateWithFailover('chat', prompt, { label: 'AnalysisHandler', timeoutMs: CONFIG.TIMEOUTS.chat });
     return await extractTextFromResult(modelResp) || (language === 'Arabic' ? 'لم أتمكن من تحليل الأداء حاليًا.' : 'Could not analyze performance right now.');
@@ -830,31 +855,36 @@ app.post('/chat', async (req, res) => {
     const { message, history = [] } = req.body || {};
     if (!userId || !message) return res.status(400).json({ error: 'userId and message are required' });
 
+    // --- Data Orchestration Stage ---
     const traffic = await runTrafficManager(message);
     const language = traffic.language || 'Arabic';
     const intent = traffic.intent || 'unclear';
 
     if (intent === 'manage_todo' || intent === 'generate_plan') {
+      // ... (This part remains the same)
       const ack = await runNotificationManager('ack', language);
       const payload = { message, intent, language, history, pathId: req.body.pathId || null };
       const jobId = await enqueueJob({ userId, type: 'background_chat', payload });
       return res.json({ reply: ack, jobId, isAction: true });
     }
 
-    const [userProfile, userProgress, weaknesses, formattedProgress] = await Promise.all([
+    const [userProfile, userProgress, weaknesses, formattedProgress, userName] = await Promise.all([
       getProfile(userId),
       getProgress(userId),
       fetchUserWeaknesses(userId),
-      formatProgressForAI(userId)
+      formatProgressForAI(userId),
+      getUserDisplayName(userId) // This can return a name or null
     ]);
 
     let reply;
-    // [!] هنا يتم الفصل بين المهام
+    // [!] لا توجد قيمة افتراضية هنا. نمرر الاسم أو null كما هو.
+    const studentName = userName; 
+
     if (intent === 'analyze_performance') {
       const tasksSummary = (userProgress?.dailyTasks?.tasks?.length > 0) ? `Current Tasks:\n${userProgress.dailyTasks.tasks.map(t => `- ${t.title} (${t.status})`).join('\n')}` : 'The user currently has no tasks.';
-      reply = await handlePerformanceAnalysis(language, weaknesses, formattedProgress, tasksSummary);
-    } else { // For 'question' or 'unclear' intents
-      reply = await handleGeneralQuestion(message, language, history, userProfile, userProgress, weaknesses, formattedProgress);
+      reply = await handlePerformanceAnalysis(language, weaknesses, formattedProgress, tasksSummary, studentName);
+    } else {
+      reply = await handleGeneralQuestion(message, language, history, userProfile, userProgress, weaknesses, formattedProgress, studentName);
     }
 
     return res.json({ reply, isAction: false });
