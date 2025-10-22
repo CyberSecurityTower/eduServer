@@ -501,10 +501,13 @@ async function processJob(jobDoc) {
         // store result and notify user
         await jobDoc.ref.update({ result: todoResult, status: 'done', finishedAt: admin.firestore.FieldValue.serverTimestamp() });
         await sendUserNotification(userId, { message: todoResult.message || 'Task processed', meta: { jobId: id } });
-      } else if (payload.intent === 'generate_plan') {
-        const plan = await runPlannerManager(userId, payload.message);
-        await jobDoc.ref.update({ result: plan, status: 'done', finishedAt: admin.firestore.FieldValue.serverTimestamp() });
-        await sendUserNotification(userId, { message: 'تم إنشاء الخطة الدراسية.', meta: { plan, jobId: id } });
+     } else if (payload.intent === 'generate_plan') {
+    // استدعِ نقاط الضعف أولاً لجعل الخطة أكثر ذكاءً
+    const weaknesses = await fetchUserWeaknesses(userId); 
+    const plan = await runPlannerManager(userId, payload.message, weaknesses);
+    await jobDoc.ref.update({ result: plan, status: 'done', finishedAt: admin.firestore.FieldValue.serverTimestamp() });
+    await sendUserNotification(userId, { message: 'تم إنشاء الخطة الدراسية.', meta: { plan, jobId: id } });
+}
       } else {
         // default: generate an assistant reply and save
         const [userProfile, userProgress, weaknesses, formattedProgress, userName] = await Promise.all([
@@ -593,7 +596,7 @@ app.post('/chat', async (req, res) => {
 
     if (intent === 'manage_todo' || intent === 'generate_plan') {
       const ack = await runNotificationManager('ack', language);
-      const payload = { message, intent, language, pathId: req.body.pathId };
+      const payload = { message, intent, language, pathId: req.body.pathId || null };
       const jobId = await enqueueJob({ userId, type: 'background_chat', payload });
       return res.json({ reply: ack, jobId, isAction: true });
     }
