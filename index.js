@@ -759,9 +759,9 @@ async function handleGeneralQuestion(message, language, history = [], userProfil
     -   Conclude with an encouraging suggestion.
 
 4.  **Handling Unclear Input:** If the user's message is nonsensical, a random string, or just emojis, you MUST respond with a simple, friendly message in the correct language, like "لم أفهم طلبك، هل يمكنك إعادة صياغته؟".
-5.  **Language:** Your response MUST be in ${language}. 
+5.  **Language:** Your response MUST be in ${language}.
 </rules>
-this is user's data and study performance:
+
 <user_context>
   <gamification_stats>
     ${gamificationSummary}
