@@ -406,7 +406,74 @@ async function runTrafficManager(message, lang = 'Arabic') {
     return { intent: 'question', title: message.substring(0, 30), language: lang };
   }
 }
+function formatTasksHuman(tasks = [], lang = 'Arabic') {
+  if (!Array.isArray(tasks)) return '';
+  return tasks.map((t, i) => `${i + 1}. ${t.title} [${t.type}]`).join('\n');
+}
 
+async function runQuizAnalyzer(quizPayload) {
+  const { lessonTitle = '', quizQuestions = [], userAnswers = [], totalScore = 0 } = quizPayload || {};
+  const totalQuestions = Array.isArray(quizQuestions) ? quizQuestions.length : 0;
+  const masteryScore = totalQuestions > 0 ? Math.round((Number(totalScore) / totalQuestions) * 100) : 0;
+
+  const performanceSummary = (Array.isArray(quizQuestions) ? quizQuestions : []).map((q, i) => {
+    const ua = (userAnswers && userAnswers[i] !== undefined) ? userAnswers[i] : null;
+    return `Q${i + 1}: ${q.question || 'N/A'}\n- user: ${ua}\n- correct: ${q.correctAnswer}`;
+  }).join('\n');
+
+  const prompt = `You are an expert educational analyst. Produce ONLY a single JSON object (no extra text) with fields:
+- newMasteryScore (number)
+- feedbackSummary (brief Arabic encouraging paragraph)
+- suggestedNextStep (brief Arabic actionable step)
+- dominantErrorType (one of ["مفهومي","حسابي","تنفيذي","قراءة/سهو","مختلط","غير محدد"])
+- recommendedResource (short string)
+
+CONTEXT:
+Lesson Title: "${escapeForPrompt(lessonTitle || 'Unknown')}"
+User Score: ${Number(totalScore)} / ${totalQuestions} (${masteryScore}%)
+Detailed Performance:
+${performanceSummary}
+
+RULES:
+1) Analyze incorrect answers to identify dominantErrorType.
+2) Provide concise Arabic feedback and a clear next step.
+3) Recommend one resource (lesson name or short id).
+4) Output MUST be strict JSON with the required fields.
+`;
+
+  try {
+    const res = await generateWithFailover('analysis', prompt, { label: 'QuizAnalyzer', timeoutMs: CONFIG.TIMEOUTS.analysis });
+    const raw = await extractTextFromResult(res);
+    const parsed = await ensureJsonOrRepair(raw, 'analysis');
+
+    if (parsed && typeof parsed === 'object' && parsed.feedbackSummary && parsed.suggestedNextStep) {
+      return {
+        newMasteryScore: Number(parsed.newMasteryScore || masteryScore),
+        feedbackSummary: String(parsed.feedbackSummary),
+        suggestedNextStep: String(parsed.suggestedNextStep),
+        dominantErrorType: String(parsed.dominantErrorType || 'غير محدد'),
+        recommendedResource: String(parsed.recommendedResource || `درس: ${lessonTitle || 'مراجعة الدرس'}`),
+      };
+    }
+    throw new Error('Invalid JSON from analysis model');
+  } catch (err) {
+    console.error('[QuizAnalyzer] analysis failed:', err && err.message ? err.message : err);
+    // fallback
+    const incorrectCount = (Array.isArray(quizQuestions) ? quizQuestions : []).reduce((acc, q, idx) => {
+      const ua = userAnswers && userAnswers[idx] !== undefined ? String(userAnswers[idx]) : null;
+      return acc + ((ua === null || String(q.correctAnswer) !== ua) ? 1 : 0);
+    }, 0);
+    const fallbackDominant = incorrectCount === 0 ? 'غير محدد' : (incorrectCount / Math.max(totalQuestions, 1) > 0.6 ? 'مفهومي' : 'حسابي');
+    const fallbackResource = `درس: ${lessonTitle || 'مراجعة الدرس'}`;
+    return {
+      newMasteryScore: masteryScore,
+      feedbackSummary: incorrectCount === 0 ? 'عمل رائع — أجبت على جميع الأسئلة بشكل صحيح.' : `أجبت بشكل صحيح على ${totalQuestions - incorrectCount} من ${totalQuestions} أسئلة. ركز على الأسئلة الخاطئة وراجع المفاهيم المرتبطة.`,
+      suggestedNextStep: incorrectCount === 0 ? 'استمر في التقدم.' : 'راجع الدرس المعني وأعد حل الأسئلة المشابهة.',
+      dominantErrorType: fallbackDominant,
+      recommendedResource: fallbackResource,
+    };
+  }
+}
 // Review manager: score an assistant reply and provide feedback
 async function runReviewManager(userMessage, assistantReply) {
   try {
@@ -424,50 +491,140 @@ async function runReviewManager(userMessage, assistantReply) {
 }
 
 // Notification manager: produce quick acknowledgement or notification text
-async function runNotificationManager(type = 'ack', language = 'Arabic') {
+async function runNotificationManager(type = 'ack', language = 'Arabic', data = {}) {
+  let prompt;
+  const commonRules = `\n<rules>\n1. Respond in natural, encouraging ${language}.\n2. Be concise and positive.\n3. Do NOT include any formatting like markdown or JSON.\n</rules>`;
+
+  switch (type) {
+    case 'task_completed':
+      prompt = `Create a short, celebratory message in ${language} for completing a task. The task title is: "${data.taskTitle || 'a task'}". Example: "رائع! تم إنجاز مهمة: ${data.taskTitle}"`;
+      break;
+    case 'task_added':
+      prompt = `Create a short, welcoming message in ${language} for adding a new task. The task title is: "${data.taskTitle || 'a new task'}". Example: "تمت إضافة مهمة جديدة: ${data.taskTitle}"`;
+      break;
+    case 'task_removed':
+      prompt = `Create a short, neutral message in ${language} for removing a task. The task title is: "${data.taskTitle || 'a task'}". Example: "تم حذف مهمة: ${data.taskTitle}"`;
+      break;
+    case 'task_updated':
+      prompt = `Create a short, generic message in ${language} confirming that the to-do list was updated.`;
+      break;
+    case 'ack':
+      prompt = `Return a short acknowledgement in ${language} (max 12 words) confirming the user's action was received, e.g., \"تم استلام طلبك، جاري العمل عليه\". Return ONLY the sentence.`;
+      break;
+    default:
+      return (language === 'Arabic') ? "تم تحديث طلبك بنجاح." : 'Your request has been updated.';
+  }
+
   try {
-    if (type === 'ack') {
-      const prompt = `Return a short acknowledgement in ${language} (max 12 words) confirming the user's action was received, e.g., \"تم استلام طلبك، جاري العمل عليه\". Return ONLY the sentence.`;
-      const res = await generateWithFailover('notification', prompt, { label: 'NotificationAck', timeoutMs: CONFIG.TIMEOUTS.notification });
-      const txt = await extractTextFromResult(res);
-      return txt || (language === 'Arabic' ? 'تم الاستلام.' : 'Acknowledged.');
-    }
-    // other notification types could be handled here
-    return language === 'Arabic' ? 'تمت المعالجة.' : 'Processed.';
+    const res = await generateWithFailover('notification', prompt + commonRules, { label: 'NotificationManager', timeoutMs: CONFIG.TIMEOUTS.notification });
+    const text = await extractTextFromResult(res);
+    // Fallback messages in case AI fails
+    if (text) return text;
+    if (type === 'task_completed') return `أحسنت! تم إنجاز مهمة: ${data.taskTitle}`;
+    if (type === 'task_added') return `تمت إضافة مهمة: ${data.taskTitle}`;
+    return language === 'Arabic' ? 'تم تحديث قائمة مهامك.' : 'Your to-do list has been updated.';
   } catch (err) {
     console.error('runNotificationManager error:', err.message);
-    return language === 'Arabic' ? 'تم الاستلام.' : 'Acknowledged.';
+    return language === 'Arabic' ? 'تم تحديث طلبك.' : 'Your request has been updated.';
   }
 }
-
 // ToDo manager: interpret todo instructions and return an action summary (lightweight implementation)
-async function runToDoManager(userId, message, extra = {}) {
-  try {
-    const prompt = `You are a task manager. The user (id: ${userId}) sent: "${escapeForPrompt(message)}".\nReturn a JSON object: {"action":"add|remove|update|none","task": {"title":"...","status":"pending|done"},"message":"user-facing message"}`;
-    const res = await generateWithFailover('todo', prompt, { label: 'ToDoManager', timeoutMs: CONFIG.TIMEOUTS.notification });
-    const raw = await extractTextFromResult(res);
-    const parsed = await ensureJsonOrRepair(raw, 'todo');
-    if (parsed) return parsed;
-    return { action: 'none', task: null, message: 'Could not parse todo.' };
-  } catch (err) {
-    console.error('runToDoManager error:', err.message);
-    return { action: 'none', task: null, message: 'Error processing todo.' };
+async function runToDoManager(userId, userRequest, currentTasks = []) {
+  const prompt = `You are an expert To-Do List Manager AI. Modify the CURRENT TASKS based on the USER REQUEST.
+<rules>
+1.  **Precision:** You MUST only modify, add, or delete tasks explicitly mentioned in the user request.
+2.  **Preservation:** You MUST preserve the exact original title, type, and language of all other tasks that were not mentioned in the request. This is a critical rule.
+3.  **Output Format:** Respond ONLY with a valid JSON object: { "tasks": [ ... ] }. Each task must have all required fields (id, title, type, status, etc.).
+</rules>
+
+CURRENT TASKS:
+${JSON.stringify(currentTasks)}
+
+USER REQUEST:
+"${escapeForPrompt(userRequest)}"`;
+
+  const res = await generateWithFailover('todo', prompt, { label: 'ToDoManager', timeoutMs: CONFIG.TIMEOUTS.default });
+  const raw = await extractTextFromResult(res);
+  const parsed = await ensureJsonOrRepair(raw, 'todo');
+  if (!parsed || !Array.isArray(parsed.tasks)) throw new Error('ToDoManager returned invalid tasks.');
+
+  const VALID_TASK_TYPES = new Set(['review', 'quiz', 'new_lesson', 'practice', 'study']);
+  const normalizedTasks = parsed.tasks.map((t) => ({
+    id: t.id || crypto.randomUUID(),
+    title: String(t.title || 'مهمة جديدة'),
+    type: VALID_TASK_TYPES.has(String(t.type || '').toLowerCase()) ? String(t.type).toLowerCase() : 'review',
+    status: String(t.status || 'pending').toLowerCase() === 'completed' ? 'completed' : 'pending',
+    relatedLessonId: t.relatedLessonId || null,
+    relatedSubjectId: t.relatedSubjectId || null,
+  }));
+
+  // --- [المنطق الجديد] تحديد التغيير الذي حدث ---
+  let changeDescription = { action: 'updated', taskTitle: null };
+  const oldTaskIds = new Set(currentTasks.map(t => t.id));
+  const newTaskIds = new Set(normalizedTasks.map(t => t.id));
+
+  // 1. هل اكتملت مهمة؟
+  const completedTask = normalizedTasks.find(newTask => {
+    const oldTask = currentTasks.find(old => old.id === newTask.id);
+    return oldTask && oldTask.status === 'pending' && newTask.status === 'completed';
+  });
+  if (completedTask) {
+    changeDescription = { action: 'completed', taskTitle: completedTask.title };
+  } else {
+    // 2. هل أُضيفت مهمة جديدة؟
+    const addedTask = normalizedTasks.find(t => !oldTaskIds.has(t.id));
+    if (addedTask) {
+      changeDescription = { action: 'added', taskTitle: addedTask.title };
+    } else {
+      // 3. هل حُذفت مهمة؟
+      const removedTask = currentTasks.find(t => !newTaskIds.has(t.id));
+      if (removedTask) {
+        changeDescription = { action: 'removed', taskTitle: removedTask.title };
+      }
+    }
   }
+  // --- نهاية المنطق الجديد ---
+
+  await db.collection('userProgress').doc(userId).set({
+    dailyTasks: { tasks: normalizedTasks, generatedAt: admin.firestore.FieldValue.serverTimestamp() },
+  }, { merge: true });
+  await cacheDel('progress', userId);
+  
+  // أعد القائمة الجديدة مع وصف التغيير
+  return { updatedTasks: normalizedTasks, change: changeDescription };
 }
 
 // Planner manager: create a simple study plan JSON
-async function runPlannerManager(userId, message, weaknesses = []) {
-  try {
-    const prompt = `Create a short study plan (3-7 steps) for user ${userId} based on: ${escapeForPrompt(message)} and weaknesses: ${JSON.stringify(weaknesses.slice(0,5))}. Return ONLY a JSON {"plan":[{"title":"...","duration":"...","notes":"..."}]}`;
-    const res = await generateWithFailover('planner', prompt, { label: 'PlannerManager', timeoutMs: CONFIG.TIMEOUTS.chat });
-    const raw = await extractTextFromResult(res);
-    const parsed = await ensureJsonOrRepair(raw, 'planner');
-    if (parsed) return parsed;
-    return { plan: [] };
-  } catch (err) {
-    console.error('runPlannerManager error:', err.message);
-    return { plan: [] };
+async function runPlannerManager(userId, pathId = null) {
+  const weaknesses = await fetchUserWeaknesses(userId, pathId);
+  const weaknessesPrompt = weaknesses.length > 0
+    ? `<context>\nThe user has shown weaknesses in the following areas:\n${weaknesses.map(w => `- Subject: "${w.subjectTitle}", Lesson: "${w.lessonTitle}" (ID: ${w.lessonId}), Current Mastery: ${w.masteryScore}%`).join('\n')}\n</context>`
+    : '<context>The user is new or has no specific weaknesses. Suggest a general introductory plan to get them started.</context>';
+
+  const prompt = `You are an elite academic coach. Create an engaging, personalized study plan.\n${weaknessesPrompt}\n<rules>\n1.  Generate 2-4 daily tasks.\n2.  All task titles MUST be in clear, user-friendly Arabic.\n3.  **Clarity:** If a task is for a specific subject (e.g., "Physics"), mention it in the title, like "مراجعة الدرس الأول في الفيزياء".\n4.  You MUST create a variety of task types.\n5.  Each task MUST include 'relatedLessonId' and 'relatedSubjectId'.\n6.  Output MUST be ONLY a valid JSON object: { "tasks": [ ... ] }\n</rules>`;
+
+  const res = await generateWithFailover('planner', prompt, { label: 'Planner', timeoutMs: CONFIG.TIMEOUTS.default });
+  const raw = await extractTextFromResult(res);
+  const parsed = await ensureJsonOrRepair(raw, 'planner');
+
+  if (!parsed || !Array.isArray(parsed.tasks) || parsed.tasks.length === 0) {
+    const fallback = [{ id: crypto.randomUUID(), title: 'مراجعة المفاهيم الأساسية', type: 'review', status: 'pending', relatedLessonId: null, relatedSubjectId: null }];
+    await db.collection('userProgress').doc(userId).set({ dailyTasks: { tasks: fallback, generatedAt: admin.firestore.FieldValue.serverTimestamp() } }, { merge: true });
+    return { tasks: fallback, source: 'fallback' };
   }
+
+  const tasksToSave = parsed.tasks.slice(0, 5).map((t) => ({
+    id: t.id || crypto.randomUUID(),
+    title: String(t.title || 'مهمة تعليمية'),
+    type: ['review', 'quiz', 'new_lesson', 'practice', 'study'].includes(String(t.type || '').toLowerCase()) ? String(t.type).toLowerCase() : 'review',
+    status: 'pending',
+    relatedLessonId: t.relatedLessonId || null,
+    relatedSubjectId: t.relatedSubjectId || null,
+  }));
+
+  await db.collection('userProgress').doc(userId).set({ dailyTasks: { tasks: tasksToSave, generatedAt: admin.firestore.FieldValue.serverTimestamp() } }, { merge: true });
+  await cacheDel('progress', userId);
+  return { tasks: tasksToSave, source: 'AI' };
 }
 
 // ---------------- JOB QUEUE HELPERS & WORKER ----------------
@@ -498,88 +655,67 @@ async function processJob(jobDoc) {
     });
 
     const { userId, type, payload } = data;
-
-    // ✅ تحقق من وجود payload لتفادي undefined
     if (!payload || typeof payload !== 'object') {
-      console.warn(`⚠️ Job ${id} has invalid payload:`, payload);
-      await jobDoc.ref.update({ 
-        status: 'failed', 
-        lastError: 'Missing or invalid payload', 
-        finishedAt: admin.firestore.FieldValue.serverTimestamp() 
-      });
-      return;
+      throw new Error('Missing or invalid payload');
     }
-
-    // ✅ إزالة أي قيم undefined داخل payload
-    Object.keys(payload).forEach(key => {
-      if (payload[key] === undefined) delete payload[key];
-    });
+    
+    const message = payload.message || '';
+    const intent = payload.intent || null;
+    const language = payload.language || 'Arabic';
 
     if (type === 'background_chat') {
-      if (payload.intent === 'manage_todo') {
-        const todoResult = await runToDoManager(userId, payload.message, payload);
-        await jobDoc.ref.update({ 
-          result: todoResult, 
-          status: 'done', 
-          finishedAt: admin.firestore.FieldValue.serverTimestamp() 
-        });
-        await sendUserNotification(userId, { 
-          message: todoResult.message || 'Task processed', 
-          meta: { jobId: id } 
-        });
+  // الحالة الأولى: إدارة المهام
+  if (intent === 'manage_todo') {
+    const progress = await getProgress(userId);
+    const currentTasks = progress?.dailyTasks?.tasks || [];
+    const { change } = await runToDoManager(userId, message, currentTasks);
 
-      } else if (payload.intent === 'generate_plan') {
-        const weaknesses = await fetchUserWeaknesses(userId);
-        const plan = await runPlannerManager(userId, payload.message, weaknesses);
-        await jobDoc.ref.update({ 
-          result: plan, 
-          status: 'done', 
-          finishedAt: admin.firestore.FieldValue.serverTimestamp() 
-        });
-        await sendUserNotification(userId, { 
-          message: 'تم إنشاء الخطة الدراسية.', 
-          meta: { plan, jobId: id } 
-        });
+    let notificationType = 'task_updated';
+    if (change.action === 'completed') notificationType = 'task_completed';
+    if (change.action === 'added') notificationType = 'task_added';
+    if (change.action === 'removed') notificationType = 'task_removed';
 
-      } else {
-        // Default assistant reply
-        const [userProfile, userProgress, weaknesses, formattedProgress, userName] = await Promise.all([
-          getProfile(userId), 
-          getProgress(userId), 
-          fetchUserWeaknesses(userId), 
-          formatProgressForAI(userId), 
-          getUserDisplayName(userId)
-        ]);
+    const notificationMessage = await runNotificationManager(notificationType, language, { taskTitle: change.taskTitle });
+    
+    await sendUserNotification(userId, { 
+      message: notificationMessage, 
+      lang: language, 
+      meta: { jobId: id, source: 'todo' } 
+    });
 
-        const reply = await handleGeneralQuestion(
-          payload.message,
-          payload.language || 'Arabic',
-          payload.history || [],
-          userProfile,
-          userProgress,
-          weaknesses,
-          formattedProgress,
-          userName
-        );
+  // الحالة الثانية: إنشاء خطة دراسية (كانت مفقودة)
+  } else if (intent === 'generate_plan') {
+    const pathId = payload.pathId || null;
+    const result = await runPlannerManager(userId, pathId);
+    const humanSummary = formatTasksHuman(result.tasks, language);
+    await sendUserNotification(userId, { 
+      message: `تم إنشاء خطتك الدراسية الجديدة:\n${humanSummary}`, 
+      lang: language, 
+      meta: { jobId: id, source: 'planner' } 
+    });
 
-        await jobDoc.ref.update({ 
-          result: { reply }, 
-          status: 'done', 
-          finishedAt: admin.firestore.FieldValue.serverTimestamp() 
-        });
+  // الحالة الثالثة: أي شيء آخر (سؤال عام)
+  } else {
+     const [userProfile, userProgress, weaknesses, formattedProgress, userName] = await Promise.all([
+      getProfile(userId), 
+      getProgress(userId), 
+      fetchUserWeaknesses(userId), 
+      formatProgressForAI(userId), 
+      getUserDisplayName(userId)
+    ]);
 
-        await sendUserNotification(userId, { 
-          message: reply, 
-          meta: { jobId: id } 
-        });
-      }
+    const reply = await handleGeneralQuestion(
+      payload.message, payload.language || 'Arabic', payload.history || [],
+      userProfile, userProgress, weaknesses, formattedProgress, userName
+    );
+    await sendUserNotification(userId, { message: reply, meta: { jobId: id } });
+  }
+  
+  await jobDoc.ref.update({ status: 'done', finishedAt: admin.firestore.FieldValue.serverTimestamp() });
 
-    } else {
-      await jobDoc.ref.update({ 
-        status: 'skipped', 
-        finishedAt: admin.firestore.FieldValue.serverTimestamp() 
-      });
-    }
+} else {
+  await jobDoc.ref.update({ status: 'skipped', finishedAt: admin.firestore.FieldValue.serverTimestamp() });
+}
 
   } catch (err) {
     console.error('processJob error for', id, err.message || err);
@@ -593,7 +729,6 @@ async function processJob(jobDoc) {
     await jobDoc.ref.update(update);
   }
 }
-
 async function jobWorkerLoop() {
   if (workerStopped) return;
   try {
@@ -684,7 +819,48 @@ app.post('/chat', async (req, res) => {
     return res.status(500).json({ error: 'An internal server error occurred.' });
   }
 });
+app.post('/update-daily-tasks', async (req, res) => {
+  try {
+    const { userId, updatedTasks } = req.body || {};
+    if (!userId || !Array.isArray(updatedTasks)) {
+      return res.status(400).json({ error: 'User ID and updatedTasks array are required.' });
+    }
+    await db.collection('userProgress').doc(userId).set({
+      dailyTasks: { tasks: updatedTasks, generatedAt: admin.firestore.FieldValue.serverTimestamp() }
+    }, { merge: true });
+    await cacheDel('progress', userId);
+    res.status(200).json({ success: true, message: 'Daily tasks updated successfully.' });
+  } catch (error) {
+    console.error('/update-daily-tasks error:', error.stack);
+    res.status(500).json({ error: 'An error occurred while updating daily tasks.' });
+  }
+});
 
+app.post('/generate-daily-tasks', async (req, res) => {
+  try {
+    const { userId, pathId = null } = req.body || {};
+    if (!userId) return res.status(400).json({ error: 'User ID is required.' });
+    const result = await runPlannerManager(userId, pathId);
+    return res.status(200).json({ success: true, source: result.source || 'AI', tasks: result.tasks });
+  } catch (err) {
+    console.error('/generate-daily-tasks error:', err.stack);
+    return res.status(500).json({ error: 'Failed to generate tasks.' });
+  }
+});
+
+app.post('/analyze-quiz', async (req, res) => {
+  try {
+    const { userId, lessonTitle, quizQuestions, userAnswers, totalScore } = req.body || {};
+    if (!userId || !lessonTitle || !Array.isArray(quizQuestions) || !Array.isArray(userAnswers) || typeof totalScore !== 'number') {
+      return res.status(400).json({ error: 'Invalid or incomplete quiz data provided.' });
+    }
+    const analysis = await runQuizAnalyzer({ lessonTitle, quizQuestions, userAnswers, totalScore });
+    return res.status(200).json(analysis);
+  } catch (err) {
+    console.error('/analyze-quiz error:', err.stack);
+    return res.status(500).json({ error: 'An internal server error during quiz analysis.' });
+  }
+});
 // endpoint to enqueue an arbitrary job (admin use)
 app.post('/enqueue-job', async (req, res) => {
   try {
