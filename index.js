@@ -891,7 +891,35 @@ app.post('/enqueue-job', async (req, res) => {
     return res.json({ jobId: id });
   } catch (err) { res.status(500).json({ error: String(err) }); }
 });
+app.post('/generate-title', async (req, res) => {
+  try {
+    const { message, language = 'Arabic' } = req.body || {};
+    if (!message || typeof message !== 'string' || message.trim().length === 0) {
+      return res.status(400).json({ error: 'A non-empty message is required.' });
+    }
 
+    const prompt = `Generate a very short, descriptive title (2-4 words) for the following user message. The title should be in ${language}. Respond with ONLY the title text, no JSON or extra words.\n\nMessage: "${escapeForPrompt(safeSnippet(message, 300))}"\n\nTitle:`;
+
+    const modelResp = await generateWithFailover('titleIntent', prompt, {
+      label: 'GenerateTitle',
+      timeoutMs: 5000, // timeout قصير لأنها مهمة سريعة
+    });
+
+    const title = await extractTextFromResult(modelResp);
+
+    if (!title) {
+      // fallback بسيط في حال فشل النموذج
+      return res.json({ title: message.substring(0, 30) });
+    }
+
+    return res.json({ title: title.replace(/["']/g, '') }); // إزالة أي علامات اقتباس
+  } catch (err) {
+    console.error('/generate-title error:', err.stack);
+    // إرجاع عنوان احتياطي في حالة حدوث خطأ فادح
+    const fallbackTitle = req.body.message ? req.body.message.substring(0, 30) : 'New Chat';
+    return res.status(500).json({ title: fallbackTitle });
+  }
+});
 // ---------------- STARTUP & SHUTDOWN ----------------
 const server = app.listen(CONFIG.PORT, () => {
   console.log(`✅ EduAI Brain V18.0 running on port ${CONFIG.PORT}`);
