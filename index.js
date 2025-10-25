@@ -840,7 +840,7 @@ app.post('/chat', async (req, res) => {
     return res.status(500).json({ error: 'An internal server error occurred.' });
   }
 });
-/ ✨ [NEW] Endpoint for streaming chat responses
+// ✨ [NEW] Endpoint for streaming chat responses
 app.post('/chat-stream', async (req, res) => {
   try {
     const { userId, message, history = [], lessonId } = req.body;
