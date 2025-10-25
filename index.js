@@ -891,7 +891,8 @@ app.post('/chat-stream', async (req, res) => {
     } else {
         res.end();
     }
-  }});
+  }
+});
 app.post('/update-daily-tasks', async (req, res) => {
   try {
     const { userId, updatedTasks } = req.body || {};
