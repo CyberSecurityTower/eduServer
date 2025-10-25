@@ -840,6 +840,58 @@ app.post('/chat', async (req, res) => {
     return res.status(500).json({ error: 'An internal server error occurred.' });
   }
 });
+/ ✨ [NEW] Endpoint for streaming chat responses
+app.post('/chat-stream', async (req, res) => {
+  try {
+    const { userId, message, history = [], lessonId } = req.body;
+    if (!userId || !message) {
+      return res.status(400).json({ error: 'userId and message are required' });
+    }
+
+    // Set headers for streaming
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    res.flushHeaders(); // Send headers immediately
+
+    const [userProfile, userProgress, weaknesses, formattedProgress, userName] = await Promise.all([
+      getProfile(userId),
+      getProgress(userId),
+      fetchUserWeaknesses(userId),
+      formatProgressForAI(userId),
+      getUserDisplayName(userId),
+    ]);
+
+    const language = 'Arabic'; // Or detect from request
+    const lastFive = (Array.isArray(history) ? history.slice(-5) : []).map(h => `${h.role === 'model' ? 'You' : 'User'}: ${safeSnippet(h.text || '', 500)}`).join('\n');
+    const tasksSummary = userProgress?.dailyTasks?.tasks?.length > 0 ? `Current Tasks:\n${userProgress.dailyTasks.tasks.map(t => `- ${t.title} (${t.status})`).join('\n')}` : 'The user currently has no tasks.';
+    const weaknessesSummary = weaknesses.length > 0 ? `Identified Weaknesses:\n${weaknesses.map(w => `- In "${w.subjectTitle}", lesson "${w.lessonTitle}" has a mastery of ${w.masteryScore}%.`).join('\n')}` : 'No specific weaknesses identified.';
+    const gamificationSummary = `User Stats:\n- Points: ${userProgress?.stats?.points || 0}\n- Rank: "${userProgress?.stats?.rank || 'Beginner'}"\n- Current Streak: ${userProgress?.streakCount || 0} days`;
+
+    const prompt = `You are EduAI, a specialized AI tutor. The information in <user_context> is YOUR MEMORY of the student. Use it to provide personalized, direct answers.\n\n<rules>\n1.  **Persona & Personalization:** Your tone is helpful and encouraging.\n    *   **If a student name is provided ("${userName || 'NONE'}"), you may address them by their name in a friendly way.**\n    *   **Adapt your language (masculine/feminine forms in Arabic) to the gender suggested by the name.**\n    *   **If no name is provided, use gender-neutral language.**\n\n2.  **ABSOLUTE RULE:** You are FORBIDDEN from saying "I cannot access your data" or any similar phrase. The user's data (streak, points, etc.) IS provided below. Your primary job is to find it and report it when asked.\n\n3.  **Action:** For specific questions about points, streak, or tasks, locate the answer in the <user_context> and state it directly. For general knowledge questions, answer them helpfully.\n\n4.  **Language:** Your response MUST be in ${language}.\n</rules>\n\n<user_context student_name="${userName || 'Unknown'}">\n  <gamification_stats>${gamificationSummary}</gamification_stats>\n  <learning_focus>${tasksSummary}\n${weaknessesSummary}</learning_focus>\n  <user_profile_summary>${safeSnippet(userProfile, 1000)}</user_profile_summary>\n  <detailed_progress_summary>${formattedProgress}</detailed_progress_summary>\n</user_context>\n\n<conversation_history>${lastFive}</conversation_history>\n\nThe user's new message is: "${escapeForPrompt(safeSnippet(message, 2000))}"\nYour response as EduAI:`;
+
+    // Use generateContentStream with the 'chat' pool
+    const pool = modelPools['chat'];
+    const inst = shuffled(pool)[0]; // Simplified selection for this example
+    const result = await inst.model.generateContentStream(prompt);
+
+    for await (const chunk of result.stream) {
+      const chunkText = chunk.text();
+      if (chunkText) {
+        res.write(chunkText);
+      }
+    }
+    res.end();
+
+  } catch (err) {
+    console.error('/chat-stream error:', err.stack);
+    // If an error occurs after headers are sent, we can't send a JSON error.
+    // We just end the stream. The client will handle the abrupt end.
+    if (!res.headersSent) {
+        res.status(500).json({ error: 'An internal server error occurred.' });
+    } else {
+        res.end();
+    }
+  }});
 app.post('/update-daily-tasks', async (req, res) => {
   try {
     const { userId, updatedTasks } = req.body || {};
