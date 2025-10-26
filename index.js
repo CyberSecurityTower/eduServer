@@ -841,56 +841,39 @@ app.post('/chat', async (req, res) => {
   }
 });
 // ✨ [NEW] Endpoint for streaming chat responses
-app.post('/chat-stream', async (req, res) => {
+// ✨ [ENHANCED] Endpoint for streaming chat responses with better headers
+// ✨ [CLEANUP] Renamed from /chat-stream to /chat-interactive and removed streaming logic.
+// This endpoint now generates the full response and sends it at once.
+// ✨ [ENHANCED & CLEANED] Renamed from /chat-stream to /chat-interactive.
+// This endpoint now generates the full response and sends it at once as a JSON object.
+app.post('/chat-interactive', async (req, res) => {
   try {
-    const { userId, message, history = [], lessonId } = req.body;
+    const { userId, message, history = [] } = req.body;
     if (!userId || !message) {
       return res.status(400).json({ error: 'userId and message are required' });
     }
 
-    // Set headers for streaming
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Transfer-Encoding', 'chunked');
-    res.flushHeaders(); // Send headers immediately
-
     const [userProfile, userProgress, weaknesses, formattedProgress, userName] = await Promise.all([
-      getProfile(userId),
-      getProgress(userId),
-      fetchUserWeaknesses(userId),
-      formatProgressForAI(userId),
-      getUserDisplayName(userId),
+      getProfile(userId), getProgress(userId), fetchUserWeaknesses(userId),
+      formatProgressForAI(userId), getUserDisplayName(userId),
     ]);
 
-    const language = 'Arabic'; // Or detect from request
+    const language = 'Arabic';
     const lastFive = (Array.isArray(history) ? history.slice(-5) : []).map(h => `${h.role === 'model' ? 'You' : 'User'}: ${safeSnippet(h.text || '', 500)}`).join('\n');
     const tasksSummary = userProgress?.dailyTasks?.tasks?.length > 0 ? `Current Tasks:\n${userProgress.dailyTasks.tasks.map(t => `- ${t.title} (${t.status})`).join('\n')}` : 'The user currently has no tasks.';
     const weaknessesSummary = weaknesses.length > 0 ? `Identified Weaknesses:\n${weaknesses.map(w => `- In "${w.subjectTitle}", lesson "${w.lessonTitle}" has a mastery of ${w.masteryScore}%.`).join('\n')}` : 'No specific weaknesses identified.';
     const gamificationSummary = `User Stats:\n- Points: ${userProgress?.stats?.points || 0}\n- Rank: "${userProgress?.stats?.rank || 'Beginner'}"\n- Current Streak: ${userProgress?.streakCount || 0} days`;
 
-    const prompt = `You are EduAI, a specialized AI tutor. The information in <user_context> is YOUR MEMORY of the student. Use it to provide personalized, direct answers.\n\n<rules>\n1.  **Persona & Personalization:** Your tone is helpful and encouraging.\n    *   **If a student name is provided ("${userName || 'NONE'}"), you may address them by their name in a friendly way.**\n    *   **Adapt your language (masculine/feminine forms in Arabic) to the gender suggested by the name.**\n    *   **If no name is provided, use gender-neutral language.**\n\n2.  **ABSOLUTE RULE:** You are FORBIDDEN from saying "I cannot access your data" or any similar phrase. The user's data (streak, points, etc.) IS provided below. Your primary job is to find it and report it when asked.\n\n3.  **Action:** For specific questions about points, streak, or tasks, locate the answer in the <user_context> and state it directly. For general knowledge questions, answer them helpfully.\n\n4.  **Language:** Your response MUST be in ${language}.\n</rules>\n\n<user_context student_name="${userName || 'Unknown'}">\n  <gamification_stats>${gamificationSummary}</gamification_stats>\n  <learning_focus>${tasksSummary}\n${weaknessesSummary}</learning_focus>\n  <user_profile_summary>${safeSnippet(userProfile, 1000)}</user_profile_summary>\n  <detailed_progress_summary>${formattedProgress}</detailed_progress_summary>\n</user_context>\n\n<conversation_history>${lastFive}</conversation_history>\n\nThe user's new message is: "${escapeForPrompt(safeSnippet(message, 2000))}"\nYour response as EduAI:`;
+    const prompt = `You are EduAI, a specialized AI tutor. The information in <user_context> is YOUR MEMORY of the student. Use it to provide personalized, direct answers.\n\n<rules>\n1.  **Persona & Personalization:** Your tone is helpful and encouraging. Adapt your language (masculine/feminine forms in Arabic) to the gender suggested by the name ("${userName || 'NONE'}").\n2.  **ABSOLUTE RULE:** You are FORBIDDEN from saying "I cannot access your data". The user's data IS provided below. Your job is to find it and report it when asked.\n3.  **Conciseness:** Be concise and to the point unless the user asks for a detailed explanation.\n4.  **Language:** Your response MUST be in ${language}.\n</rules>\n\n<user_context student_name="${userName || 'Unknown'}">\n  <gamification_stats>${gamificationSummary}</gamification_stats>\n  <learning_focus>${tasksSummary}\n${weaknessesSummary}</learning_focus>\n  <user_profile_summary>${safeSnippet(userProfile, 1000)}</user_profile_summary>\n  <detailed_progress_summary>${formattedProgress}</detailed_progress_summary>\n</user_context>\n\n<conversation_history>${lastFive}</conversation_history>\n\nThe user's new message is: "${escapeForPrompt(safeSnippet(message, 2000))}"\nYour response as EduAI:`;
 
-    // Use generateContentStream with the 'chat' pool
-    const pool = modelPools['chat'];
-    const inst = shuffled(pool)[0]; // Simplified selection for this example
-    const result = await inst.model.generateContentStream(prompt);
+    const modelResp = await generateWithFailover('chat', prompt, { label: 'InteractiveChat', timeoutMs: CONFIG.TIMEOUTS.chat });
+    const fullReplyText = await extractTextFromResult(modelResp);
 
-    for await (const chunk of result.stream) {
-      const chunkText = chunk.text();
-      if (chunkText) {
-        res.write(chunkText);
-      }
-    }
-    res.end();
+    res.status(200).json({ reply: fullReplyText || 'عذراً، لم أتمكن من إنشاء رد الآن.' });
 
   } catch (err) {
-    console.error('/chat-stream error:', err.stack);
-    // If an error occurs after headers are sent, we can't send a JSON error.
-    // We just end the stream. The client will handle the abrupt end.
-    if (!res.headersSent) {
-        res.status(500).json({ error: 'An internal server error occurred.' });
-    } else {
-        res.end();
-    }
+    console.error('/chat-interactive error:', err.stack);
+    res.status(500).json({ error: 'An internal server error occurred.' });
   }
 });
 app.post('/update-daily-tasks', async (req, res) => {
