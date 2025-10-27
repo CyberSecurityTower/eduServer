@@ -154,7 +154,21 @@ async function generateWithFailover(poolName, prompt, opts = {}) {
   }
   throw lastErr || new Error(`${label} failed for all available keys`);
 }
-
+async function sendUserNotification(userId, payload) {
+  try {
+    await db.collection('userNotifications').doc(userId).collection('inbox').add({
+      // ✨ [ENHANCED] Added title and ensured meta exists
+      title: payload.title || 'Notification',
+      message: payload.message || '',
+      meta: payload.meta || {},
+      read: false,
+      lang: payload.lang || 'Arabic',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (err) {
+    console.error('sendUserNotification write failed:', err.message);
+  }
+}
 async function extractTextFromResult(result) {
   try {
     if (!result) return '';
@@ -696,26 +710,28 @@ async function processJob(jobDoc) {
     if (change.action === 'added') notificationType = 'task_added';
     if (change.action === 'removed') notificationType = 'task_removed';
 
-    const notificationMessage = await runNotificationManager(notificationType, language, { taskTitle: change.taskTitle });
+  const notificationMessage = await runNotificationManager(notificationType, language, { taskTitle: change.taskTitle });
     
     await sendUserNotification(userId, { 
+      title: 'Tasks Updated', // ✨ Title added
       message: notificationMessage, 
       lang: language, 
-      meta: { jobId: id, source: 'todo' } 
+      meta: { jobId: id, source: 'tasks' } // ✨ Source is 'tasks' for consistency
     });
 
-  // الحالة الثانية: إنشاء خطة دراسية (كانت مفقودة)
+  // Case 2: Generate Plan
   } else if (intent === 'generate_plan') {
     const pathId = payload.pathId || null;
     const result = await runPlannerManager(userId, pathId);
     const humanSummary = formatTasksHuman(result.tasks, language);
     await sendUserNotification(userId, { 
-      message: `تم إنشاء خطتك الدراسية الجديدة:\n${humanSummary}`, 
+      title: 'New Study Plan', // ✨ Title added
+      message: `Your new study plan is ready:\n${humanSummary}`, 
       lang: language, 
       meta: { jobId: id, source: 'planner' } 
     });
 
-  // الحالة الثالثة: أي شيء آخر (سؤال عام)
+  // Case 3: General Question
   } else {
      const [userProfile, userProgress, weaknesses, formattedProgress, userName] = await Promise.all([
       getProfile(userId), 
@@ -729,7 +745,11 @@ async function processJob(jobDoc) {
       payload.message, payload.language || 'Arabic', payload.history || [],
       userProfile, userProgress, weaknesses, formattedProgress, userName
     );
-    await sendUserNotification(userId, { message: reply, meta: { jobId: id } });
+    await sendUserNotification(userId, { 
+        title: 'New Message from EduAI', // ✨ Title added
+        message: reply, 
+        meta: { jobId: id, source: 'chat' } 
+    });
   }
   
   await jobDoc.ref.update({ status: 'done', finishedAt: admin.firestore.FieldValue.serverTimestamp() });
