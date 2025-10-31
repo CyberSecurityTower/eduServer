@@ -127,6 +127,31 @@ async function withTimeout(promise, ms = CONFIG.TIMEOUTS.default, label = 'opera
   ]);
 }
 
+// Robust model caller that tries multiple possible SDK method names
+async function _callModelInstance(instance, prompt, timeoutMs, label) {
+  const model = instance.model;
+  const methodCandidates = ['generateContent', 'generate', 'generateText', 'predict', 'response', 'complete'];
+  let lastErr = null;
+
+  for (const name of methodCandidates) {
+    const fn = model && model[name];
+    if (typeof fn !== 'function') continue;
+    try {
+      // Try both signature styles: string or object { prompt }
+      const maybe = fn.length === 1 ? fn(prompt) : fn({ prompt });
+      const res = await withTimeout(Promise.resolve(maybe), timeoutMs, `${label}:${name}`);
+      return res;
+    } catch (err) {
+      lastErr = err;
+      console.warn(`${iso()} Model method ${name} failed for key ${instance.key?.slice(-4)}:`, err && err.message ? err.message : err);
+      // try next candidate
+    }
+  }
+
+  throw lastErr || new Error('No callable model method found on instance');
+}
+
+// Failover wrapper that uses the robust caller
 async function generateWithFailover(poolName, prompt, opts = {}) {
   const pool = modelPools[poolName];
   if (!pool || pool.length === 0) throw new Error(`No models for pool ${poolName}`);
@@ -137,8 +162,9 @@ async function generateWithFailover(poolName, prompt, opts = {}) {
   for (const inst of shuffled(pool)) {
     try {
       if (keyStates[inst.key]?.backoffUntil > Date.now()) continue;
-      const res = await withTimeout(inst.model.generateContent(prompt), timeoutMs, `${label} (key:${inst.key.slice(-4)})`);
-      keyStates[inst.key].fails = 0;
+      const res = await _callModelInstance(inst, prompt, timeoutMs, `${label} (key:${inst.key.slice(-4)})`);
+      // success -> reset failure count
+      if (inst.key && keyStates[inst.key]) keyStates[inst.key].fails = 0;
       return res;
     } catch (err) {
       lastErr = err;
@@ -146,18 +172,19 @@ async function generateWithFailover(poolName, prompt, opts = {}) {
         const fails = (keyStates[inst.key].fails || 0) + 1;
         const backoff = Math.min(1000 * (2 ** fails), 10 * 60 * 1000);
         keyStates[inst.key] = { fails, backoffUntil: Date.now() + backoff };
-        console.warn(`${iso()} ${label} failed for key (fails=${fails}), backoff ${backoff}ms:`, err.message);
+        console.warn(`${iso()} ${label} failed for key (fails=${fails}), backoff ${backoff}ms:`, err && err.message ? err.message : err);
       } else {
-        console.warn(`${iso()} ${label} failed for an instance:`, err.message);
+        console.warn(`${iso()} ${label} failed for an instance:`, err && err.message ? err.message : err);
       }
     }
   }
   throw lastErr || new Error(`${label} failed for all available keys`);
 }
-async function sendUserNotification(userId, payload) {
+
+async function sendUserNotification(userId, payload = {}) {
+  if (!userId) return;
   try {
     await db.collection('userNotifications').doc(userId).collection('inbox').add({
-      // ✨ [ENHANCED] Added title and ensured meta exists
       title: payload.title || 'Notification',
       message: payload.message || '',
       meta: payload.meta || {},
@@ -166,9 +193,10 @@ async function sendUserNotification(userId, payload) {
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
   } catch (err) {
-    console.error('sendUserNotification write failed:', err.message);
+    console.error(`sendUserNotification write failed for ${userId}:`, err && err.message ? err.message : err);
   }
 }
+
 async function extractTextFromResult(result) {
   try {
     if (!result) return '';
@@ -403,21 +431,7 @@ async function fetchUserWeaknesses(userId) {
     return [];
   }
 }
-
-async function sendUserNotification(userId, payload) {
-  try {
-    await db.collection('userNotifications').doc(userId).collection('inbox').add({
-      message: payload.message || '',
-      meta: payload.meta || {},
-      read: false,
-      lang: payload.lang || 'Arabic',
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-  } catch (err) {
-    console.error('sendUserNotification write failed:', err.message);
-  }
-}
-/ ✨ [NEW] - Saves or updates a chat session in Firestore
+// ✨ [NEW] - Saves or updates a chat session in Firestore
 async function saveChatSession(sessionId, userId, title, messages, type = 'main_chat', context = {}) {
   if (!sessionId || !userId) return;
   try {
@@ -701,7 +715,7 @@ USER REQUEST:
 
 // Planner manager: create a simple study plan JSON
 async function runPlannerManager(userId, pathId = null) {
-  const weaknesses = await fetchUserWeaknesses(userId, pathId);
+  const weaknesses = await fetchUserWeaknesses(userId);
   const weaknessesPrompt = weaknesses.length > 0
     ? `<context>\nThe user has shown weaknesses in the following areas:\n${weaknesses.map(w => `- Subject: "${w.subjectTitle}", Lesson: "${w.lessonTitle}" (ID: ${w.lessonId}), Current Mastery: ${w.masteryScore}%`).join('\n')}\n</context>`
     : '<context>The user is new or has no specific weaknesses. Suggest a general introductory plan to get them started.</context>';
@@ -952,8 +966,9 @@ app.post('/chat-interactive', async (req, res) => {
     if (isNewSession) {
         sessionId = `chat_${Date.now()}_${userId.slice(0,5)}`;
         try {
-            const titleRes = await apiService.generateTitle(message.trim());
-            chatTitle = titleRes.title;
+           const titleResTitle = await generateTitle(message.trim());
+          chatTitle = titleResTitle;
+
         } catch (e) {
             chatTitle = message.trim().substring(0, 30);
         }
@@ -1000,12 +1015,16 @@ app.post('/chat-interactive', async (req, res) => {
     const updatedHistory = [...history, userMessageObj, botMessageObj];
 
     // Save the chat session to Firestore (don't wait for it to finish)
-    saveChatSession(sessionId, userId, chatTitle, updatedHistory, context.type || 'main_chat', context);
+   // Save the chat session to Firestore (don't wait for it to finish) — but handle rejection
+saveChatSession(sessionId, userId, chatTitle, updatedHistory, context.type || 'main_chat', context)
+  .catch(e => console.error('saveChatSession failed (fire-and-forget):', e));
 
-    // Trigger the background memory analysis (don't wait for it either)
-    if (updatedHistory.length % 6 === 0) { // Analyze every 3 user/bot pairs
-        analyzeAndSaveMemory(userId, updatedHistory.slice(-6));
-    }
+// Trigger the background memory analysis safely (don't wait for it)
+if (updatedHistory.length % 6 === 0) { // Analyze every 3 user/bot pairs
+  analyzeAndSaveMemory(userId, updatedHistory.slice(-6))
+    .catch(e => console.error('analyzeAndSaveMemory failed (fire-and-forget):', e));
+}
+
 
     // --- 6. Send Response to Client ---
     res.status(200).json({
@@ -1099,6 +1118,22 @@ app.post('/generate-title', async (req, res) => {
     return res.status(500).json({ title: fallbackTitle });
   }
 });
+async function generateTitle(message, language = 'Arabic') {
+  const prompt = `Generate a very short, descriptive title (2-4 words) for the following user message. The title should be in ${language}. Respond with ONLY the title text, no JSON or extra words.
+
+Message: "${escapeForPrompt(safeSnippet(message, 300))}"
+
+Title:`;
+  try {
+    const modelResp = await generateWithFailover('titleIntent', prompt, { label: 'GenerateTitle', timeoutMs: 5000 });
+    const title = await extractTextFromResult(modelResp);
+    if (!title) return message.substring(0, 30);
+    return title.replace(/["']/g, '').trim();
+  } catch (e) {
+    console.warn('generateTitle fallback:', e && e.message ? e.message : e);
+    return message.substring(0, 30);
+  }
+}
 // ---------------- STARTUP & SHUTDOWN ----------------
 const server = app.listen(CONFIG.PORT, () => {
   console.log(`✅ EduAI Brain V18.0 running on port ${CONFIG.PORT}`);
