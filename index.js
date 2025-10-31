@@ -152,55 +152,91 @@ async function _callModelInstance(instance, prompt, timeoutMs, label) {
 }
 
 // Failover wrapper that uses the robust caller
+/**
+ * يستدعي نموذجًا من مجموعة (pool) محددة، مع تطبيق آليات قوية للتعامل مع الأخطاء والتجاوز (Failover).
+ * يقوم بتوزيع الحمل عشوائيًا على مفاتيح الواجهة البرمجية المتاحة، ويتجنب مؤقتًا المفاتيح التي تواجه أخطاء،
+ * ويعيد المحاولة باستخدام المفتاح التالي المتاح حتى ينجح أو تستنفد جميع الخيارات.
+ *
+ * @param {string} poolName - اسم مجموعة النماذج المراد استخدامها (مثل 'chat', 'analysis').
+ * @param {any} prompt - المُوجّه (prompt) الذي سيتم إرساله إلى النموذج.
+ * @param {object} [opts={}] - خيارات إضافية.
+ * @param {number} [opts.timeoutMs] - مهلة زمنية مخصصة بالمللي ثانية لهذا الطلب.
+ * @param {string} [opts.label] - تسمية مخصصة للطلب لتظهر في سجلات الأخطاء.
+ * @returns {Promise<any>} - يعد بإرجاع نتيجة ناجحة من النموذج.
+ * @throws {Error} - يطلق خطأ إذا فشلت جميع المحاولات مع كل المفاتيح المتاحة في المجموعة.
+ */
 async function generateWithFailover(poolName, prompt, opts = {}) {
+  // 1. التحقق من وجود المجموعة المطلوبة وتوفر نماذج فيها
   const pool = modelPools[poolName];
-  if (!pool || pool.length === 0) throw new Error(`No models for pool ${poolName}`);
-  
+  if (!pool || pool.length === 0) {
+    throw new Error(`No models available for pool "${poolName}". Check configuration.`);
+  }
+
+  // 2. إعداد المتغيرات الأساسية للعملية
   const timeoutMs = opts.timeoutMs || CONFIG.TIMEOUTS.default;
   const label = opts.label || poolName;
-  let lastErr = null;
+  let lastErr = null; // لتخزين آخر خطأ تمت مواجهته لاستخدامه في حالة فشل جميع المحاولات
 
-  // We shuffle the pool to distribute the load across different keys
+  // 3. خلط ترتيب المفاتيح في المجموعة (shuffling)
+  // هذه خطوة حيوية لتوزيع الحمل بالتساوي على جميع المفاتيح المتاحة وتجنب الضغط على مفتاح واحد.
   for (const inst of shuffled(pool)) {
     try {
-      // Skip keys that are in a temporary backoff period
-      if (keyStates[inst.key]?.backoffUntil > Date.now()) {
+      // التحقق من صلاحية الكائن قبل استخدامه
+      if (!inst || !inst.model) {
+        console.warn(`${iso()} [Failover] Skipping invalid instance in pool "${poolName}"`);
         continue;
       }
 
-      // ✨ [CORRECTED LOGIC] Directly call the generateContent method on the model instance.
-      // This is the most reliable way and ensures the instance context (including the key) is correct.
+      // 4. التحقق من حالة المفتاح (Key Health Check)
+      // نتجنب استخدام المفاتيح التي تم وضعها في فترة "عقاب" (backoff) مؤقتة بسبب أخطاء سابقة.
+      if (inst.key && keyStates[inst.key]?.backoffUntil > Date.now()) {
+        continue; // تخطى هذا المفتاح وانتقل إلى التالي
+      }
+
+      // 5. استدعاء النموذج مع مهلة زمنية (Timeout)
+      // يتم استدعاء الطريقة الصحيحة والمباشرة (`generateContent`) لضمان الموثوقية.
+      // يتم تغليف الاستدعاء في دالة `withTimeout` لمنع تعليق الطلب إلى الأبد.
       const res = await withTimeout(
         inst.model.generateContent(prompt),
         timeoutMs,
         `${label} (key:${inst.key.slice(-4)})`
       );
 
-      // If the call is successful, reset the failure count for this key
+      // 6. التعامل مع النجاح
+      // إذا نجح الطلب، نقوم بإعادة تعيين عدد مرات الفشل لهذا المفتاح إلى الصفر.
       if (inst.key && keyStates[inst.key]) {
         keyStates[inst.key].fails = 0;
       }
       
-      return res; // Return the successful response immediately
+      return res; // إرجاع النتيجة الناجحة فورًا والخروج من الحلقة
 
     } catch (err) {
-      lastErr = err;
-      // If a key fails, update its state and set a backoff period
+      // 7. التعامل مع الفشل
+      lastErr = err; // حفظ الخطأ الحالي
+
+      // إذا كان للمثيل مفتاح، نقوم بتحديث حالته وتطبيق فترة عقاب تزداد بشكل كبير مع كل فشل.
       if (inst.key && keyStates[inst.key]) {
         const fails = (keyStates[inst.key].fails || 0) + 1;
-        // Exponential backoff: 2s, 4s, 8s, etc., up to a max of 10 minutes
+        
+        // فترة العقاب الأسيّة (Exponential Backoff): 2 ثانية، ثم 4، ثم 8... بحد أقصى 10 دقائق.
+        // هذا يمنع إغراق الخدمة بالطلبات من مفتاح يواجه مشكلة.
         const backoff = Math.min(1000 * (2 ** fails), 10 * 60 * 1000);
         keyStates[inst.key] = { fails, backoffUntil: Date.now() + backoff };
-        console.warn(`${iso()} ${label} failed for key (fails=${fails}), backoff ${backoff}ms:`, err.message);
+
+        // تسجيل تحذير مفصل للمساعدة في تصحيح الأخطاء
+        console.warn(`${iso()} [Failover] ${label} failed for key (fails=${fails}), backing off for ${backoff}ms:`, err.message);
       } else {
-        console.warn(`${iso()} ${label} failed for an instance without a key:`, err.message);
+        console.warn(`${iso()} [Failover] ${label} failed for an instance without a key:`, err.message);
       }
+      // تستمر الحلقة لتجربة المفتاح التالي المتاح...
     }
   }
 
-  // If all keys in the pool failed, throw the last recorded error
-  throw lastErr || new Error(`${label} failed for all available keys`);
+  // 8. الفشل النهائي
+  // إذا انتهت الحلقة دون نجاح أي محاولة، نطلق آخر خطأ تم تسجيله.
+  throw lastErr || new Error(`[Failover] ${label} failed for all available keys.`);
 }
+
 
 async function sendUserNotification(userId, payload = {}) {
   if (!userId) return;
@@ -382,10 +418,9 @@ async function getProfile(userId) {
       await cacheSet('profile', userId, val);
       return val;
     } else {
-      // If no profile exists, create a default one
       const defaultProfile = {
         profileSummary: 'مستخدم جديد، لم يتم تحليل أي بيانات بعد.',
-        lastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastUpdatedAt: new Date().toISOString(),
       };
       await db.collection('aiMemoryProfiles').doc(userId).set(defaultProfile);
       await cacheSet('profile', userId, defaultProfile);
@@ -507,9 +542,16 @@ async function saveChatSession(sessionId, userId, title, messages, type = 'main_
   if (!sessionId || !userId) return;
   try {
     const sessionRef = db.collection('chatSessions').doc(sessionId);
-    const storableMessages = messages
-      .filter(m => m.type !== 'intro' && m.type !== 'typing' && m.type !== 'error')
-      .slice(-50);
+   const storableMessages = (messages || [])
+  .filter(m => m && (m.author === 'user' || m.author === 'bot' || m.role)) // keep typical chat entries
+  .slice(-50)
+  .map(m => ({
+    author: m.author || m.role || 'user',
+    text: m.text || m.message || '',
+    timestamp: m.timestamp || new Date().toISOString(),
+    // optionally include type/status if present:
+    type: m.type || null,
+  }));
 
     const dataToSave = { // ✨ بناء كائن البيانات
       userId,
@@ -1132,20 +1174,6 @@ app.post('/update-daily-tasks', async (req, res) => {
     res.status(500).json({ error: 'An error occurred while updating daily tasks.' });
   }
 });
- app.post('/process-session', async (req, res) => {
-      const { userId, sessionId } = req.body;
-
-      if (!userId || !sessionId) {
-        return res.status(400).json({ error: 'userId and sessionId are required.' });
-      }
-
-      // لا ننتظر انتهاء التحليل، بل نرد على التطبيق فورًا
-      // هذا يجعل التطبيق سريعًا ولا يتأثر بعمليات التحليل
-      res.status(202).json({ message: 'Session processing started.' });
-
-      // تشغيل دالة التحليل في الخلفية
-      processSessionAnalytics(userId, sessionId).catch(e => console.error('Background processing failed:', e));
-    });
  app.post('/process-session', async (req, res) => {
       const { userId, sessionId } = req.body;
 
