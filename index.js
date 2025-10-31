@@ -321,17 +321,30 @@ async function formatProgressForAI(userId) {
   }
 }
 
+// ✨ [MODIFIED] - Fetches from the new aiMemoryProfiles collection
 async function getProfile(userId) {
   try {
     const cached = await cacheGet('profile', userId);
     if (cached) return cached;
+
     const doc = await db.collection('aiMemoryProfiles').doc(userId).get();
-    const val = doc.exists ? String(doc.data()?.profileSummary || 'No available memory.') : 'No available memory.';
-    await cacheSet('profile', userId, val);
-    return val;
+    if (doc.exists) {
+      const val = doc.data();
+      await cacheSet('profile', userId, val);
+      return val;
+    } else {
+      // If no profile exists, create a default one
+      const defaultProfile = {
+        profileSummary: 'مستخدم جديد، لم يتم تحليل أي بيانات بعد.',
+        lastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      await db.collection('aiMemoryProfiles').doc(userId).set(defaultProfile);
+      await cacheSet('profile', userId, defaultProfile);
+      return defaultProfile;
+    }
   } catch (err) {
     console.error('getProfile error:', err.message);
-    return 'No available memory.';
+    return { profileSummary: 'No available memory.' };
   }
 }
 
@@ -404,7 +417,64 @@ async function sendUserNotification(userId, payload) {
     console.error('sendUserNotification write failed:', err.message);
   }
 }
+/ ✨ [NEW] - Saves or updates a chat session in Firestore
+async function saveChatSession(sessionId, userId, title, messages, type = 'main_chat', context = {}) {
+  if (!sessionId || !userId) return;
+  try {
+    const sessionRef = db.collection('chatSessions').doc(sessionId);
+    const storableMessages = messages
+      .filter(m => m.type !== 'intro' && m.type !== 'typing' && m.type !== 'error')
+      .slice(-50); // Save last 50 messages to avoid huge documents
 
+    await sessionRef.set({
+      userId,
+      title,
+      messages: storableMessages,
+      type,
+      context, // e.g., { lessonId: 'sub1_les1' }
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+  } catch (error) {
+    console.error(`Error saving chat session ${sessionId}:`, error);
+  }
+}
+
+// ✨ [NEW] - The background memory analyst function
+async function analyzeAndSaveMemory(userId, newConversation) {
+    try {
+        const profileDoc = await getProfile(userId);
+        const currentSummary = profileDoc.profileSummary || '';
+
+        const prompt = `You are a psychological and educational analyst AI. Your task is to update a student's long-term memory profile based on a new conversation.
+
+        **Current Profile Summary:**
+        "${currentSummary}"
+
+        **New Conversation Transcript (User and EduAI):**
+        ${newConversation.map(m => `${m.author === 'bot' ? 'EduAI' : 'User'}: ${m.text}`).join('\n')}
+
+        **Instructions:**
+        1. Read the new conversation.
+        2. Identify ANY new personal information, goals, struggles, preferences, or significant events.
+        3. Integrate this new information into the existing profile summary to create an updated, concise, and coherent summary in english.
+        4. Do not repeat information already in the summary.
+        5. Respond ONLY with a valid JSON object: { "updatedSummary": "..." }`;
+
+        const res = await generateWithFailover('analysis', prompt, { label: 'MemoryAnalyst' });
+        const raw = await extractTextFromResult(res);
+        const parsed = await ensureJsonOrRepair(raw, 'analysis');
+
+        if (parsed && parsed.updatedSummary) {
+            await db.collection('aiMemoryProfiles').doc(userId).update({
+                profileSummary: parsed.updatedSummary,
+                lastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+            cacheDel('profile', userId); // Invalidate cache
+        }
+    } catch (err) {
+        console.error(`Failed to analyze memory for user ${userId}:`, err);
+    }
+}
 // ---------------- MANAGERS (restored + new) ----------------
 async function runTrafficManager(message, lang = 'Arabic') {
   const prompt = `You are an expert intent classification system. Analyze the user's message and return a structured JSON object.
@@ -866,30 +936,83 @@ app.post('/chat', async (req, res) => {
 // This endpoint now generates the full response and sends it at once.
 // ✨ [ENHANCED & CLEANED] Renamed from /chat-stream to /chat-interactive.
 // This endpoint now generates the full response and sends it at once as a JSON object.
+// ✨ [HEAVILY MODIFIED & UPGRADED] - This is now the main, memory-aware endpoint
 app.post('/chat-interactive', async (req, res) => {
   try {
-    const { userId, message, history = [] } = req.body;
+    const { userId, message, history = [], sessionId: clientSessionId, context = {} } = req.body;
     if (!userId || !message) {
       return res.status(400).json({ error: 'userId and message are required' });
     }
 
-    const [userProfile, userProgress, weaknesses, formattedProgress, userName] = await Promise.all([
-      getProfile(userId), getProgress(userId), fetchUserWeaknesses(userId),
-      formatProgressForAI(userId), getUserDisplayName(userId),
+    // --- 1. Session and Title Management ---
+    let sessionId = clientSessionId;
+    let chatTitle = 'New Chat';
+    const isNewSession = !sessionId;
+
+    if (isNewSession) {
+        sessionId = `chat_${Date.now()}_${userId.slice(0,5)}`;
+        try {
+            const titleRes = await apiService.generateTitle(message.trim());
+            chatTitle = titleRes.title;
+        } catch (e) {
+            chatTitle = message.trim().substring(0, 30);
+        }
+    }
+
+    // --- 2. Fetch All Necessary Context and Memory ---
+    const [memoryProfile, userProgress, weaknesses, formattedProgress, userName] = await Promise.all([
+      getProfile(userId),
+      getProgress(userId),
+      fetchUserWeaknesses(userId),
+      formatProgressForAI(userId),
+      getUserDisplayName(userId),
     ]);
 
-    const language = 'Arabic';
+    const profileSummary = memoryProfile.profileSummary || 'No profile summary available.';
+
+    // --- 3. Construct the Genius Prompt ---
     const lastFive = (Array.isArray(history) ? history.slice(-5) : []).map(h => `${h.role === 'model' ? 'You' : 'User'}: ${safeSnippet(h.text || '', 500)}`).join('\n');
-    const tasksSummary = userProgress?.dailyTasks?.tasks?.length > 0 ? `Current Tasks:\n${userProgress.dailyTasks.tasks.map(t => `- ${t.title} (${t.status})`).join('\n')}` : 'The user currently has no tasks.';
-    const weaknessesSummary = weaknesses.length > 0 ? `Identified Weaknesses:\n${weaknesses.map(w => `- In "${w.subjectTitle}", lesson "${w.lessonTitle}" has a mastery of ${w.masteryScore}%.`).join('\n')}` : 'No specific weaknesses identified.';
-    const gamificationSummary = `User Stats:\n- Points: ${userProgress?.stats?.points || 0}\n- Rank: "${userProgress?.stats?.rank || 'Beginner'}"\n- Current Streak: ${userProgress?.streakCount || 0} days`;
+    
+    const prompt = `You are EduAI, a specialized AI tutor with a perfect memory of your student.
 
-    const prompt = `You are EduAI, a specialized AI tutor. The information in <user_context> is YOUR MEMORY of the student. Use it to provide personalized, direct answers.\n\n<rules>\n1.  **Persona & Personalization:** Your tone is helpful and encouraging. Adapt your language (masculine/feminine forms in Arabic) to the gender suggested by the name ("${userName || 'NONE'}").\n2.  **ABSOLUTE RULE:** You are FORBIDDEN from saying "I cannot access your data". The user's data IS provided below. Your job is to find it and report it when asked.\n3.  **Conciseness:** Be concise and to the point unless the user asks for a detailed explanation.\n4.  **Language:** Your response MUST be in ${language}.\n</rules>\n\n<user_context student_name="${userName || 'Unknown'}">\n  <gamification_stats>${gamificationSummary}</gamification_stats>\n  <learning_focus>${tasksSummary}\n${weaknessesSummary}</learning_focus>\n  <user_profile_summary>${safeSnippet(userProfile, 1000)}</user_profile_summary>\n  <detailed_progress_summary>${formattedProgress}</detailed_progress_summary>\n</user_context>\n\n<conversation_history>${lastFive}</conversation_history>\n\nThe user's new message is: "${escapeForPrompt(safeSnippet(message, 2000))}"\nYour response as EduAI:`;
+    <user_context>
+    This is YOUR MEMORY of the student. Use it to provide personalized, direct answers.
+    **Student Name:** ${userName || 'Unknown'}
+    **Your Long-Term Memory Summary of this Student:**
+    ${profileSummary}
+    </user_context>
 
+    <conversation_history>
+    ${lastFive}
+    </conversation_history>
+
+    The user's new message is: "${escapeForPrompt(safeSnippet(message, 2000))}"
+    Your response as EduAI (in Arabic):`;
+
+    // --- 4. Generate AI Response ---
     const modelResp = await generateWithFailover('chat', prompt, { label: 'InteractiveChat', timeoutMs: CONFIG.TIMEOUTS.chat });
     const fullReplyText = await extractTextFromResult(modelResp);
+    const botReply = fullReplyText || 'عذراً، لم أتمكن من إنشاء رد الآن.';
 
-    res.status(200).json({ reply: fullReplyText || 'عذراً، لم أتمكن من إنشاء رد الآن.' });
+    // --- 5. Save and Update ---
+    const userMessageObj = { author: 'user', text: message, timestamp: new Date().toISOString() };
+    const botMessageObj = { author: 'bot', text: botReply, timestamp: new Date().toISOString() };
+    const updatedHistory = [...history, userMessageObj, botMessageObj];
+
+    // Save the chat session to Firestore (don't wait for it to finish)
+    saveChatSession(sessionId, userId, chatTitle, updatedHistory, context.type || 'main_chat', context);
+
+    // Trigger the background memory analysis (don't wait for it either)
+    if (updatedHistory.length % 6 === 0) { // Analyze every 3 user/bot pairs
+        analyzeAndSaveMemory(userId, updatedHistory.slice(-6));
+    }
+
+    // --- 6. Send Response to Client ---
+    res.status(200).json({
+      reply: botReply,
+      sessionId: sessionId, // Send the new session ID back to the client
+      chatTitle: chatTitle,   // Send the new title back
+    });
 
   } catch (err) {
     console.error('/chat-interactive error:', err.stack);
