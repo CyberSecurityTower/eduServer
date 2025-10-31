@@ -155,29 +155,50 @@ async function _callModelInstance(instance, prompt, timeoutMs, label) {
 async function generateWithFailover(poolName, prompt, opts = {}) {
   const pool = modelPools[poolName];
   if (!pool || pool.length === 0) throw new Error(`No models for pool ${poolName}`);
+  
   const timeoutMs = opts.timeoutMs || CONFIG.TIMEOUTS.default;
   const label = opts.label || poolName;
   let lastErr = null;
 
+  // We shuffle the pool to distribute the load across different keys
   for (const inst of shuffled(pool)) {
     try {
-      if (keyStates[inst.key]?.backoffUntil > Date.now()) continue;
-      const res = await _callModelInstance(inst, prompt, timeoutMs, `${label} (key:${inst.key.slice(-4)})`);
-      // success -> reset failure count
-      if (inst.key && keyStates[inst.key]) keyStates[inst.key].fails = 0;
-      return res;
+      // Skip keys that are in a temporary backoff period
+      if (keyStates[inst.key]?.backoffUntil > Date.now()) {
+        continue;
+      }
+
+      // ✨ [CORRECTED LOGIC] Directly call the generateContent method on the model instance.
+      // This is the most reliable way and ensures the instance context (including the key) is correct.
+      const res = await withTimeout(
+        inst.model.generateContent(prompt),
+        timeoutMs,
+        `${label} (key:${inst.key.slice(-4)})`
+      );
+
+      // If the call is successful, reset the failure count for this key
+      if (inst.key && keyStates[inst.key]) {
+        keyStates[inst.key].fails = 0;
+      }
+      
+      return res; // Return the successful response immediately
+
     } catch (err) {
       lastErr = err;
+      // If a key fails, update its state and set a backoff period
       if (inst.key && keyStates[inst.key]) {
         const fails = (keyStates[inst.key].fails || 0) + 1;
+        // Exponential backoff: 2s, 4s, 8s, etc., up to a max of 10 minutes
         const backoff = Math.min(1000 * (2 ** fails), 10 * 60 * 1000);
         keyStates[inst.key] = { fails, backoffUntil: Date.now() + backoff };
-        console.warn(`${iso()} ${label} failed for key (fails=${fails}), backoff ${backoff}ms:`, err && err.message ? err.message : err);
+        console.warn(`${iso()} ${label} failed for key (fails=${fails}), backoff ${backoff}ms:`, err.message);
       } else {
-        console.warn(`${iso()} ${label} failed for an instance:`, err && err.message ? err.message : err);
+        console.warn(`${iso()} ${label} failed for an instance without a key:`, err.message);
       }
     }
   }
+
+  // If all keys in the pool failed, throw the last recorded error
   throw lastErr || new Error(`${label} failed for all available keys`);
 }
 
