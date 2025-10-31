@@ -396,7 +396,57 @@ async function getProfile(userId) {
     return { profileSummary: 'No available memory.' };
   }
 }
+ async function processSessionAnalytics(userId, sessionId) {
+      try {
+        console.log(`[Analytics] Processing session ${sessionId} for user ${userId}`);
+        
+        // 1. قراءة أحدث 5 جلسات للمستخدم
+        const sessionsSnapshot = await db.collection('userBehaviorAnalytics').doc(userId).collection('sessions')
+          .orderBy('startTime', 'desc').limit(5).get();
+        
+        if (sessionsSnapshot.empty) {
+          console.log('[Analytics] No sessions found to process.');
+          return;
+        }
 
+        const recentSessions = sessionsSnapshot.docs.map(doc => doc.data());
+
+        // 2. حساب المقاييس السلوكية (هنا يمكنك إضافة كل الصيغ المعقدة لاحقًا)
+        let totalDuration = 0;
+        let totalQuickCloses = 0;
+        let totalLessonsViewed = 0;
+        
+        recentSessions.forEach(session => {
+          totalDuration += session.durationSeconds || 0;
+          totalQuickCloses += session.quickCloseCount || 0;
+          totalLessonsViewed += session.lessonsViewedCount || 0;
+        });
+
+        const avgDuration = totalDuration / recentSessions.length;
+        
+        // صيغة مبسطة وموثوقة لمؤشر المماطلة
+        const procrastinationScore = totalLessonsViewed > 0 ? (totalQuickCloses / totalLessonsViewed) : 0;
+        
+        // صيغة مبسطة لمستوى التفاعل
+        const engagementLevel = Math.min(1, avgDuration / 1800); // نعتبر 30 دقيقة تفاعل كامل
+
+        // 3. تحديث ملف الذاكرة (aiMemoryProfiles)
+        const memoryProfileRef = db.collection('aiMemoryProfiles').doc(userId);
+        await memoryProfileRef.set({
+          lastAnalyzedAt: new Date().toISOString(),
+          behavioralInsights: {
+            engagementLevel: parseFloat(engagementLevel.toFixed(2)),
+            procrastinationScore: parseFloat(procrastinationScore.toFixed(2)),
+            // يمكنك إضافة المزيد من الرؤى هنا لاحقًا
+          }
+        }, { merge: true });
+
+        console.log(`[Analytics] Successfully updated memory profile for user ${userId}`);
+
+      } catch (error) {
+        console.error(`[Analytics] Error processing session for user ${userId}:`, error);
+      }
+    }
 async function getProgress(userId) {
   try {
     const cached = await cacheGet('progress', userId);
@@ -1065,6 +1115,7 @@ if (updatedHistory.length % 6 === 0) { // Analyze every 3 user/bot pairs
     res.status(500).json({ error: 'An internal server error occurred.' });
   }
 });
+
 app.post('/update-daily-tasks', async (req, res) => {
   try {
     const { userId, updatedTasks } = req.body || {};
@@ -1081,7 +1132,34 @@ app.post('/update-daily-tasks', async (req, res) => {
     res.status(500).json({ error: 'An error occurred while updating daily tasks.' });
   }
 });
+ app.post('/process-session', async (req, res) => {
+      const { userId, sessionId } = req.body;
 
+      if (!userId || !sessionId) {
+        return res.status(400).json({ error: 'userId and sessionId are required.' });
+      }
+
+      // لا ننتظر انتهاء التحليل، بل نرد على التطبيق فورًا
+      // هذا يجعل التطبيق سريعًا ولا يتأثر بعمليات التحليل
+      res.status(202).json({ message: 'Session processing started.' });
+
+      // تشغيل دالة التحليل في الخلفية
+      processSessionAnalytics(userId, sessionId).catch(e => console.error('Background processing failed:', e));
+    });
+ app.post('/process-session', async (req, res) => {
+      const { userId, sessionId } = req.body;
+
+      if (!userId || !sessionId) {
+        return res.status(400).json({ error: 'userId and sessionId are required.' });
+      }
+
+      // لا ننتظر انتهاء التحليل، بل نرد على التطبيق فورًا
+      // هذا يجعل التطبيق سريعًا ولا يتأثر بعمليات التحليل
+      res.status(202).json({ message: 'Session processing started.' });
+
+      // تشغيل دالة التحليل في الخلفية
+      processSessionAnalytics(userId, sessionId).catch(e => console.error('Background processing failed:', e));
+    });
 app.post('/generate-daily-tasks', async (req, res) => {
   try {
     const { userId, pathId = null } = req.body || {};
