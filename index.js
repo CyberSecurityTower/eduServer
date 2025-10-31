@@ -459,16 +459,22 @@ async function saveChatSession(sessionId, userId, title, messages, type = 'main_
     const sessionRef = db.collection('chatSessions').doc(sessionId);
     const storableMessages = messages
       .filter(m => m.type !== 'intro' && m.type !== 'typing' && m.type !== 'error')
-      .slice(-50); // Save last 50 messages to avoid huge documents
+      .slice(-50);
 
-    await sessionRef.set({
+    const dataToSave = { // ✨ بناء كائن البيانات
       userId,
       title,
       messages: storableMessages,
       type,
-      context, // e.g., { lessonId: 'sub1_les1' }
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
+    };
+
+    if (context && context.lessonId) { // ✨ [ADD THIS LOGIC]
+      dataToSave.context = context; // حفظ سياق الدرس إذا كان موجودًا
+    }
+
+    await sessionRef.set(dataToSave, { merge: true });
+
   } catch (error) {
     console.error(`Error saving chat session ${sessionId}:`, error);
   }
