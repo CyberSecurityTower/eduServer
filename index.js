@@ -1104,24 +1104,25 @@ app.post('/chat-interactive', async (req, res) => {
 
     const profileSummary = memoryProfile.profileSummary || 'No profile summary available.';
 
-    // --- 3. Construct the Genius Prompt ---
-    const lastFive = (Array.isArray(history) ? history.slice(-5) : []).map(h => `${h.role === 'model' ? 'You' : 'User'}: ${safeSnippet(h.text || '', 500)}`).join('\n');
-    
-    const prompt = `You are EduAI, a specialized AI tutor with a perfect memory of your student.
+// --- 3. Construct the Genius Prompt ---
+const lastFive = (Array.isArray(history) ? history.slice(-5) : []).map(h => `${h.role === 'model' ? 'You' : 'User'}: ${safeSnippet(h.text || '', 500)}`).join('\n');
 
-    <user_context>
-    This is YOUR MEMORY of the student. Use it to provide personalized, direct answers.
-    **Student Name:** ${userName || 'Unknown'}
-    **Your Long-Term Memory Summary of this Student:**
-    ${profileSummary}
-    </user_context>
+// ✅✅✅ التعديل الرئيسي هنا ✅✅✅
+const prompt = `You are EduAI, a specialized AI tutor with a perfect memory of your student.
 
-    <conversation_history>
-    ${lastFive}
-    </conversation_history>
+<user_context>
+This is YOUR MEMORY of the student. It is your primary source of truth for all personal details, including their preferred name. You MUST use the information here to personalize your conversation.
+**Your Long-Term Memory Summary of this Student:**
+"${profileSummary}"
+</user_context>
 
-    The user's new message is: "${escapeForPrompt(safeSnippet(message, 2000))}"
-    Your response as EduAI (in Arabic):`;
+<conversation_history>
+${lastFive}
+</conversation_history>
+
+The user's new message is: "${escapeForPrompt(safeSnippet(message, 2000))}"
+Your response as EduAI (in user"s language):`;
+
 
     // --- 4. Generate AI Response ---
     const modelResp = await generateWithFailover('chat', prompt, { label: 'InteractiveChat', timeoutMs: CONFIG.TIMEOUTS.chat });
