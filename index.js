@@ -340,6 +340,7 @@ async function runCurriculumAgent(userId, userMessage) {
 
 // We will also need to make getCachedEducationalPathById available on the server.
 // For now, we can create a simple version.
+const { LRUCache } = require('lru-cache');
 const educationalPathCache = new LRUCache(50, 60 * 60 * 1000); // Cache for 1 hour
 async function getCachedEducationalPathById(pathId) {
     const cached = educationalPathCache.get(pathId);
