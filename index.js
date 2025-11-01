@@ -1154,6 +1154,19 @@ async function processJob(jobDoc) {
 async function jobWorkerLoop() {
   if (workerStopped) return;
   try {
+    // 1. ابحث عن المهام المجدولة التي حان وقتها
+    const now = admin.firestore.Timestamp.now();
+    const scheduledJobs = await db.collection('jobs')
+      .where('status', '==', 'scheduled')
+      .where('sendAt', '<=', now)
+      .get();
+    
+    scheduledJobs.forEach(doc => {
+      // قم بتحويلها إلى مهام جاهزة للتنفيذ
+      doc.ref.update({ status: 'queued' }); 
+    });
+
+    // 2. استمر في تنفيذ المهام الجاهزة كالمعتاد
     const q = await db.collection('jobs').where('status', '==', 'queued').orderBy('createdAt').limit(5).get();
     if (!q.empty) {
       const promises = [];
@@ -1178,7 +1191,86 @@ async function handlePerformanceAnalysis(language, weaknesses = [], formattedPro
   const modelResp = await generateWithFailover('chat', prompt, { label: 'AnalysisHandler', timeoutMs: CONFIG.TIMEOUTS.chat });
   return await extractTextFromResult(modelResp) || (language === 'Arabic' ? 'لم أتمكن من تحليل الأداء حاليًا.' : 'Could not analyze performance right now.');
 }
+async function runNightlyAnalysisForUser(userId) {
+  try {
+    // 1. تطبيق "قاعدة المبتدئ"
+    const userDoc = await db.collection('users').doc(userId).get();
+    if (!userDoc.exists) return;
+    const userCreationDate = userDoc.createTime.toDate();
+    const daysSinceJoined = (new Date() - userCreationDate) / (1000 * 60 * 60 * 24);
+    if (daysSinceJoined < 3) { // سنعطيه 3 أيام كاملة
+      return; // مستخدم جديد، اتركه وشأنه
+    }
 
+    // 2. تشغيل "محرك التوقيت التنبئي"
+    const eventsSnapshot = await db.collection('userBehaviorAnalytics').doc(userId).collection('events')
+      .where('name', '==', 'app_open')
+      .orderBy('timestamp', 'desc')
+      .limit(10) // حلل آخر 10 مرات فتح فيها التطبيق
+      .get();
+
+    let primeTimeHour = 20; // وقت افتراضي (8 مساءً)
+    if (!eventsSnapshot.empty) {
+      const hours = eventsSnapshot.docs.map(doc => doc.data().timestamp.toDate().getHours());
+      // ابحث عن الساعة الأكثر تكرارًا
+      const hourCounts = hours.reduce((acc, hour) => {
+        acc[hour] = (acc[hour] || 0) + 1;
+        return acc;
+      }, {});
+      primeTimeHour = parseInt(Object.keys(hourCounts).reduce((a, b) => hourCounts[a] > hourCounts[b] ? a : b));
+    }
+
+    // 3. توليد رسالة إعادة التفاعل الذكية
+    const reEngagementMessage = await runReEngagementManager(userId);
+    if (!reEngagementMessage) return; // إذا لم يكن هناك شيء مهم ليقوله، لا ترسل شيئًا
+
+    // 4. جدولة الإشعار في الوقت المثالي
+    const scheduleTime = new Date();
+    scheduleTime.setHours(primeTimeHour - 1, 30, 0, 0); // أرسل قبل ساعة ونصف من وقته المعتاد
+
+    // استخدم نظام المهام الذي بنيناه بالفعل!
+    await enqueueJob({
+      type: 'scheduled_notification',
+      userId: userId,
+      payload: {
+        title: 'اشتقنا لوجودك!',
+        message: reEngagementMessage,
+      },
+      sendAt: admin.firestore.Timestamp.fromDate(scheduleTime) // حقل جديد للمهام المجدولة
+    });
+
+  } catch (error) {
+    console.error(`Nightly analysis failed for user ${userId}:`, error);
+  }
+}
+async function runReEngagementManager(userId) {
+  const progress = await getProgress(userId);
+  const lastIncompleteTask = progress?.dailyTasks?.tasks?.find(t => t.status === 'pending');
+
+  let context = "The user has been inactive for a couple of days.";
+  if (lastIncompleteTask) {
+    context += ` Their last incomplete task was "${lastIncompleteTask.title}".`;
+  } else {
+    context += " They don't have any specific pending tasks.";
+  }
+
+  const prompt = `You are a warm and caring study coach, not a robot.
+  ${context}
+  Write a short, friendly, and very gentle notification (1-2 sentences in Arabic) to re-engage them.
+  - The tone should be zero-pressure. More like "Hey, thinking of you!" than "You have work to do!".
+  - If they have an incomplete task, you can mention it in a very encouraging way.
+  - Example if task exists: "مساء الخير! أتمنى أن تكون بخير. مهمة '${lastIncompleteTask.title}' لا تزال بانتظارك عندما تكون مستعدًا للعودة. ما رأيك أن ننجزها معًا؟"
+  - Example if no task: "مساء الخير! كيف حالك؟ مر وقت لم نرك فيه. أتمنى أن كل شيء على ما يرام!"
+  Respond with ONLY the notification text.`;
+
+  try {
+    const res = await generateWithFailover('notification', prompt, { label: 'ReEngagementManager' });
+    return await extractTextFromResult(res);
+  } catch (error) {
+    console.error(`ReEngagementManager failed for user ${userId}:`, error);
+    return null;
+  }
+}
 async function handleGeneralQuestion(message, language, history = [], userProfile = 'No profile.', userProgress = {}, weaknesses = [], formattedProgress = '', studentName = null) {
   const lastFive = (Array.isArray(history) ? history.slice(-5) : []).map(h => `${h.role === 'model' ? 'You' : 'User'}: ${safeSnippet(h.text || '', 500)}`).join('\n');
   const tasksSummary = userProgress?.dailyTasks?.tasks?.length > 0 ? `Current Tasks:\n${userProgress.dailyTasks.tasks.map(t => `- ${t.title} (${t.status})`).join('\n')}` : 'The user currently has no tasks.';
@@ -1618,6 +1710,47 @@ app.post('/enqueue-job', async (req, res) => {
     const id = await enqueueJob(job);
     return res.json({ jobId: id });
   } catch (err) { res.status(500).json({ error: String(err) }); }
+});
+const NIGHTLY_JOB_SECRET = process.env.NIGHTLY_JOB_SECRET || 'vl&h{`4^9)fUy3Mw30_FqXfU~UwIE0K6@*2j_4]1';
+
+// 2. أنشئ نقطة النهاية الجديدة+
+app.post('/run-nightly-analysis', async (req, res) => {
+  try {
+    // تحقق من المفتاح السري
+    const providedSecret = req.headers['x-job-secret'];
+    if (providedSecret !== NIGHTLY_JOB_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized.' });
+    }
+
+    // أرسل ردًا فوريًا لتأكيد استلام الطلب
+    res.status(202).json({ message: 'Nightly analysis job started.' });
+
+    // الآن، قم بتشغيل المنطق الثقيل في الخلفية
+    console.log(`[${new Date().toISOString()}] Starting nightly analysis...`);
+    
+    // ابحث عن المستخدمين غير النشطين
+    const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    const inactiveUsersSnapshot = await db.collection('userProgress')
+      .where('lastLogin', '<', twoDaysAgo)
+      .get();
+
+    if (inactiveUsersSnapshot.empty) {
+      console.log('No inactive users found. Job finished.');
+      return;
+    }
+
+    // قم بتشغيل التحليل لكل مستخدم غير نشط
+    const analysisPromises = [];
+    inactiveUsersSnapshot.forEach(doc => {
+      analysisPromises.push(runNightlyAnalysisForUser(doc.id));
+    });
+
+    await Promise.all(analysisPromises);
+    console.log(`Nightly analysis finished for ${inactiveUsersSnapshot.size} users.`);
+
+  } catch (error) {
+    console.error('[/run-nightly-analysis] Critical error:', error);
+  }
 });
 app.post('/generate-title', async (req, res) => {
   try {
