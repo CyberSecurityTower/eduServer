@@ -237,7 +237,122 @@ async function generateWithFailover(poolName, prompt, opts = {}) {
   throw lastErr || new Error(`[Failover] ${label} failed for all available keys.`);
 }
 
+async function runMemoryAgent(userId, userMessage) {
+  try {
+    // 1. جلب الذاكرة الكاملة للمستخدم
+    const memoryProfile = await getProfile(userId);
+    const fullSummary = memoryProfile.profileSummary || 'No summary available.';
+    const activeThreads = memoryProfile.activeThreads || []; // سنتعامل مع هذا لاحقًا
 
+    // 2. صياغة الأمر الذكي للوكيل (نموذج gemini-flash السريع)
+    const prompt = `You are a lightning-fast psychological analyst.
+    Your job is to read a user's full memory profile and their new question.
+    Extract ONLY the parts of the memory that are directly relevant to answering this specific question.
+    If nothing is relevant, return an empty summary.
+
+    <user_memory_profile>
+    ${fullSummary}
+    </user_memory_profile>
+
+    <user_new_question>
+    "${userMessage}"
+    </user_new_question>
+
+    Respond with ONLY a JSON object in the format: { "relevant_summary": "..." }`;
+
+    // 3. استدعاء النموذج السريع للحصول على الملخص ذي الصلة
+    const res = await generateWithFailover('analysis', prompt, { label: 'MemoryAgent', timeoutMs: 4000 }); // مهلة قصيرة
+    const raw = await extractTextFromResult(res);
+    const parsed = await ensureJsonOrRepair(raw, 'analysis');
+
+    if (parsed && parsed.relevant_summary) {
+      return parsed.relevant_summary;
+    }
+
+    return ''; // في حالة عدم وجود شيء ذي صلة، أرجع نصًا فارغًا
+
+  } catch (error) {
+    console.error(`MemoryAgent failed for user ${userId}:`, error.message);
+    return ''; // أرجع دائمًا نصًا فارغًا في حالة الفشل لضمان عدم تعطل النظام
+  }
+}
+async function runCurriculumAgent(userId, userMessage) {
+  try {
+    // 1. Fetch academic data: user's progress and the educational path structure.
+    const userProgress = await getProgress(userId);
+    // We assume user.selectedPathId is available or passed in a real scenario.
+    // For now, we'll simulate fetching the first path found in their progress.
+    const pathId = userProgress.selectedPathId || (Object.keys(userProgress.pathProgress || {})[0]);
+    if (!pathId) return ''; // No path to analyze
+
+    const educationalPath = await getCachedEducationalPathById(pathId); // We'll need to ensure this function is available in the backend
+    if (!educationalPath) return '';
+
+    // 2. Format the data for the AI model to understand.
+    const curriculumData = {
+      pathName: educationalPath.displayName,
+      subjects: educationalPath.subjects.map(sub => ({
+        id: sub.id,
+        name: sub.name,
+        progress: userProgress.pathProgress?.[pathId]?.subjects?.[sub.id]?.progress || 0,
+        lessons: sub.lessons.map(les => ({
+          id: les.id,
+          title: les.title,
+          status: userProgress.pathProgress?.[pathId]?.subjects?.[sub.id]?.lessons?.[les.id]?.status || 'locked',
+          mastery: userProgress.pathProgress?.[pathId]?.subjects?.[sub.id]?.lessons?.[les.id]?.masteryScore || null,
+        }))
+      }))
+    };
+
+    // 3. Formulate the smart prompt for the agent (gemini-flash).
+    const prompt = `You are a curriculum analysis expert.
+    Your job is to determine if the user's question is related to any specific subject or lesson in their study plan.
+    Analyze the user's question against their curriculum data.
+
+    <curriculum_data>
+    ${JSON.stringify(curriculumData, null, 2)}
+    </curriculum_data>
+
+    <user_question>
+    "${userMessage}"
+    </user_question>
+
+    If you find a direct link, respond ONLY with a JSON object: { "context": "..." }.
+    The "context" should be a very brief sentence. Example: "The user is asking about 'Intro to Economics', where their progress is 30% and mastery on the last lesson was 65%."
+    If there is no link, return an empty JSON object: {}.`;
+
+    // 4. Call the fast model and parse the result.
+    const res = await generateWithFailover('analysis', prompt, { label: 'CurriculumAgent', timeoutMs: 5000 });
+    const raw = await extractTextFromResult(res);
+    const parsed = await ensureJsonOrRepair(raw, 'analysis');
+
+    if (parsed && parsed.context) {
+      return parsed.context;
+    }
+
+    return ''; // Return empty if no context is found
+
+  } catch (error) {
+    console.error(`CurriculumAgent failed for user ${userId}:`, error.message);
+    return ''; // Always return empty on failure to keep the system running
+  }
+}
+
+// We will also need to make getCachedEducationalPathById available on the server.
+// For now, we can create a simple version.
+const educationalPathCache = new LRUCache(50, 60 * 60 * 1000); // Cache for 1 hour
+async function getCachedEducationalPathById(pathId) {
+    const cached = educationalPathCache.get(pathId);
+    if (cached) return cached;
+
+    const doc = await db.collection('educationalPaths').doc(pathId).get();
+    if (doc.exists) {
+        const data = doc.data();
+        educationalPathCache.set(pathId, data);
+        return data;
+    }
+    return null;
+}
 async function sendUserNotification(userId, payload = {}) {
   if (!userId) return;
   try {
@@ -766,6 +881,64 @@ async function runNotificationManager(type = 'ack', language = 'Arabic', data = 
     return language === 'Arabic' ? 'تم تحديث طلبك.' : 'Your request has been updated.';
   }
 }
+async function runConversationAgent(userId, userMessage) {
+  try {
+    // 1. Fetch the last few chat sessions to get recent context.
+    const sessionsSnapshot = await db.collection('chatSessions')
+      .where('userId', '==', userId)
+      .orderBy('updatedAt', 'desc')
+      .limit(3) // Fetch the 3 most recent sessions
+      .get();
+
+    if (sessionsSnapshot.empty) return '';
+
+    // 2. Consolidate the messages from these sessions into a single history.
+    let recentHistory = [];
+    sessionsSnapshot.forEach(doc => {
+      const messages = doc.data().messages || [];
+      recentHistory.push(...messages);
+    });
+    
+    // Ensure chronological order and take the last 50 messages for brevity
+    recentHistory.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    const conversationSnippet = recentHistory.slice(-50).map(m => `${m.author}: ${m.text}`).join('\n');
+
+    if (!conversationSnippet) return '';
+
+    // 3. Formulate the prompt for our semantic search expert (gemini-flash).
+    const prompt = `You are a conversation analyst with perfect short-term memory.
+    Your job is to find the single most relevant exchange from the recent conversation history that relates to the user's new question.
+    Focus on the semantic meaning and context.
+
+    <recent_conversation_history>
+    ${conversationSnippet}
+    </recent_conversation_history>
+
+    <user_new_question>
+    "${userMessage}"
+    </user_new_question>
+
+    If you find a relevant exchange, summarize its key point in one concise sentence.
+    Respond ONLY with a JSON object: { "summary": "..." }.
+    Example: { "summary": "Yesterday, the user was confused about the practical application of this economic theory." }
+    If nothing is relevant, return an empty JSON object: {}.`;
+
+    // 4. Call the fast model and parse the result.
+    const res = await generateWithFailover('analysis', prompt, { label: 'ConversationAgent', timeoutMs: 5000 });
+    const raw = await extractTextFromResult(res);
+    const parsed = await ensureJsonOrRepair(raw, 'analysis');
+
+    if (parsed && parsed.summary) {
+      return parsed.summary;
+    }
+
+    return '';
+
+  } catch (error) {
+    console.error(`ConversationAgent failed for user ${userId}:`, error.message);
+    return ''; // Never crash the system.
+  }
+}
 // ToDo manager: interpret todo instructions and return an action summary (lightweight implementation)
 async function runToDoManager(userId, userRequest, currentTasks = []) {
   const prompt = `You are an expert To-Do List Manager AI. Modify the CURRENT TASKS based on the USER REQUEST.
@@ -1077,87 +1250,149 @@ app.post('/chat-interactive', async (req, res) => {
       return res.status(400).json({ error: 'userId and message are required' });
     }
 
-    // --- 1. Session and Title Management ---
+    // --- 1. Session & title ---
     let sessionId = clientSessionId;
     let chatTitle = 'New Chat';
     const isNewSession = !sessionId;
-
     if (isNewSession) {
-        sessionId = `chat_${Date.now()}_${userId.slice(0,5)}`;
-        try {
-           const titleResTitle = await generateTitle(message.trim());
-          chatTitle = titleResTitle;
-
-        } catch (e) {
-            chatTitle = message.trim().substring(0, 30);
-        }
+      sessionId = `chat_${Date.now()}_${userId.slice(0, 5)}`;
+      try {
+        chatTitle = await generateTitle(message.trim());
+      } catch (e) {
+        chatTitle = message.trim().substring(0, 30);
+        console.error('generateTitle failed, using fallback title:', e);
+      }
     }
 
-    // --- 2. Fetch All Necessary Context and Memory ---
-    const [memoryProfile, userProgress, weaknesses, formattedProgress, userName] = await Promise.all([
-      getProfile(userId),
-      getProgress(userId),
-      fetchUserWeaknesses(userId),
-      formatProgressForAI(userId),
-      getUserDisplayName(userId),
+    // --- 2. Kick off agents + legacy fetches in parallel (non-blocking) ---
+    const memoryPromise = (async () => {
+      try { return await runMemoryAgent(userId, message); }
+      catch (e) { console.error('runMemoryAgent failed:', e); return ''; }
+    })();
+
+    const curriculumPromise = (async () => {
+      try { return await runCurriculumAgent(userId, message); }
+      catch (e) { console.error('runCurriculumAgent failed:', e); return ''; }
+    })();
+
+    const conversationPromise = (async () => {
+      try { return await runConversationAgent(userId, message); }
+      catch (e) { console.error('runConversationAgent failed:', e); return ''; }
+    })();
+
+    // Legacy/fallback fetches (start in parallel)
+    const profilePromise = getProfile(userId).catch(e => { console.error('getProfile failed:', e); return {}; });
+    const progressPromise = getProgress(userId).catch(e => { console.error('getProgress failed:', e); return {}; });
+    const weaknessesPromise = fetchUserWeaknesses(userId).catch(e => { console.error('fetchUserWeaknesses failed:', e); return []; });
+    const formattedProgressPromise = formatProgressForAI(userId).catch(e => { console.error('formatProgressForAI failed:', e); return ''; });
+    const userNamePromise = getUserDisplayName(userId).catch(e => { console.error('getUserDisplayName failed:', e); return ''; });
+
+    // --- 3. Per-agent safety timeouts & allSettled ---
+    const AGENT_TIMEOUT_MS = 5000; // adjust as desired
+
+    const memoryRace = Promise.race([
+      memoryPromise,
+      new Promise(resolve => setTimeout(() => resolve(''), AGENT_TIMEOUT_MS))
+    ]);
+    const curriculumRace = Promise.race([
+      curriculumPromise,
+      new Promise(resolve => setTimeout(() => resolve(''), AGENT_TIMEOUT_MS))
+    ]);
+    const conversationRace = Promise.race([
+      conversationPromise,
+      new Promise(resolve => setTimeout(() => resolve(''), AGENT_TIMEOUT_MS))
     ]);
 
-    const profileSummary = memoryProfile.profileSummary || 'No profile summary available.';
+    const [memSettled, curSettled, convSettled] = await Promise.allSettled([
+      memoryRace, curriculumRace, conversationRace
+    ]);
 
-// --- 3. Construct the Genius Prompt ---
-const lastFive = (Array.isArray(history) ? history.slice(-5) : []).map(h => `${h.role === 'model' ? 'You' : 'User'}: ${safeSnippet(h.text || '', 500)}`).join('\n');
+    const memoryReportRaw = (memSettled.status === 'fulfilled' && memSettled.value) ? memSettled.value : '';
+    const curriculumReportRaw = (curSettled.status === 'fulfilled' && curSettled.value) ? curSettled.value : '';
+    const conversationReportRaw = (convSettled.status === 'fulfilled' && convSettled.value) ? convSettled.value : '';
 
-// ✅✅✅ التعديل الرئيسي هنا ✅✅✅
-const prompt = `You are EduAI, a specialized AI tutor with a perfect memory of your student.
+    // --- 4. Ensure we have legacy profile data for fallback & additional context ---
+    const [memoryProfile, userProgress, weaknesses, formattedProgress, userName] = await Promise.all([
+      profilePromise, progressPromise, weaknessesPromise, formattedProgressPromise, userNamePromise
+    ]);
 
-<user_context>
-This is YOUR MEMORY of the student. It is your primary source of truth for all personal details, including their preferred name. You MUST use the information here to personalize your conversation.
-**Your Long-Term Memory Summary of this Student:**
-"${profileSummary}"
-</user_context>
+    const profileSummary = (memoryProfile && memoryProfile.profileSummary) ? memoryProfile.profileSummary : 'No profile summary available.';
+
+    // Prefer agent output; fall back to profile summary if memory agent returned nothing
+    const memoryReport = String(memoryReportRaw || (`NOTE: The memory agent failed. This is a fallback using the full user profile: ${profileSummary}`)).trim();
+    const curriculumReport = String(curriculumReportRaw || '').trim();
+    const conversationReport = String(conversationReportRaw || '').trim();
+
+    // --- 5. Build history snippet safely ---
+    const lastFive = (Array.isArray(history) ? history.slice(-5) : [])
+      .map(h => `${h.role === 'model' ? 'You' : 'User'}: ${safeSnippet(h.text || '', 500)}`)
+      .join('\n');
+
+    // --- 6. Final comprehensive prompt for the Decider ---
+    const finalPrompt = `You are EduAI, a genius, witty, and deeply personal AI companion.
+This is the user's question: "${escapeForPrompt(safeSnippet(message, 2000))}"
+
+Here is the complete intelligence briefing from your specialist team. Use it to formulate a brilliant, personal response.
+
+<memory_report_psychologist>
+${escapeForPrompt(safeSnippet(memoryReport, 4000)) || 'No long-term memory is relevant to this query.'}
+</memory_report_psychologist>
+
+<curriculum_report_academic_advisor>
+${escapeForPrompt(safeSnippet(curriculumReport || 'This question does not link to a specific lesson in their plan.', 4000))}
+</curriculum_report_academic_advisor>
+
+<conversation_report_context_keeper>
+${escapeForPrompt(safeSnippet(conversationReport || 'This appears to be a new topic of conversation.', 4000))}
+</conversation_report_context_keeper>
 
 <conversation_history>
 ${lastFive}
 </conversation_history>
 
-The user's new message is: "${escapeForPrompt(safeSnippet(message, 2000))}"
-Your response as EduAI (in user"s language):`;
+Student progress summary (short): ${escapeForPrompt(safeSnippet(formattedProgress || 'No progress summary.', 1000))}
+Student weaknesses (short): ${escapeForPrompt(safeSnippet(Array.isArray(weaknesses) ? weaknesses.join('; ') : String(weaknesses || ''), 1000))}
 
+Respond as EduAI in the user's language. Be personal, friendly (non-formal), and concise. If the question is curriculum-related, prefer step-by-step guidance and examples.`;
 
-    // --- 4. Generate AI Response ---
-    const modelResp = await generateWithFailover('chat', prompt, { label: 'InteractiveChat', timeoutMs: CONFIG.TIMEOUTS.chat });
+    // --- 7. Call the Decider / responder model ---
+    const modelResp = await generateWithFailover('chat', finalPrompt, {
+      label: 'InteractiveChat-Decider',
+      timeoutMs: (CONFIG && CONFIG.TIMEOUTS && CONFIG.TIMEOUTS.chat) ? CONFIG.TIMEOUTS.chat : undefined
+    });
+
     const fullReplyText = await extractTextFromResult(modelResp);
     const botReply = fullReplyText || 'عذراً، لم أتمكن من إنشاء رد الآن.';
 
-    // --- 5. Save and Update ---
+    // --- 8. Save conversation & background tasks (fire-and-forget with logging) ---
     const userMessageObj = { author: 'user', text: message, timestamp: new Date().toISOString() };
     const botMessageObj = { author: 'bot', text: botReply, timestamp: new Date().toISOString() };
     const updatedHistory = [...history, userMessageObj, botMessageObj];
 
-    // Save the chat session to Firestore (don't wait for it to finish)
-   // Save the chat session to Firestore (don't wait for it to finish) — but handle rejection
-saveChatSession(sessionId, userId, chatTitle, updatedHistory, context.type || 'main_chat', context)
-  .catch(e => console.error('saveChatSession failed (fire-and-forget):', e));
+    saveChatSession(sessionId, userId, chatTitle, updatedHistory, context.type || 'main_chat', context)
+      .catch(e => console.error('saveChatSession failed (fire-and-forget):', e));
 
-// Trigger the background memory analysis safely (don't wait for it)
-if (updatedHistory.length % 6 === 0) { // Analyze every 3 user/bot pairs
-  analyzeAndSaveMemory(userId, updatedHistory.slice(-6))
-    .catch(e => console.error('analyzeAndSaveMemory failed (fire-and-forget):', e));
-}
+    if (updatedHistory.length % 6 === 0) { // analyze every 3 user/bot pairs
+      analyzeAndSaveMemory(userId, updatedHistory.slice(-6))
+        .catch(e => console.error('analyzeAndSaveMemory failed (fire-and-forget):', e));
+    }
 
-
-    // --- 6. Send Response to Client ---
+    // --- 9. Return response to client ---
     res.status(200).json({
       reply: botReply,
-      sessionId: sessionId, // Send the new session ID back to the client
-      chatTitle: chatTitle,   // Send the new title back
+      sessionId,
+      chatTitle,
+      // Useful for debugging; comment out or remove in production:
+      // agentReports: { memoryReport, curriculumReport, conversationReport }
     });
-
   } catch (err) {
-    console.error('/chat-interactive error:', err.stack);
+    console.error('/chat-interactive error:', err.stack || err);
     res.status(500).json({ error: 'An internal server error occurred.' });
   }
 });
+
+
+
 
 app.post('/update-daily-tasks', async (req, res) => {
   try {
