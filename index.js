@@ -462,7 +462,6 @@ async function ensureJsonOrRepair(rawText, repairPool = 'review') {
 
 // ---------------- CACHE & FIRESTORE HELPERS ----------------
 // ---------- Cache imports & instances ----------
-const LRUCache = require('./cache'); // تأكد أن الملف cache.js في نفس المجلد
 
 // استخدم CONFIG.CACHE_TTL_MS إن كان معرفًا، أو حدّ افتراضي
 const DEFAULT_TTL = (typeof CONFIG !== 'undefined' && CONFIG.CACHE_TTL_MS) ? CONFIG.CACHE_TTL_MS : 1000 * 60 * 60;
