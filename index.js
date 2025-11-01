@@ -18,6 +18,7 @@ const cors = require('cors');
 const admin = require('firebase-admin');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const crypto = require('crypto');
+const LRUCache = require('./cache');
 
 // ---------------- CONFIG ----------------
 const CONFIG = {
@@ -340,18 +341,18 @@ async function runCurriculumAgent(userId, userMessage) {
 
 // We will also need to make getCachedEducationalPathById available on the server.
 // For now, we can create a simple version.
-const educationalPathCache = new LRUCache(50, 60 * 60 * 1000); // Cache for 1 hour
 async function getCachedEducationalPathById(pathId) {
-    const cached = educationalPathCache.get(pathId);
-    if (cached) return cached;
+  if (!pathId) return null;
+  const cached = educationalPathCache.get(pathId);
+  if (cached) return cached;
 
-    const doc = await db.collection('educationalPaths').doc(pathId).get();
-    if (doc.exists) {
-        const data = doc.data();
-        educationalPathCache.set(pathId, data);
-        return data;
-    }
-    return null;
+  const doc = await db.collection('educationalPaths').doc(pathId).get();
+  if (doc.exists) {
+    const data = doc.data();
+    educationalPathCache.set(pathId, data);
+    return data;
+  }
+  return null;
 }
 async function sendUserNotification(userId, payload = {}) {
   if (!userId) return;
@@ -468,7 +469,10 @@ class LRUCache {
   del(k) { this.map.delete(k); }
   clear() { this.map.clear(); }
 }
-const localCache = { profile: new LRUCache(), progress: new LRUCache() };
+const localCache = {
+  profile: new LRUCache(200, 1000 * 60 * 60),
+  progress: new LRUCache(200, 1000 * 60 * 60),
+};
 async function cacheGet(scope, key) { return localCache[scope]?.get(key); }
 async function cacheSet(scope, key, value) { localCache[scope]?.set(key, value); }
 async function cacheDel(scope, key) { localCache[scope]?.del(key); }
