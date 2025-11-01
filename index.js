@@ -461,21 +461,23 @@ async function ensureJsonOrRepair(rawText, repairPool = 'review') {
 }
 
 // ---------------- CACHE & FIRESTORE HELPERS ----------------
-class LRUCache {
-  constructor(limit = 500, ttl = CONFIG.CACHE_TTL_MS) { this.limit = limit; this.ttl = ttl; this.map = new Map(); }
-  _isExpired(e) { return Date.now() - e.t > this.ttl; }
-  get(k) { const e = this.map.get(k); if (!e) return null; if (this._isExpired(e)) { this.map.delete(k); return null; } this.map.delete(k); this.map.set(k, e); return e.v; }
-  set(k, v) { if (this.map.size >= this.limit) this.map.delete(this.map.keys().next().value); this.map.set(k, { v, t: Date.now() }); }
-  del(k) { this.map.delete(k); }
-  clear() { this.map.clear(); }
-}
+// ---------- Cache imports & instances ----------
+const LRUCache = require('./cache'); // تأكد أن الملف cache.js في نفس المجلد
+
+// استخدم CONFIG.CACHE_TTL_MS إن كان معرفًا، أو حدّ افتراضي
+const DEFAULT_TTL = (typeof CONFIG !== 'undefined' && CONFIG.CACHE_TTL_MS) ? CONFIG.CACHE_TTL_MS : 1000 * 60 * 60;
+
+const educationalPathCache = new LRUCache(50, DEFAULT_TTL); // 50 items, 1 hour TTL
 const localCache = {
-  profile: new LRUCache(200, 1000 * 60 * 60),
-  progress: new LRUCache(200, 1000 * 60 * 60),
+  profile: new LRUCache(200, DEFAULT_TTL),
+  progress: new LRUCache(200, DEFAULT_TTL),
 };
-async function cacheGet(scope, key) { return localCache[scope]?.get(key); }
-async function cacheSet(scope, key, value) { localCache[scope]?.set(key, value); }
-async function cacheDel(scope, key) { localCache[scope]?.del(key); }
+
+// helpers (يمكنك إبقاؤها async لتتماشى مع بقية الكود)
+async function cacheGet(scope, key) { return localCache[scope]?.get(key) ?? null; }
+async function cacheSet(scope, key, value) { return localCache[scope]?.set(key, value); }
+async function cacheDel(scope, key) { return localCache[scope]?.del(key); }
+// -------------------------------------------------
 
 // ---------------- DATA HELPERS ----------------
 async function getUserDisplayName(userId) {
