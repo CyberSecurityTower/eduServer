@@ -1574,31 +1574,40 @@ async function runInterventionManager(interventionType, data = {}) {
   let prompt;
   const language = 'Arabic'; // يمكن جعله ديناميكيًا لاحقًا
 
+  const strictRules = `
+<rules>
+1.  Your response MUST be ONLY the final notification text, directly usable for the user.
+2.  The text MUST be in natural, user-friendly ${language}.
+3.  ABSOLUTELY NO conversational filler. Do not say "Here is the notification" or "Of course!".
+</rules>
+`;
+
   switch (interventionType) {
     case 'unplanned_lesson':
-      prompt = `You are a friendly and encouraging study coach.
-      A user has proactively started studying a lesson titled "${data.lessonTitle}" that was NOT on their to-do list.
-      Write a short, positive notification (1-2 sentences in ${language}) that praises their initiative and gently asks if they'd like to add it to their daily plan to track their progress.
-      Maintain a non-formal, supportive tone.`;
+      prompt = `A user has proactively started studying a lesson titled "${data.lessonTitle}" that was NOT on their to-do list.
+      Write a short, positive notification (1-2 sentences) that praises their initiative and gently asks if they'd like to add it to their daily plan.
+      ${strictRules}`;
       break;
     
     case 'timer_procrastination':
-      prompt = `You are a friendly and encouraging study coach.
-      A user started a study timer 2 minutes ago but hasn't started any lesson or quiz. They might be stuck or distracted.
-      Write a short, gentle, and helpful notification (1-2 sentences in ${language}) asking if everything is okay and if they need help choosing a task to begin with.
-      Avoid any shaming language. The tone should be purely supportive.`;
+      prompt = `A user started a study timer 2 minutes ago but hasn't started any lesson. They might be stuck.
+      Write a short, gentle, and helpful notification (1-2 sentences) asking if everything is okay and if they need help choosing a task.
+      ${strictRules}`;
       break;
 
     default:
       return '';
   }
 
-  try {
+   try {
+    // لا حاجة لتغيير هذا الجزء
     const res = await generateWithFailover('notification', prompt, { label: 'InterventionManager' });
-    return await extractTextFromResult(res);
+    // سنقوم بتنظيف النص كإجراء احترازي إضافي
+    const rawText = await extractTextFromResult(res);
+    return rawText.replace(/["']/g, '').trim(); // إزالة أي علامات اقتباس قد يضيفها النموذج
   } catch (error) {
     console.error(`InterventionManager failed for type ${interventionType}:`, error);
-    return "نحن هنا للمساعدة إذا احتجت أي شيء!"; // رسالة احتياطية آمنة
+    return "نحن هنا للمساعدة إذا احتجت أي شيء!";
   }
 }
 app.post('/log-event', async (req, res) => {
