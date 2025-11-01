@@ -1395,7 +1395,163 @@ Respond as EduAI in the user's language. Be personal, friendly (non-formal), and
     res.status(500).json({ error: 'An internal server error occurred.' });
   }
 });
+const procrastinationTimers = new Map();
 
+/**
+ * مفتاح الـ Map سيكون userId:eventName
+ * الفكرة: إذا جاء نفس الحدث عدة مرات بسرعة نخلي آخر حدث "يفوز" ونشغّل المدرب بعد تأخير صغير
+ * هذا يمنع إطلاق مهام زائدة عند تكرار النقرات/الأحداث السريعة.
+ */
+function scheduleTriggerLiveCoach(userId, eventName, eventData) {
+  const key = `${userId}:${eventName}`;
+  const DELAY_MS = 1000; // تأخير صغير قبل تشغيل المدرب (يمكن تعديلها)
+
+  // إن كان هناك مؤقت سابق لنفس المفتاح، نلغيه لنؤخر التنفيذ
+  const prev = procrastinationTimers.get(key);
+  if (prev) clearTimeout(prev);
+
+  // نضع مؤقت جديد يستدعي triggerLiveCoach بعد DELAY_MS
+  const timer = setTimeout(async () => {
+    procrastinationTimers.delete(key);
+    try {
+      await triggerLiveCoach(userId, eventName, eventData);
+    } catch (err) {
+      // لا نرمي الخطأ إلى العميل — فقط نسجّل داخلياً
+      console.error('triggerLiveCoach error for', key, err);
+    }
+  }, DELAY_MS);
+
+  procrastinationTimers.set(key, timer);
+}
+
+/**
+ * دالة stub للمدرّب المباشر — عدّلها لتستدعي سير عملك الحقيقي
+ * يجب أن تكون غير معتمدة على استجابة العميل.
+ */
+async function triggerLiveCoach(userId, eventName, eventData) {
+  // قاعدة المبتدئ: لا تتدخل مع المستخدمين الجدد جدًا
+  const userDoc = await db.collection('users').doc(userId).get();
+  if (!userDoc.exists) return;
+  const userCreationDate = userDoc.createTime.toDate();
+  const daysSinceJoined = (new Date() - userCreationDate) / (1000 * 60 * 60 * 24);
+  if (daysSinceJoined < 2) {
+    return; // هذا مستخدم جديد، لا تتدخل
+  }
+
+  // الآن، لنحلل الحدث
+  switch (eventName) {
+    case 'lesson_view_start':
+      // إذا بدأ المستخدم درسًا، فهذا يعني أنه ليس مماطلاً. قم بإلغاء أي مؤقت تسويف.
+      if (procrastinationTimers.has(userId)) {
+        clearTimeout(procrastinationTimers.get(userId));
+        procrastinationTimers.delete(userId);
+      }
+
+      // تحقق مما إذا كان الدرس مجدولاً
+      const progress = await getProgress(userId);
+      const isPlanned = progress?.dailyTasks?.tasks?.some(task => task.relatedLessonId === eventData.lessonId);
+      
+      if (!isPlanned) {
+        // الدرس غير مجدول! تدخل بذكاء.
+        const message = await runInterventionManager('unplanned_lesson', { lessonTitle: eventData.lessonTitle });
+        await sendUserNotification(userId, { title: 'مبادرة رائعة!', message });
+      }
+      break;
+
+    case 'started_study_timer':
+      // بدأ المستخدم مؤقت الدراسة. لنراقب ما إذا كان سيبدأ بالفعل.
+      const timerId = setTimeout(async () => {
+        // بعد دقيقتين، تحقق مما إذا كان المستخدم قد بدأ أي شيء
+        const recentEvents = await db.collection('userBehaviorAnalytics').doc(userId).collection('events')
+          .orderBy('timestamp', 'desc').limit(1).get();
+        
+        const lastEvent = recentEvents.docs[0]?.data();
+        // إذا كان آخر حدث لا يزال هو "بدء المؤقت"، فهذا يعني أنه لم يفعل شيئًا
+        if (lastEvent && lastEvent.name === 'started_study_timer') {
+          const message = await runInterventionManager('timer_procrastination');
+          await sendUserNotification(userId, { title: 'هل تحتاج مساعدة؟', message });
+        }
+        procrastinationTimers.delete(userId);
+      }, 120000); // دقيقتان
+
+      procrastinationTimers.set(userId, timerId);
+      break;
+  }
+}
+async function runInterventionManager(interventionType, data = {}) {
+  let prompt;
+  const language = 'Arabic'; // يمكن جعله ديناميكيًا لاحقًا
+
+  switch (interventionType) {
+    case 'unplanned_lesson':
+      prompt = `You are a friendly and encouraging study coach.
+      A user has proactively started studying a lesson titled "${data.lessonTitle}" that was NOT on their to-do list.
+      Write a short, positive notification (1-2 sentences in ${language}) that praises their initiative and gently asks if they'd like to add it to their daily plan to track their progress.
+      Maintain a non-formal, supportive tone.`;
+      break;
+    
+    case 'timer_procrastination':
+      prompt = `You are a friendly and encouraging study coach.
+      A user started a study timer 2 minutes ago but hasn't started any lesson or quiz. They might be stuck or distracted.
+      Write a short, gentle, and helpful notification (1-2 sentences in ${language}) asking if everything is okay and if they need help choosing a task to begin with.
+      Avoid any shaming language. The tone should be purely supportive.`;
+      break;
+
+    default:
+      return '';
+  }
+
+  try {
+    const res = await generateWithFailover('notification', prompt, { label: 'InterventionManager' });
+    return await extractTextFromResult(res);
+  } catch (error) {
+    console.error(`InterventionManager failed for type ${interventionType}:`, error);
+    return "نحن هنا للمساعدة إذا احتجت أي شيء!"; // رسالة احتياطية آمنة
+  }
+}
+app.post('/log-event', async (req, res) => {
+  try {
+    const { userId, eventName, eventData = {} } = req.body;
+
+    if (!userId || !eventName) {
+      return res.status(400).json({ error: 'userId and eventName are required.' });
+    }
+
+    // مرجع الوثيقة للمستخدم
+    const analyticsRef = db.collection('userBehaviorAnalytics').doc(userId);
+
+    // 1) نسجل الحدث في المجموعة الفرعية events
+    await analyticsRef.collection('events').add({
+      name: eventName,
+      data: eventData,
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // 2) نحدث بعض المقاييس الرئيسة للوصول السريع
+    if (eventName === 'lesson_view_start') {
+      await analyticsRef.set({
+        lessonsViewedCount: admin.firestore.FieldValue.increment(1),
+      }, { merge: true });
+    }
+
+    // 3) نرد على التطبيق فوراً — نقول له أن التسجيل تم والمدرّب سيحلله
+    res.status(202).json({ message: 'Event logged. Coach is analyzing.' });
+
+    // 4) بعد إرسال الرد، نبرمج تشغيل المدرّب في الخلفية (debounced)
+    //    نستخدم scheduleTriggerLiveCoach لكي نتجنّب إطلاق المدرّب بكثافة إن تكرر نفس الحدث بسرعة
+    scheduleTriggerLiveCoach(userId, eventName, eventData);
+
+  } catch (error) {
+    console.error('/log-event error:', error);
+    // مهم: إذا حصل خطأ قبل الرد، نبلّغ العميل؛ أما إذا حصل بعد الرد فهو يُسجّل داخل triggerLiveCoach
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to log event.' });
+    } else {
+      // في حال تم ارسال الرد بالفعل، فقط نطبع الخطأ (لا نقدر نغيّر الاستجابة)
+      console.error('Error after response sent:', error);
+    }
+  }
+});
 
 
 
