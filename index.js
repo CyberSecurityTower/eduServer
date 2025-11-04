@@ -657,6 +657,71 @@ async function fetchUserWeaknesses(userId) {
     return [];
   }
 }
+
+/**
+ * يجلب ويدمج رسائل المستخدم من اليوم الحالي وآخر يوم نشاط سابق.
+ * @param {string} userId - معرّف المستخدم.
+ * @returns {Promise<string>} - نص منسق يحتوي على آخر 30 رسالة مدمجة.
+ */
+async function fetchRecentComprehensiveChatHistory(userId) {
+  try {
+    const now = new Date();
+    const startOfToday = new Date(new Date(now).setHours(0, 0, 0, 0));
+
+    // 1. جلب محادثات اليوم
+    const todaySnapshot = await db.collection('chatSessions')
+      .where('userId', '==', userId)
+      .where('updatedAt', '>=', admin.firestore.Timestamp.fromDate(startOfToday))
+      .get();
+    
+    let combinedMessages = [];
+    todaySnapshot.forEach(doc => {
+      combinedMessages.push(...(doc.data().messages || []));
+    });
+
+    // 2. جلب محادثات آخر يوم نشط (قبل اليوم)
+    const lastSessionBeforeTodaySnapshot = await db.collection('chatSessions')
+      .where('userId', '==', userId)
+      .where('updatedAt', '<', admin.firestore.Timestamp.fromDate(startOfToday))
+      .orderBy('updatedAt', 'desc')
+      .limit(1)
+      .get();
+
+    if (!lastSessionBeforeTodaySnapshot.empty) {
+      const lastActiveTimestamp = lastSessionBeforeTodaySnapshot.docs[0].data().updatedAt.toDate();
+      const startOfLastActiveDay = new Date(new Date(lastActiveTimestamp).setHours(0, 0, 0, 0));
+      const endOfLastActiveDay = new Date(new Date(lastActiveTimestamp).setHours(23, 59, 59, 999));
+
+      const lastDaySnapshot = await db.collection('chatSessions')
+        .where('userId', '==', userId)
+        .where('updatedAt', '>=', admin.firestore.Timestamp.fromDate(startOfLastActiveDay))
+        .where('updatedAt', '<=', admin.firestore.Timestamp.fromDate(endOfLastActiveDay))
+        .get();
+      
+      lastDaySnapshot.forEach(doc => {
+        combinedMessages.push(...(doc.data().messages || []));
+      });
+    }
+
+    if (combinedMessages.length === 0) {
+      return 'لا توجد محادثات حديثة.';
+    }
+
+    // 3. فرز وتنقية وأخذ آخر 50 رسالة كحد أقصى لتجنب إرهاق النموذج
+    combinedMessages.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    const recentTranscript = combinedMessages
+      .slice(-50) // نأخذ آخر 50 رسالة فقط للحفاظ على حجم السياق
+      .map(m => `${m.author === 'bot' ? 'EduAI' : 'User'}: ${m.text}`)
+      .join('\n');
+      
+    return recentTranscript;
+
+  } catch (error) {
+    console.error(`Error fetching comprehensive chat history for ${userId}:`, error);
+    return 'لم يتمكن من استرجاع سجل المحادثات.';
+  }
+}
+
 // ✨ [NEW] - Saves or updates a chat session in Firestore
 async function saveChatSession(sessionId, userId, title, messages, type = 'main_chat', context = {}) {
   if (!sessionId || !userId) return;
