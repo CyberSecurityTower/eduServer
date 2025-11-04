@@ -664,7 +664,7 @@ async function saveChatSession(sessionId, userId, title, messages, type = 'main_
     const sessionRef = db.collection('chatSessions').doc(sessionId);
    const storableMessages = (messages || [])
   .filter(m => m && (m.author === 'user' || m.author === 'bot' || m.role)) // keep typical chat entries
-  .slice(-50)
+  .slice(-30)
   .map(m => ({
     author: m.author || m.role || 'user',
     text: m.text || m.message || '',
@@ -1811,84 +1811,24 @@ app.post('/generate-title', async (req, res) => {
   }
 });
 
+
 /**
  * يجلب ويدمج رسائل المستخدم من اليوم الحالي وآخر يوم نشاط سابق.
  * @param {string} userId - معرّف المستخدم.
- * @returns {Promise<string>} - نص منسق يحتوي على آخر 50 رسالة مدمجة.
+ * @returns {Promise<string>} - نص منسق يحتوي على آخر 30 رسالة مدمجة.
  */
-async function fetchRecentComprehensiveChatHistory(userId) {
-  try {
-    const now = new Date();
-    const startOfToday = new Date(now.setHours(0, 0, 0, 0));
-
-    // 1. جلب محادثات اليوم
-    const todaySnapshot = await db.collection('chatSessions')
-      .where('userId', '==', userId)
-      .where('updatedAt', '>=', admin.firestore.Timestamp.fromDate(startOfToday))
-      .get();
-    
-    let combinedMessages = [];
-    todaySnapshot.forEach(doc => {
-      combinedMessages.push(...(doc.data().messages || []));
-    });
-
-    // 2. جلب محادثات آخر يوم نشط (قبل اليوم)
-    const lastSessionBeforeTodaySnapshot = await db.collection('chatSessions')
-      .where('userId', '==', userId)
-      .where('updatedAt', '<', admin.firestore.Timestamp.fromDate(startOfToday))
-      .orderBy('updatedAt', 'desc')
-      .limit(1)
-      .get();
-
-    if (!lastSessionBeforeTodaySnapshot.empty) {
-      const lastActiveTimestamp = lastSessionBeforeTodaySnapshot.docs[0].data().updatedAt.toDate();
-      const startOfLastActiveDay = new Date(lastActiveTimestamp.setHours(0, 0, 0, 0));
-      const endOfLastActiveDay = new Date(lastActiveTimestamp.setHours(23, 59, 59, 999));
-
-      const lastDaySnapshot = await db.collection('chatSessions')
-        .where('userId', '==', userId)
-        .where('updatedAt', '>=', admin.firestore.Timestamp.fromDate(startOfLastActiveDay))
-        .where('updatedAt', '<=', admin.firestore.Timestamp.fromDate(endOfLastActiveDay))
-        .get();
-      
-      lastDaySnapshot.forEach(doc => {
-        combinedMessages.push(...(doc.data().messages || []));
-      });
-    }
-
-    if (combinedMessages.length === 0) {
-      return 'لا توجد محادثات حديثة.';
-    }
-  }
-
-    // 3. فرز وتنقية وأخذ آخر 50 رسالة كحد أقصى لتجنب إرهاق النموذج
-    combinedMessages.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-    const recentTranscript = combinedMessages
-      .slice(-30) // نأخذ آخر 30 رسالة فقط للحفاظ على حجم السياق
-      .map(m => `${m.author === 'bot' ? 'EduAI' : 'User'}: ${m.text}`)
-      .join('\n');
-      
-    return recentTranscript;
-
-  } catch (error) {
-    console.error(`Error fetching comprehensive chat history for ${userId}:`, error);
-    return 'لم يتمكن من استرجاع سجل المحادثات.';
-  }
 async function runSuggestionManager(userId) {
-  // 1. جمع البيانات بشكل متوازٍ، بما في ذلك سجل المحادثات الشامل
-  const [profile, progress, weaknesses, conversationTranscript] = await Promise.all([
+  const [profile, progress, weaknesses = [], conversationTranscript] = await Promise.all([
     getProfile(userId),
     getProgress(userId),
     fetchUserWeaknesses(userId),
-    fetchRecentComprehensiveChatHistory(userId) // <-- استخدام الدالة الجديدة
+    fetchRecentComprehensiveChatHistory(userId)
   ]);
 
-  // 2. تنسيق البيانات للمُوجّه
-  const profileSummary = profile.profileSummary || 'لا يوجد ملخص للملف الشخصي.';
+  const profileSummary = profile?.profileSummary || 'لا يوجد ملخص للملف الشخصي.';
   const currentTasks = progress?.dailyTasks?.tasks?.map(t => `- ${t.title} (${t.status})`).join('\n') || 'لا توجد مهام حالية.';
-  const weaknessesSummary = weaknesses.map(w => w.lessonTitle).join(', ') || 'لا توجد نقاط ضعف محددة.';
+  const weaknessesSummary = (weaknesses || []).map(w => w.lessonTitle).join(', ') || 'لا توجد نقاط ضعف محددة.';
 
-  // ✅ --- [START] الـ Prompt الجديد فائق الذكاء ---
   const prompt = `You are a highly perceptive psychological analyst and predictive assistant. Your goal is to deeply understand the user and anticipate 3 potential questions they might ask today.
 
   <user_context>
