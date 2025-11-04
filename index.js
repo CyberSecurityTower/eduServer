@@ -31,6 +31,7 @@ const CONFIG = {
     notification: process.env.MODEL_NOTIFICATION || 'gemini-2.5-flash-lite',
     review: process.env.MODEL_REVIEW || 'gemini-2.5-flash',
     analysis: process.env.MODEL_ANALYSIS || 'gemini-2.5-flash-lite',
+    suggestion: process.env.MODEL_SUGGESTION || 'gemini-2.5-flash-lite',
   },
   TIMEOUTS: {
     default: Number(process.env.TIMEOUT_DEFAULT_MS || 25000),
@@ -86,8 +87,8 @@ try {
 }
 
 // ---------------- MODEL POOLS & KEY HEALTH ----------------
-const poolNames = ['chat', 'todo', 'planner', 'titleIntent', 'notification', 'review', 'analysis'];
-const modelPools = poolNames.reduce((acc, p) => ({ ...acc, [p]: [] }), {});
+ const poolNames = ['chat', 'todo', 'planner', 'titleIntent', 'notification', 'review', 'analysis', 'suggestion'];
+    const modelPools = poolNames.reduce((acc, p) => ({ ...acc, [p]: [] }), {});
 const keyStates = {};
 
 for (const key of apiKeyCandidates) {
@@ -1883,59 +1884,63 @@ app.post('/generate-title', async (req, res) => {
  * @returns {Promise<string>} - نص منسق يحتوي على آخر 30 رسالة مدمجة.
  */
 async function runSuggestionManager(userId) {
-  const [profile, progress, weaknesses = [], conversationTranscript] = await Promise.all([
+  const [profile, progress, weaknesses, conversationTranscript] = await Promise.all([
     getProfile(userId),
     getProgress(userId),
     fetchUserWeaknesses(userId),
     fetchRecentComprehensiveChatHistory(userId)
   ]);
 
+  // 2. تنسيق البيانات للمُوجّه (يبقى كما هو)
   const profileSummary = profile?.profileSummary || 'لا يوجد ملخص للملف الشخصي.';
   const currentTasks = progress?.dailyTasks?.tasks?.map(t => `- ${t.title} (${t.status})`).join('\n') || 'لا توجد مهام حالية.';
   const weaknessesSummary = (weaknesses || []).map(w => w.lessonTitle).join(', ') || 'لا توجد نقاط ضعف محددة.';
 
-  const prompt = `You are a highly perceptive psychological analyst and predictive assistant. Your goal is to deeply understand the user and anticipate 3 potential questions they might ask today.
+  // ✅ --- [START] الـ Prompt الجديد والمطور بالكامل ---
+  const prompt = `You are a prediction engine. Your task is to anticipate 4 highly relevant, diverse, and constructive questions a user might ask.
 
   <user_context>
     <long_term_profile_summary>${profileSummary}</long_term_profile_summary>
     <current_academic_tasks>${currentTasks}</current_tasks>
     <identified_academic_weaknesses>${weaknessesSummary}</identified_academic_weaknesses>
-    <recent_conversation_transcript_from_today_and_last_active_day>
+    <recent_conversation_transcript>
     ${conversationTranscript}
-    </recent_conversation_transcript_from_today_and_last_active_day>
+    </recent_conversation_transcript>
   </user_context>
 
   <instructions>
-  1.  **Synthesize Everything:** Analyze the user's emotional and psychological state from the conversation transcript, their academic needs from tasks/weaknesses, and their long-term goals from their profile.
-  2.  **Predictive Questions:** Generate 3 questions FROM THE USER'S PERSPECTIVE. They must sound like something the user would type.
-  3.  **Variety is Crucial:** Create a mix of questions:
-        - One related to their current tasks or weaknesses (academic).
-        - One that is a follow-up or reflection on the emotional/conversational context from the transcript.
-        - One that is more general, forward-looking, or based on their personality.
+  1.  **Generate 4 distinct suggestions** phrased as questions FROM THE USER'S PERSPECTIVE.
+  2.  **CRITICAL: AVOID** illogical, negative, or self-destructive questions like "how to forget a topic?". All suggestions must be helpful and proactive.
+  3.  **Suggestion Mix (Mandatory):**
+      *   **Suggestion 1 (Capability):** Suggest a core feature you can perform. MUST be one of: "أنشئ لي خطة دراسية", "حلل أدائي الأكاديمي", "لخص لي آخر محادثة".
+      *   **Suggestion 2 (Contextual Academic):** A specific question about a pending task or a known weakness from the user's context.
+      *   **Suggestion 3 (General Knowledge):** A broad, curious question related to the user's general field of study but NOT a specific lesson. (e.g., "ما علاقة الاقتصاد بالسياسة؟").
+      *   **Suggestion 4 (Personal/Follow-up):** A question based on the emotional tone of the last conversation, or a follow-up to a topic that was left open.
   4.  **Strict Formatting:**
-        - Each question must be a maximum of 9 words.
-        - The language must be natural Arabic.
-        - Respond ONLY with a valid JSON object: { "suggestions": ["...", "...", "..."] }
+      *   Each question must be a maximum of 9 words.
+      *   The language must be natural Arabic.
+      *   Respond ONLY with a valid JSON object: { "suggestions": ["...", "...", "...", "..."] }
   </instructions>
 
-  <example>
-  // If the user was struggling with motivation yesterday and has a physics task today...
+  <example_output>
   {
-    "suggestions": ["كيف أبدأ في مهمة الفيزياء؟", "ما زلت أشعر بالإحباط من الأمس", "ذكرني بأهدافي الدراسية"]
+    "suggestions": ["أنشئ لي خطة دراسية للأسبوع", "كيف أراجع درس الندرة بفعالية؟", "ما العلاقة بين الاقتصاد وعلم النفس؟", "هل يمكننا إكمال نقاش الأمس؟"]
   }
-  </example>`;
+  </example_output>`;
   // ✅ --- [END] الـ Prompt الجديد ---
 
-  const res = await generateWithFailover('analysis', prompt, { label: 'SuggestionManager' });
+  // ✅ --- [التعديل الجديد] استخدام النموذج المخصص للاقتراحات ---
+  const res = await generateWithFailover('suggestion', prompt, { label: 'SuggestionManager' });
   const raw = await extractTextFromResult(res);
-  const parsed = await ensureJsonOrRepair(raw, 'analysis');
-
-  if (parsed && Array.isArray(parsed.suggestions) && parsed.suggestions.length === 3) {
+  const parsed = await ensureJsonOrRepair(raw, 'analysis'); //
+  
+  // ✅ --- [التعديل الجديد] التأكد من وجود 4 اقتراحات ---
+  if (parsed && Array.isArray(parsed.suggestions) && parsed.suggestions.length === 4) {
     return parsed.suggestions;
   }
 
-  // إرجاع اقتراحات افتراضية قوية في حال فشل النموذج
-  return ["ما هي أهم أولوياتي اليوم؟", "كيف أتحسن في نقاط ضعفي؟", "اقتراح خطة دراسية جديدة"];
+  // ✅ --- [التعديل الجديد] إرجاع 4 اقتراحات افتراضية ---
+  return ["أنشئ لي خطة دراسية", "حلل أدائي الدراسي", "ما هي مهامي المتبقية؟", "ذكرني بأهدافي الدراسية"];
 }
 async function generateTitle(message, language = 'Arabic') {
   const prompt = `Generate a very short, descriptive title (2-4 words) for the following user message. The title should be in ${language}. Respond with ONLY the title text, no JSON or extra words.
