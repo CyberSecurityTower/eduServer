@@ -1761,6 +1761,26 @@ app.post('/run-nightly-analysis', async (req, res) => {
     console.error('[/run-nightly-analysis] Critical error:', error);
   }
 });
+  app.post('/generate-chat-suggestions', async (req, res) => {
+      try {
+        const { userId } = req.body;
+        if (!userId) {
+          return res.status(400).json({ error: 'userId is required.' });
+        }
+        
+        // استدعاء المدير الجديد الذي سنبنيه
+        const suggestions = await runSuggestionManager(userId);
+        
+        res.status(200).json({ suggestions });
+
+      } catch (error) {
+        console.error('/generate-chat-suggestions error:', error.stack);
+        // في حالة الفشل، أرسل اقتراحات افتراضية حتى لا تتعطل الواجهة
+        const fallbackSuggestions = ["ما هي مهامي اليومية؟", "لخص لي آخر درس درسته", "حلل أدائي الدراسي"];
+        res.status(500).json({ suggestions: fallbackSuggestions });
+      }
+    });
+
 app.post('/generate-title', async (req, res) => {
   try {
     const { message, language = 'Arabic' } = req.body || {};
@@ -1790,6 +1810,64 @@ app.post('/generate-title', async (req, res) => {
     return res.status(500).json({ title: fallbackTitle });
   }
 });
+async function runSuggestionManager(userId) {
+      // 1. جمع البيانات بشكل متزامن لسرعة الأداء
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const recentChatsPromise = db.collection('chatSessions')
+        .where('userId', '==', userId)
+        .where('updatedAt', '>=', admin.firestore.Timestamp.fromDate(twentyFourHoursAgo))
+        .orderBy('updatedAt', 'desc')
+        .limit(3) // آخر 3 محادثات
+        .get();
+
+      const [profile, progress, weaknesses, recentChatsSnapshot] = await Promise.all([
+        getProfile(userId),
+        getProgress(userId),
+        fetchUserWeaknesses(userId),
+        recentChatsPromise
+      ]);
+
+      // 2. تنسيق البيانات للمُوجّه
+      const profileSummary = profile.profileSummary || 'لا يوجد ملخص للملف الشخصي.';
+      const currentTasks = progress?.dailyTasks?.tasks?.map(t => `- ${t.title} (${t.status})`).join('\n') || 'لا توجد مهام حالية.';
+      
+      let recentConversation = 'لا توجد محادثات حديثة.';
+      if (!recentChatsSnapshot.empty) {
+        const lastChat = recentChatsSnapshot.docs[0].data();
+        recentConversation = `آخر محادثة كانت بعنوان "${lastChat.title}" وتضمنت: ${lastChat.messages.slice(-2).map(m => `${m.author}: ${m.text}`).join(' ... ')}`;
+      }
+
+      // 3. صياغة المُوجّه الذكي
+      const prompt = `You are a proactive AI assistant. Your goal is to generate 3 highly relevant and predictive chat prompts for a user based on their complete profile.
+
+      <user_context>
+        <profile_summary>${profileSummary}</profile_summary>
+        <current_tasks>${currentTasks}</current_tasks>
+        <recent_conversation_topic>${recentConversation}</recent_conversation_topic>
+        <identified_weaknesses>${weaknesses.map(w => w.lessonTitle).join(', ')}</identified_weaknesses>
+      </user_context>
+
+      <rules>
+      1.  Generate three distinct, short, and engaging questions in Arabic.
+      2.  The suggestions should feel personal and predictive, not generic.
+      3.  One suggestion could be a follow-up to the last conversation.
+      4.  Another could be about a pending task or a known weakness.
+      5.  The third can be a general question based on their long-term goals (from profile summary).
+      6.  Respond ONLY with a valid JSON object in the format: { "suggestions": ["اقتراح 1", "اقتراح 2", "اقتراح 3"] }
+      </rules>`;
+
+      // 4. استدعاء النموذج السريع وإرجاع النتيجة
+      const res = await generateWithFailover('analysis', prompt, { label: 'SuggestionManager' });
+      const raw = await extractTextFromResult(res);
+      const parsed = await ensureJsonOrRepair(raw, 'analysis');
+
+      if (parsed && Array.isArray(parsed.suggestions) && parsed.suggestions.length === 3) {
+        return parsed.suggestions;
+      }
+
+      // إرجاع اقتراحات افتراضية قوية في حال فشل النموذج
+      return ["ما هي أهم أولوياتي اليوم؟", "كيف أتحسن في نقاط ضعفي؟", "اقتراح خطة دراسية جديدة"];
+    }
 async function generateTitle(message, language = 'Arabic') {
   const prompt = `Generate a very short, descriptive title (2-4 words) for the following user message. The title should be in ${language}. Respond with ONLY the title text, no JSON or extra words.
 
