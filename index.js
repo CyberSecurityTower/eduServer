@@ -1810,64 +1810,128 @@ app.post('/generate-title', async (req, res) => {
     return res.status(500).json({ title: fallbackTitle });
   }
 });
-async function runSuggestionManager(userId) {
-      // 1. جمع البيانات بشكل متزامن لسرعة الأداء
-      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const recentChatsPromise = db.collection('chatSessions')
+
+/**
+ * يجلب ويدمج رسائل المستخدم من اليوم الحالي وآخر يوم نشاط سابق.
+ * @param {string} userId - معرّف المستخدم.
+ * @returns {Promise<string>} - نص منسق يحتوي على آخر 50 رسالة مدمجة.
+ */
+async function fetchRecentComprehensiveChatHistory(userId) {
+  try {
+    const now = new Date();
+    const startOfToday = new Date(now.setHours(0, 0, 0, 0));
+
+    // 1. جلب محادثات اليوم
+    const todaySnapshot = await db.collection('chatSessions')
+      .where('userId', '==', userId)
+      .where('updatedAt', '>=', admin.firestore.Timestamp.fromDate(startOfToday))
+      .get();
+    
+    let combinedMessages = [];
+    todaySnapshot.forEach(doc => {
+      combinedMessages.push(...(doc.data().messages || []));
+    });
+
+    // 2. جلب محادثات آخر يوم نشط (قبل اليوم)
+    const lastSessionBeforeTodaySnapshot = await db.collection('chatSessions')
+      .where('userId', '==', userId)
+      .where('updatedAt', '<', admin.firestore.Timestamp.fromDate(startOfToday))
+      .orderBy('updatedAt', 'desc')
+      .limit(1)
+      .get();
+
+    if (!lastSessionBeforeTodaySnapshot.empty) {
+      const lastActiveTimestamp = lastSessionBeforeTodaySnapshot.docs[0].data().updatedAt.toDate();
+      const startOfLastActiveDay = new Date(lastActiveTimestamp.setHours(0, 0, 0, 0));
+      const endOfLastActiveDay = new Date(lastActiveTimestamp.setHours(23, 59, 59, 999));
+
+      const lastDaySnapshot = await db.collection('chatSessions')
         .where('userId', '==', userId)
-        .where('updatedAt', '>=', admin.firestore.Timestamp.fromDate(twentyFourHoursAgo))
-        .orderBy('updatedAt', 'desc')
-        .limit(3) // آخر 3 محادثات
+        .where('updatedAt', '>=', admin.firestore.Timestamp.fromDate(startOfLastActiveDay))
+        .where('updatedAt', '<=', admin.firestore.Timestamp.fromDate(endOfLastActiveDay))
         .get();
-
-      const [profile, progress, weaknesses, recentChatsSnapshot] = await Promise.all([
-        getProfile(userId),
-        getProgress(userId),
-        fetchUserWeaknesses(userId),
-        recentChatsPromise
-      ]);
-
-      // 2. تنسيق البيانات للمُوجّه
-      const profileSummary = profile.profileSummary || 'لا يوجد ملخص للملف الشخصي.';
-      const currentTasks = progress?.dailyTasks?.tasks?.map(t => `- ${t.title} (${t.status})`).join('\n') || 'لا توجد مهام حالية.';
       
-      let recentConversation = 'لا توجد محادثات حديثة.';
-      if (!recentChatsSnapshot.empty) {
-        const lastChat = recentChatsSnapshot.docs[0].data();
-        recentConversation = `آخر محادثة كانت بعنوان "${lastChat.title}" وتضمنت: ${lastChat.messages.slice(-2).map(m => `${m.author}: ${m.text}`).join(' ... ')}`;
-      }
-
-      // 3. صياغة المُوجّه الذكي
-      const prompt = `You are a proactive AI assistant. Your goal is to generate 3 highly relevant and predictive chat prompts for a user based on their complete profile.
-
-      <user_context>
-        <profile_summary>${profileSummary}</profile_summary>
-        <current_tasks>${currentTasks}</current_tasks>
-        <recent_conversation_topic>${recentConversation}</recent_conversation_topic>
-        <identified_weaknesses>${weaknesses.map(w => w.lessonTitle).join(', ')}</identified_weaknesses>
-      </user_context>
-
-      <rules>
-      1.  Generate three distinct, short, and engaging questions in Arabic.
-      2.  The suggestions should feel personal and predictive, not generic.
-      3.  One suggestion could be a follow-up to the last conversation.
-      4.  Another could be about a pending task or a known weakness.
-      5.  The third can be a general question based on their long-term goals (from profile summary).
-      6.  Respond ONLY with a valid JSON object in the format: { "suggestions": ["اقتراح 1", "اقتراح 2", "اقتراح 3"] }
-      </rules>`;
-
-      // 4. استدعاء النموذج السريع وإرجاع النتيجة
-      const res = await generateWithFailover('analysis', prompt, { label: 'SuggestionManager' });
-      const raw = await extractTextFromResult(res);
-      const parsed = await ensureJsonOrRepair(raw, 'analysis');
-
-      if (parsed && Array.isArray(parsed.suggestions) && parsed.suggestions.length === 3) {
-        return parsed.suggestions;
-      }
-
-      // إرجاع اقتراحات افتراضية قوية في حال فشل النموذج
-      return ["ما هي أهم أولوياتي اليوم؟", "كيف أتحسن في نقاط ضعفي؟", "اقتراح خطة دراسية جديدة"];
+      lastDaySnapshot.forEach(doc => {
+        combinedMessages.push(...(doc.data().messages || []));
+      });
     }
+
+    if (combinedMessages.length === 0) {
+      return 'لا توجد محادثات حديثة.';
+    }
+  }
+
+    // 3. فرز وتنقية وأخذ آخر 50 رسالة كحد أقصى لتجنب إرهاق النموذج
+    combinedMessages.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    const recentTranscript = combinedMessages
+      .slice(-30) // نأخذ آخر 30 رسالة فقط للحفاظ على حجم السياق
+      .map(m => `${m.author === 'bot' ? 'EduAI' : 'User'}: ${m.text}`)
+      .join('\n');
+      
+    return recentTranscript;
+
+  } catch (error) {
+    console.error(`Error fetching comprehensive chat history for ${userId}:`, error);
+    return 'لم يتمكن من استرجاع سجل المحادثات.';
+  }
+async function runSuggestionManager(userId) {
+  // 1. جمع البيانات بشكل متوازٍ، بما في ذلك سجل المحادثات الشامل
+  const [profile, progress, weaknesses, conversationTranscript] = await Promise.all([
+    getProfile(userId),
+    getProgress(userId),
+    fetchUserWeaknesses(userId),
+    fetchRecentComprehensiveChatHistory(userId) // <-- استخدام الدالة الجديدة
+  ]);
+
+  // 2. تنسيق البيانات للمُوجّه
+  const profileSummary = profile.profileSummary || 'لا يوجد ملخص للملف الشخصي.';
+  const currentTasks = progress?.dailyTasks?.tasks?.map(t => `- ${t.title} (${t.status})`).join('\n') || 'لا توجد مهام حالية.';
+  const weaknessesSummary = weaknesses.map(w => w.lessonTitle).join(', ') || 'لا توجد نقاط ضعف محددة.';
+
+  // ✅ --- [START] الـ Prompt الجديد فائق الذكاء ---
+  const prompt = `You are a highly perceptive psychological analyst and predictive assistant. Your goal is to deeply understand the user and anticipate 3 potential questions they might ask today.
+
+  <user_context>
+    <long_term_profile_summary>${profileSummary}</long_term_profile_summary>
+    <current_academic_tasks>${currentTasks}</current_tasks>
+    <identified_academic_weaknesses>${weaknessesSummary}</identified_academic_weaknesses>
+    <recent_conversation_transcript_from_today_and_last_active_day>
+    ${conversationTranscript}
+    </recent_conversation_transcript_from_today_and_last_active_day>
+  </user_context>
+
+  <instructions>
+  1.  **Synthesize Everything:** Analyze the user's emotional and psychological state from the conversation transcript, their academic needs from tasks/weaknesses, and their long-term goals from their profile.
+  2.  **Predictive Questions:** Generate 3 questions FROM THE USER'S PERSPECTIVE. They must sound like something the user would type.
+  3.  **Variety is Crucial:** Create a mix of questions:
+        - One related to their current tasks or weaknesses (academic).
+        - One that is a follow-up or reflection on the emotional/conversational context from the transcript.
+        - One that is more general, forward-looking, or based on their personality.
+  4.  **Strict Formatting:**
+        - Each question must be a maximum of 9 words.
+        - The language must be natural Arabic.
+        - Respond ONLY with a valid JSON object: { "suggestions": ["...", "...", "..."] }
+  </instructions>
+
+  <example>
+  // If the user was struggling with motivation yesterday and has a physics task today...
+  {
+    "suggestions": ["كيف أبدأ في مهمة الفيزياء؟", "ما زلت أشعر بالإحباط من الأمس", "ذكرني بأهدافي الدراسية"]
+  }
+  </example>`;
+  // ✅ --- [END] الـ Prompt الجديد ---
+
+  const res = await generateWithFailover('analysis', prompt, { label: 'SuggestionManager' });
+  const raw = await extractTextFromResult(res);
+  const parsed = await ensureJsonOrRepair(raw, 'analysis');
+
+  if (parsed && Array.isArray(parsed.suggestions) && parsed.suggestions.length === 3) {
+    return parsed.suggestions;
+  }
+
+  // إرجاع اقتراحات افتراضية قوية في حال فشل النموذج
+  return ["ما هي أهم أولوياتي اليوم؟", "كيف أتحسن في نقاط ضعفي؟", "اقتراح خطة دراسية جديدة"];
+}
 async function generateTitle(message, language = 'Arabic') {
   const prompt = `Generate a very short, descriptive title (2-4 words) for the following user message. The title should be in ${language}. Respond with ONLY the title text, no JSON or extra words.
 
