@@ -23,15 +23,24 @@ const LRUCache = require('./cache');
 // ---------------- CONFIG ----------------
 const CONFIG = {
   PORT: Number(process.env.PORT || 3000),
-  MODEL: {
-    chat: process.env.MODEL_CHAT || 'gemini-2.5-pro',
-    todo: process.env.MODEL_TODO || 'gemini-2.5-flash',
-    planner: process.env.MODEL_PLANNER || 'gemini-2.5-flash',
-    titleIntent: process.env.MODEL_TITLE || 'gemini-2.5-flash-lite',
-    notification: process.env.MODEL_NOTIFICATION || 'gemini-2.5-flash-lite',
-    review: process.env.MODEL_REVIEW || 'gemini-2.5-flash',
-    analysis: process.env.MODEL_ANALYSIS || 'gemini-2.5-flash-lite',
-    suggestion: process.env.MODEL_SUGGESTION || 'gemini-2.5-flash-lite',
+   MODEL: {
+    // للدردشة المعقدة والحوارات التي تتطلب فهمًا عميقًا للسياق
+    chat: 'gemini-2.5-pro', 
+    
+    // للمهام التي تتطلب فهمًا جيدًا للتعليمات وإنشاء JSON موثوق
+    todo: 'gemini-2.5-flash',
+    planner: 'gemini-2.5-flash',
+    review: 'gemini-2.5-flash',
+    
+    // للمهام التحليلية السريعة التي تحتاج لاستخلاص معلومات من سياق
+    analysis: 'gemini-2.5-flash',
+    
+    // للمهام الخفيفة جدًا والسريعة مثل التصنيف أو إنشاء جمل قصيرة
+    titleIntent: 'gemini-2.5-flash-lite',
+    notification: 'gemini-2.5-flash-lite',
+    
+    // نموذج مخصص للاقتراحات يوازن بين السرعة والقدرة على فهم السياق المعقد
+    suggestion: 'gemini-2.5-flash', 
   },
   TIMEOUTS: {
     default: Number(process.env.TIMEOUT_DEFAULT_MS || 25000),
