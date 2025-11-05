@@ -1,7 +1,7 @@
 
 # CHANGELOG
 
-## v1.0.0 - 2023-10-27
+## v1.0.1 - 2025-11-05
 
 ### Added
 -   **Project Structure:** Implemented a new, modular directory structure (`config/`, `controllers/`, `services/`, `utils/`, `middleware/`, `routes/`, `tests/`).
