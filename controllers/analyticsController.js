@@ -1,1 +1,127 @@
 
+// controllers/analyticsController.js
+'use strict';
+
+const { getFirestoreInstance, admin } = require('../services/data/firestore');
+const { getProgress, sendUserNotification, processSessionAnalytics } = require('../services/data/helpers');
+const { runInterventionManager } = require('../services/ai/managers/notificationManager');
+const logger = require('../utils/logger');
+
+const db = getFirestoreInstance();
+
+const procrastinationTimers = new Map();
+
+function scheduleTriggerLiveCoach(userId, eventName, eventData) {
+  const key = `${userId}:${eventName}`;
+  const DELAY_MS = 1000;
+
+  const prev = procrastinationTimers.get(key);
+  if (prev) clearTimeout(prev);
+
+  const timer = setTimeout(async () => {
+    procrastinationTimers.delete(key);
+    try {
+      await triggerLiveCoach(userId, eventName, eventData);
+    } catch (err) {
+      logger.error('triggerLiveCoach error for', key, err);
+    }
+  }, DELAY_MS);
+
+  procrastinationTimers.set(key, timer);
+}
+
+async function triggerLiveCoach(userId, eventName, eventData) {
+  const userDoc = await db.collection('users').doc(userId).get();
+  if (!userDoc.exists) return;
+  const userCreationDate = userDoc.createTime.toDate();
+  const daysSinceJoined = (new Date() - userCreationDate) / (1000 * 60 * 60 * 24);
+  if (daysSinceJoined < 2) {
+    return;
+  }
+
+  switch (eventName) {
+    case 'lesson_view_start':
+      if (procrastinationTimers.has(userId)) {
+        clearTimeout(procrastinationTimers.get(userId));
+        procrastinationTimers.delete(userId);
+      }
+
+      const progress = await getProgress(userId);
+      const isPlanned = progress?.dailyTasks?.tasks?.some(task => task.relatedLessonId === eventData.lessonId);
+
+      if (!isPlanned) {
+        const message = await runInterventionManager('unplanned_lesson', { lessonTitle: eventData.lessonTitle });
+        await sendUserNotification(userId, { title: 'مبادرة رائعة!', message });
+      }
+      break;
+
+    case 'started_study_timer':
+      const timerId = setTimeout(async () => {
+        const recentEvents = await db.collection('userBehaviorAnalytics').doc(userId).collection('events')
+          .orderBy('timestamp', 'desc').limit(1).get();
+
+        const lastEvent = recentEvents.docs[0]?.data();
+        if (lastEvent && lastEvent.name === 'started_study_timer') {
+          const message = await runInterventionManager('timer_procrastination');
+          await sendUserNotification(userId, { title: 'هل تحتاج مساعدة؟', message });
+        }
+        procrastinationTimers.delete(userId);
+      }, 120000);
+
+      procrastinationTimers.set(userId, timerId);
+      break;
+  }
+}
+
+async function logEvent(req, res) {
+  try {
+    const { userId, eventName, eventData = {} } = req.body;
+
+    if (!userId || !eventName) {
+      return res.status(400).json({ error: 'userId and eventName are required.' });
+    }
+
+    const analyticsRef = db.collection('userBehaviorAnalytics').doc(userId);
+
+    await analyticsRef.collection('events').add({
+      name: eventName,
+      data: eventData,
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    if (eventName === 'lesson_view_start') {
+      await analyticsRef.set({
+        lessonsViewedCount: admin.firestore.FieldValue.increment(1),
+      }, { merge: true });
+    }
+
+    res.status(202).json({ message: 'Event logged. Coach is analyzing.' });
+
+    scheduleTriggerLiveCoach(userId, eventName, eventData);
+
+  } catch (error) {
+    logger.error('/log-event error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to log event.' });
+    } else {
+      logger.error('Error after response sent:', error);
+    }
+  }
+}
+
+async function processSession(req, res) {
+  const { userId, sessionId } = req.body;
+
+  if (!userId || !sessionId) {
+    return res.status(400).json({ error: 'userId and sessionId are required.' });
+  }
+
+  res.status(202).json({ message: 'Session processing started.' });
+
+  processSessionAnalytics(userId, sessionId).catch(e => logger.error('Background processing failed:', e));
+}
+
+module.exports = {
+  logEvent,
+  processSession,
+};
