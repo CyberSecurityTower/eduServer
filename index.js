@@ -41,6 +41,9 @@ const CONFIG = {
     
     // نموذج مخصص للاقتراحات يوازن بين السرعة والقدرة على فهم السياق المعقد
     suggestion: 'gemini-2.5-flash', 
+     // embadding model
+        embedding: 'text-embedding-004',
+
   },
   TIMEOUTS: {
     default: Number(process.env.TIMEOUT_DEFAULT_MS || 25000),
@@ -53,7 +56,19 @@ const CONFIG = {
   JOB_POLL_MS: Number(process.env.JOB_WORKER_POLL_MS || 3000),
   REVIEW_THRESHOLD: Number(process.env.REVIEW_QUALITY_THRESHOLD || 6),
   MAX_RETRIES: Number(process.env.MAX_MODEL_RETRIES || 3),
-};
+  };
+const embeddingService = require('./embeddings.js');
+
+// --- تهيئة خدمة التضمين ---
+try {
+  // ✅ الآن نستدعي التهيئة في المكان الصحيح
+  embeddingService.init({ db, CONFIG });
+} catch (err) {
+  console.error('❌ Embedding Service initialization failed:', err.message);
+  process.exit(1);
+}
+
+
 
 // ---------------- BOOT & INIT ----------------
 if (!process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
@@ -94,7 +109,6 @@ try {
   console.error('❌ Firebase init failed:', err.message || err);
   process.exit(1);
 }
-
 // ---------------- MODEL POOLS & KEY HEALTH ----------------
  const poolNames = ['chat', 'todo', 'planner', 'titleIntent', 'notification', 'review', 'analysis', 'suggestion'];
     const modelPools = poolNames.reduce((acc, p) => ({ ...acc, [p]: [] }), {});
@@ -289,66 +303,37 @@ async function runMemoryAgent(userId, userMessage) {
 }
 async function runCurriculumAgent(userId, userMessage) {
   try {
-    // 1. Fetch academic data: user's progress and the educational path structure.
-    const userProgress = await getProgress(userId);
-    // We assume user.selectedPathId is available or passed in a real scenario.
-    // For now, we'll simulate fetching the first path found in their progress.
-    const pathId = userProgress.selectedPathId || (Object.keys(userProgress.pathProgress || {})[0]);
-    if (!pathId) return ''; // No path to analyze
+    // 1. حول سؤال المستخدم إلى متجه باستخدام خدمتنا الجديدة
+    const questionEmbedding = await embeddingService.generateEmbedding(userMessage);
+    if (questionEmbedding.length === 0) return '';
 
-    const educationalPath = await getCachedEducationalPathById(pathId); // We'll need to ensure this function is available in the backend
-    if (!educationalPath) return '';
+    // 2. ابحث عن أكثر 3 فقرات تشابهًا في المنهج
+    const similarChunks = await embeddingService.findSimilarEmbeddings(
+      questionEmbedding,
+      'curriculumEmbeddings', // اسم المجموعة التي قمت بفهرستها
+      3 // نريد أفضل 3 نتائج
+    );
 
-    // 2. Format the data for the AI model to understand.
-    const curriculumData = {
-      pathName: educationalPath.displayName,
-      subjects: educationalPath.subjects.map(sub => ({
-        id: sub.id,
-        name: sub.name,
-        progress: userProgress.pathProgress?.[pathId]?.subjects?.[sub.id]?.progress || 0,
-        lessons: sub.lessons.map(les => ({
-          id: les.id,
-          title: les.title,
-          status: userProgress.pathProgress?.[pathId]?.subjects?.[sub.id]?.lessons?.[les.id]?.status || 'locked',
-          mastery: userProgress.pathProgress?.[pathId]?.subjects?.[sub.id]?.lessons?.[les.id]?.masteryScore || null,
-        }))
-      }))
-    };
-
-    // 3. Formulate the smart prompt for the agent (gemini-flash).
-    const prompt = `You are a curriculum analysis expert.
-    Your job is to determine if the user's question is related to any specific subject or lesson in their study plan.
-    Analyze the user's question against their curriculum data.
-
-    <curriculum_data>
-    ${JSON.stringify(curriculumData, null, 2)}
-    </curriculum_data>
-
-    <user_question>
-    "${userMessage}"
-    </user_question>
-
-    If you find a direct link, respond ONLY with a JSON object: { "context": "..." }.
-    The "context" should be a very brief sentence. Example: "The user is asking about 'Intro to Economics', where their progress is 30% and mastery on the last lesson was 65%."
-    If there is no link, return an empty JSON object: {}.`;
-
-    // 4. Call the fast model and parse the result.
-    const res = await generateWithFailover('analysis', prompt, { label: 'CurriculumAgent', timeoutMs: 5000 });
-    const raw = await extractTextFromResult(res);
-    const parsed = await ensureJsonOrRepair(raw, 'analysis');
-
-    if (parsed && parsed.context) {
-      return parsed.context;
+    if (similarChunks.length === 0) {
+      return ''; // لم نجد أي شيء ذي صلة
     }
 
-    return ''; // Return empty if no context is found
+    // 3. قم بتنسيق النتائج لتقديمها كـ "سياق فائق الدقة" للنموذج الرئيسي
+    const topContexts = similarChunks.map(chunk => chunk.chunkText);
+    
+    const contextReport = `The user's question appears to be highly related to these specific parts of the curriculum:
+---
+${topContexts.join('\n---\n')}
+---`;
+
+    return contextReport;
 
   } catch (error) {
+    // بما أن الأخطاء التفصيلية تُسجل داخل الخدمة، هنا نسجل فقط فشل الوكيل
     console.error(`CurriculumAgent failed for user ${userId}:`, error.message);
-    return ''; // Always return empty on failure to keep the system running
+    return ''; // نرجع دائمًا نصًا فارغًا للحفاظ على استقرار النظام
   }
 }
-
 // We will also need to make getCachedEducationalPathById available on the server.
 // For now, we can create a simple version.
 async function getCachedEducationalPathById(pathId) {
