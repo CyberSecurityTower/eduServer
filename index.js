@@ -67,7 +67,14 @@ try {
   console.error('❌ Embedding Service initialization failed:', err.message);
   process.exit(1);
 }
-
+const memoryManager = require('./memoryManager.js');
+  // --- تهيئة مدير الذاكرة ---
+    try {
+      memoryManager.init({ db, embeddingService });
+    } catch (err) {
+      console.error('❌ Memory Manager initialization failed:', err.message);
+      process.exit(1);
+    }
 
 
 // ---------------- BOOT & INIT ----------------
@@ -262,43 +269,38 @@ async function generateWithFailover(poolName, prompt, opts = {}) {
   throw lastErr || new Error(`[Failover] ${label} failed for all available keys.`);
 }
 
+
 async function runMemoryAgent(userId, userMessage) {
   try {
-    // 1. جلب الذاكرة الكاملة للمستخدم
-    const memoryProfile = await getProfile(userId);
-    const fullSummary = memoryProfile.profileSummary || 'No summary available.';
-    const activeThreads = memoryProfile.activeThreads || []; // سنتعامل مع هذا لاحقًا
+    // 1. حول سؤال المستخدم الجديد إلى متجه
+    const questionEmbedding = await embeddingService.generateEmbedding(userMessage);
+    if (questionEmbedding.length === 0) return '';
 
-    // 2. صياغة الأمر الذكي للوكيل (نموذج gemini-flash السريع)
-    const prompt = `You are a lightning-fast psychological analyst.
-    Your job is to read a user's full memory profile and their new question.
-    Extract ONLY the parts of the memory that are directly relevant to answering this specific question.
-    If nothing is relevant, return an empty summary.
+    // 2. ابحث عن أكثر 3 ذكريات تشابهًا لهذا المستخدم تحديدًا
+    const similarMemories = await embeddingService.findSimilarEmbeddings(
+      questionEmbedding,
+      'userMemoryEmbeddings', // اسم مجموعة الذكريات
+      3, // نريد أفضل 3 نتائج
+      userId // <-- **مهم جدًا:** الفلترة حسب المستخدم
+    );
 
-    <user_memory_profile>
-    ${fullSummary}
-    </user_memory_profile>
-
-    <user_new_question>
-    "${userMessage}"
-    </user_new_question>
-
-    Respond with ONLY a JSON object in the format: { "relevant_summary": "..." }`;
-
-    // 3. استدعاء النموذج السريع للحصول على الملخص ذي الصلة
-    const res = await generateWithFailover('analysis', prompt, { label: 'MemoryAgent', timeoutMs: 4000 }); // مهلة قصيرة
-    const raw = await extractTextFromResult(res);
-    const parsed = await ensureJsonOrRepair(raw, 'analysis');
-
-    if (parsed && parsed.relevant_summary) {
-      return parsed.relevant_summary;
+    if (similarMemories.length === 0) {
+      return ''; // لا توجد ذكريات ذات صلة
     }
 
-    return ''; // في حالة عدم وجود شيء ذي صلة، أرجع نصًا فارغًا
+    // 3. قم بتنسيق النتائج لتقديمها كتقرير ذاكرة دقيق
+    const memoryContexts = similarMemories.map(mem => `- ${mem.originalText} (from ${new Date(mem.timestamp).toLocaleDateString()})`);
+
+    const memoryReport = `Based on the user's past conversations, these memories seem relevant to their current question:
+---
+${memoryContexts.join('\n')}
+---`;
+
+    return memoryReport;
 
   } catch (error) {
     console.error(`MemoryAgent failed for user ${userId}:`, error.message);
-    return ''; // أرجع دائمًا نصًا فارغًا في حالة الفشل لضمان عدم تعطل النظام
+    return '';
   }
 }
 async function runCurriculumAgent(userId, userMessage) {
@@ -1481,7 +1483,7 @@ app.post('/chat-interactive', async (req, res) => {
     const conversationReport = String(conversationReportRaw || '').trim();
 
     // --- 5. Build history snippet safely ---
-    const lastFive = (Array.isArray(history) ? history.slice(-5) : [])
+    const lastFive = (Array.isArray(history) ? history.slice(-7) : [])
       .map(h => `${h.role === 'model' ? 'You' : 'User'}: ${safeSnippet(h.text || '', 500)}`)
       .join('\n');
 
@@ -1533,7 +1535,9 @@ Respond as EduAI in the user's language. Be personal, friendly (non-formal), and
       analyzeAndSaveMemory(userId, updatedHistory.slice(-6))
         .catch(e => console.error('analyzeAndSaveMemory failed (fire-and-forget):', e));
     }
-
+      // --- 8b. Save user message to semantic memory (fire-and-forget) ---
+    memoryManager.saveMemoryChunk(userId, message)
+      .catch(e => console.error('saveMemoryChunk failed in background:', e));
     // --- 9. Return response to client ---
     res.status(200).json({
       reply: botReply,
