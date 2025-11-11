@@ -81,7 +81,7 @@ async function boot() {
     logger.success(`EduAI Brain V18.0 running on port ${CONFIG.PORT}`);
     (async () => {
       try {
-        await generateWithFailover('titleIntent', 'ping', { label: 'warmup', timeoutMs: 2000 });
+        await generateWithFailover('titleIntent', 'ping', { label: 'warmup', timeoutMs: 8000 });
         logger.info('💡 Model warmup done.');
       } catch (e) {
         logger.warn('💡 Model warmup failed (non-fatal):', e.message);
