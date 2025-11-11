@@ -16,12 +16,12 @@ const CONFIG = {
     suggestion: 'gemini-2.5-flash',
     embedding: 'text-embedding-004',
   },
-  TIMEOUTS: {
-    default: Number(process.env.TIMEOUT_DEFAULT_MS || 25000),
-    chat: Number(process.env.TIMEOUT_CHAT_MS || 30000),
-    notification: Number(process.env.TIMEOUT_NOTIFICATION_MS || 25000),
-    review: Number(process.env.TIMEOUT_REVIEW_MS || 20000),
-    analysis: Number(process.env.TIMEOUT_ANALYSIS_MS || 24000),
+ TIMEOUTS: {
+    default: Number(process.env.TIMEOUT_DEFAULT_MS || 15000), // زيادة المهلة الافتراضية
+    chat: Number(process.env.TIMEOUT_CHAT_MS || 20000), // زيادة مهلة الدردشة
+    notification: Number(process.env.TIMEOUT_NOTIFICATION_MS || 10000),
+    review: Number(process.env.TIMEOUT_REVIEW_MS || 10000),
+    analysis: Number(process.env.TIMEOUT_ANALYSIS_MS || 15000),
   },
   CACHE_TTL_MS: Number(process.env.CACHE_TTL_MS || 30000),
   JOB_POLL_MS: Number(process.env.JOB_WORKER_POLL_MS || 3000),
