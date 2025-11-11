@@ -1,9 +1,6 @@
 
 // index.js
 'use strict';
-
-require('dotenv').config(); // Load environment variables first
-
 const app = require('./app');
 const CONFIG = require('./config');
 const logger = require('./utils/logger');
