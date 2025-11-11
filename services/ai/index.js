@@ -56,7 +56,10 @@ async function _callModelInstance(instance, prompt, timeoutMs, label) {
     const fn = model && model[name];
     if (typeof fn !== 'function') continue;
     try {
-      const maybe = fn.length === 1 ? fn(prompt) : fn({ prompt });
+      // --- FIX ---
+      // Use .call(model, ...) to preserve the 'this' context of the SDK's model instance.
+      const maybe = fn.length === 1 ? fn.call(model, prompt) : fn.call(model, { prompt });
+      // --- END FIX ---
       const res = await withTimeout(Promise.resolve(maybe), timeoutMs, `${label}:${name}`);
       return res;
     } catch (err) {
