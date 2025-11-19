@@ -1,7 +1,14 @@
 
 'use strict';
 
-require('dotenv').config();
+// --- التعديل الذكي ---
+// نحاول استدعاء dotenv، إذا لم نجدها (نحن في Render)، نتجاهل الخطأ ونكمل
+try {
+  require('dotenv').config();
+} catch (e) {
+  // لا مشكلة، نحن في بيئة الإنتاج (Render) والمفاتيح موجودة في Environment Variables
+}
+// ---------------------
 
 const app = require('./app');
 const CONFIG = require('./config');
