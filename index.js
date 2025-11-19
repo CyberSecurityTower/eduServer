@@ -1,19 +1,22 @@
 
-// index.js
 'use strict';
+
+require('dotenv').config();
+
 const app = require('./app');
 const CONFIG = require('./config');
 const logger = require('./utils/logger');
-const { setGenerateWithFailover } = require('./utils'); // For utils/index.js ensureJsonOrRepair
-const { initializeFirestore, getFirestoreInstance } = require('./services/data/firestore');
+const { setGenerateWithFailover } = require('./utils');
+const { initializeFirestore } = require('./services/data/firestore');
 const embeddingService = require('./services/embeddings');
-const memoryManager = require('./services/ai/managers/memoryManager'); // Renamed from memoryManager.js
+const memoryManager = require('./services/ai/managers/memoryManager');
 const { initializeModelPools } = require('./services/ai');
 const generateWithFailover = require('./services/ai/failover');
 const { initDataHelpers } = require('./services/data/helpers');
-const { initJobWorker, jobWorkerLoop, stopWorker } = require('./services/jobs/worker');
+// استيراد resetStuckJobs
+const { initJobWorker, jobWorkerLoop, stopWorker, resetStuckJobs } = require('./services/jobs/worker');
 
-// Import controllers and managers for initialization
+// ... (Imports controllers) ...
 const { initChatController, handleGeneralQuestion } = require('./controllers/chatController');
 const { initAdminController } = require('./controllers/adminController');
 const { initConversationManager } = require('./services/ai/managers/conversationManager');
@@ -26,8 +29,6 @@ const { initSuggestionManager } = require('./services/ai/managers/suggestionMana
 const { initTrafficManager } = require('./services/ai/managers/trafficManager');
 const { initToDoManager } = require('./services/ai/managers/todoManager');
 
-
-// ---------------- BOOT & INIT ----------------
 async function boot() {
   // 1. Initialize Firestore
   const db = initializeFirestore();
@@ -35,7 +36,7 @@ async function boot() {
   // 2. Initialize AI Model Pools
   initializeModelPools();
 
-  // 3. Inject generateWithFailover into utils for ensureJsonOrRepair
+  // 3. Inject generateWithFailover
   setGenerateWithFailover(generateWithFailover);
 
   // 4. Initialize Embedding Service
@@ -46,14 +47,14 @@ async function boot() {
     process.exit(1);
   }
 
-  // 5. Initialize AI Managers (order matters for dependencies)
+  // 5. Initialize AI Managers
   try {
-    memoryManager.init({ db, embeddingService }); // memoryManager depends on embeddingService
-    initDataHelpers({ embeddingService, generateWithFailover }); // data/helpers depends on embeddingService & generateWithFailover
+    memoryManager.init({ db, embeddingService });
+    initDataHelpers({ embeddingService, generateWithFailover });
 
     initConversationManager({ generateWithFailover });
     initCurriculumManager({ embeddingService });
-    initNotificationManager({ generateWithFailover, getProgress: require('./services/data/helpers').getProgress }); // Circular dep, pass function
+    initNotificationManager({ generateWithFailover, getProgress: require('./services/data/helpers').getProgress });
     initPlannerManager({ generateWithFailover });
     initQuizManager({ generateWithFailover });
     initReviewManager({ generateWithFailover });
@@ -61,11 +62,9 @@ async function boot() {
     initTrafficManager({ generateWithFailover });
     initToDoManager({ generateWithFailover });
 
-    // ChatController depends on many managers, so initialize it last
     initChatController({ generateWithFailover, saveMemoryChunk: memoryManager.saveMemoryChunk });
-    initAdminController({ generateWithFailover }); // AdminController also needs generateWithFailover
+    initAdminController({ generateWithFailover });
 
-    // Job worker needs handleGeneralQuestion from chatController, so initialize after chatController
     initJobWorker({ handleGeneralQuestion });
 
   } catch (err) {
@@ -73,15 +72,19 @@ async function boot() {
     process.exit(1);
   }
 
-  // 6. Start job worker loop
-  setTimeout(jobWorkerLoop, 1000); // Start after a small delay
+  // 6. Reset Stuck Jobs (CRITICAL FIX)
+  // نقوم بتنظيف المهام العالقة قبل بدء استقبال الطلبات أو تشغيل الـ Worker Loop
+  await resetStuckJobs();
 
-  // 7. Start the server
+  // 7. Start job worker loop
+  setTimeout(jobWorkerLoop, 1000);
+
+  // 8. Start the server
   const server = app.listen(CONFIG.PORT, () => {
     logger.success(`EduAI Brain V18.0 running on port ${CONFIG.PORT}`);
     (async () => {
       try {
-        await generateWithFailover('titleIntent', 'ping', { label: 'warmup', timeoutMs: 8000 });
+        await generateWithFailover('titleIntent', 'ping', { label: 'warmup', timeoutMs: 2000 });
         logger.info('💡 Model warmup done.');
       } catch (e) {
         logger.warn('💡 Model warmup failed (non-fatal):', e.message);
@@ -89,10 +92,10 @@ async function boot() {
     })();
   });
 
-  // 8. Handle graceful shutdown
+  // ... (Shutdown logic remains the same) ...
   function shutdown(sig) {
     logger.info(`Received ${sig}, shutting down...`);
-    stopWorker(); // Stop the job worker
+    stopWorker();
     server.close((err) => {
       if (err) {
         logger.error('Error closing HTTP server:', err);
@@ -121,4 +124,4 @@ boot().catch(err => {
   process.exit(1);
 });
 
-module.exports = { app, server: null }; // server will be set after boot
+module.exports = { app, server: null };
