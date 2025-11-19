@@ -108,6 +108,27 @@ async function getProfile(userId) {
   }
 }
 
+// --- NEW: Safe Progress Calculation ---
+/**
+ * يحسب النسبة المئوية بأمان لتجنب القسمة على صفر أو القيم غير المنطقية.
+ * @param {number} completed - العدد المنجز.
+ * @param {number} total - العدد الكلي.
+ * @returns {number} - نسبة مئوية صحيحة بين 0 و 100.
+ */
+function calculateSafeProgress(completed, total) {
+  // 1. التعامل مع القيم غير المعرفة أو null
+  const safeCompleted = Number(completed) || 0;
+  const safeTotal = Number(total) || 0;
+
+  // 2. منع القسمة على صفر
+  if (safeTotal <= 0) return 0;
+
+  // 3. الحساب
+  const percentage = (safeCompleted / safeTotal) * 100;
+
+  // 4. التقريب وضمان الحدود (Clamping)
+  return Math.min(100, Math.max(0, Math.round(percentage)));
+}
 async function processSessionAnalytics(userId, sessionId) {
   try {
     logger.log(`[Analytics] Processing session ${sessionId} for user ${userId}`);
@@ -384,4 +405,5 @@ module.exports = {
   getCachedEducationalPathById,
   sendUserNotification,
   cacheDel, // Export cacheDel for invalidating profile cache
+  calculateSafeProgress
 };
