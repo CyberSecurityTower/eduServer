@@ -11,7 +11,7 @@ const {
 const { runTrafficManager } = require('../services/ai/managers/trafficManager');
 const { runNotificationManager } = require('../services/ai/managers/notificationManager');
 const { runReviewManager } = require('../services/ai/managers/reviewManager');
-const { runMemoryAgent } = require('../services/ai/managers/memoryManager'); // Renamed from memoryManager.js
+const { runMemoryAgent } = require('../services/ai/managers/memoryManager');
 const { runCurriculumAgent } = require('../services/ai/managers/curriculumManager');
 const { runConversationAgent } = require('../services/ai/managers/conversationManager');
 const { runSuggestionManager } = require('../services/ai/managers/suggestionManager');
@@ -32,6 +32,32 @@ function initChatController(dependencies) {
 }
 
 const db = getFirestoreInstance();
+
+// --- دالة مساعدة للتحقق (Validation Helper) ---
+function validateChatInput(body) {
+  const errors = [];
+  
+  // 1. التحقق من userId
+  if (!body.userId || typeof body.userId !== 'string' || body.userId.trim().length === 0) {
+    errors.push('userId is required and must be a valid string.');
+  }
+
+  // 2. التحقق من الرسالة (يجب ألا تكون فارغة أو ضخمة جداً)
+  if (!body.message || typeof body.message !== 'string') {
+    errors.push('message is required and must be a string.');
+  } else if (body.message.trim().length === 0) {
+    errors.push('message cannot be empty.');
+  } else if (body.message.length > 10000) { // حماية من هجمات الإغراق (Buffer Overflow prevention)
+    errors.push('message is too long (max 10000 characters).');
+  }
+
+  // 3. التحقق من التاريخ (History) إذا وجد
+  if (body.history && !Array.isArray(body.history)) {
+    errors.push('history must be an array.');
+  }
+
+  return errors;
+}
 
 // Helper to generate chat title
 async function generateTitle(message, language = 'Arabic') {
@@ -91,11 +117,21 @@ async function handleGeneralQuestion(message, language, history = [], userProfil
 }
 
 // ---------------- ROUTES ----------------
+
 async function chat(req, res) {
   try {
+    // --- خطوة الأمان الجديدة: التحقق من المدخلات ---
+    const validationErrors = validateChatInput(req.body);
+    if (validationErrors.length > 0) {
+      logger.warn(`[Security] Blocked invalid chat request: ${validationErrors.join(', ')}`);
+      return res.status(400).json({ error: 'Invalid Request', details: validationErrors });
+    }
+    // ---------------------------------------------
+
     const userId = req.body.userId;
     const { message, history = [] } = req.body;
-    if (!userId || !message) return res.status(400).json({ error: 'userId and message are required' });
+    
+    // (تم حذف التحقق المكرر هنا لأن validateChatInput قام به بالفعل)
 
     const traffic = await runTrafficManager(message);
     const { language = 'Arabic', intent = 'unclear' } = traffic;
@@ -128,10 +164,17 @@ async function chat(req, res) {
 
 async function chatInteractive(req, res) {
   try {
-    const { userId, message, history = [], sessionId: clientSessionId, context = {} } = req.body;
-    if (!userId || !message) {
-      return res.status(400).json({ error: 'userId and message are required' });
+    // --- خطوة الأمان الجديدة ---
+    const validationErrors = validateChatInput(req.body);
+    if (validationErrors.length > 0) {
+      logger.warn(`[Security] Blocked invalid interactive chat request: ${validationErrors.join(', ')}`);
+      return res.status(400).json({ error: 'Invalid Request', details: validationErrors });
     }
+    // -------------------------
+
+    const { userId, message, history = [], sessionId: clientSessionId, context = {} } = req.body;
+    
+    // (تم حذف التحقق المكرر هنا أيضاً)
 
     let sessionId = clientSessionId;
     let chatTitle = 'New Chat';
