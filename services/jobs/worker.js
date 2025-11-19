@@ -1,19 +1,17 @@
 
-// services/jobs/worker.js
 'use strict';
 
 const CONFIG = require('../../config');
 const { getFirestoreInstance, admin } = require('../data/firestore');
-const { sendUserNotification, getProgress, cacheDel } = require('../data/helpers');
+const { sendUserNotification, getProgress } = require('../data/helpers');
 const { runNotificationManager } = require('../ai/managers/notificationManager');
 const { runPlannerManager } = require('../ai/managers/plannerManager');
-const { runToDoManager } = require('../ai/managers/todoManager'); // New manager
-const { handleGeneralQuestion } = require('../../controllers/chatController'); // Circular dependency, will be injected
+const { runToDoManager } = require('../ai/managers/todoManager');
 const logger = require('../../utils/logger');
 
 let db;
 let workerStopped = false;
-let handleGeneralQuestionRef; // Injected dependency
+let handleGeneralQuestionRef;
 
 function initJobWorker(dependencies) {
   if (!dependencies.handleGeneralQuestion) {
@@ -23,6 +21,59 @@ function initJobWorker(dependencies) {
   handleGeneralQuestionRef = dependencies.handleGeneralQuestion;
   logger.success('Job Worker Initialized.');
 }
+
+// --- NEW: Function to reset stuck jobs ---
+async function resetStuckJobs() {
+  try {
+    logger.info('[Worker] Checking for stuck jobs...');
+    const STUCK_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+    const cutoffTime = new Date(Date.now() - STUCK_THRESHOLD_MS);
+    const timestamp = admin.firestore.Timestamp.fromDate(cutoffTime);
+
+    // Query jobs that are 'processing' and started before the cutoff time
+    const snapshot = await db.collection('jobs')
+      .where('status', '==', 'processing')
+      .where('startedAt', '<', timestamp)
+      .get();
+
+    if (snapshot.empty) {
+      logger.info('[Worker] No stuck jobs found.');
+      return;
+    }
+
+    logger.warn(`[Worker] Found ${snapshot.size} stuck jobs. Resetting to queued...`);
+    
+    const batch = db.batch();
+    let count = 0;
+
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      const currentAttempts = data.attempts || 0;
+      
+      // If it failed too many times even after reset, mark as failed
+      if (currentAttempts >= 3) {
+        batch.update(doc.ref, { 
+          status: 'failed', 
+          lastError: 'Stuck in processing for too long (timeout)',
+          finishedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+      } else {
+        batch.update(doc.ref, { 
+          status: 'queued', 
+          startedAt: null, // Clear start time
+          lastError: 'System crash or restart detected - Retrying'
+        });
+      }
+      count++;
+    });
+
+    await batch.commit();
+    logger.success(`[Worker] Successfully reset ${count} stuck jobs.`);
+  } catch (err) {
+    logger.error('[Worker] Failed to reset stuck jobs:', err.message);
+  }
+}
+// -----------------------------------------
 
 function formatTasksHuman(tasks = [], lang = 'Arabic') {
   if (!Array.isArray(tasks)) return '';
@@ -167,4 +218,5 @@ module.exports = {
   jobWorkerLoop,
   stopWorker,
   processJob, // Export for testing/admin
+  resetStuckJobs,
 };
