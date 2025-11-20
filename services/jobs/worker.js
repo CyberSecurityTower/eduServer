@@ -1,17 +1,19 @@
 
+// services/jobs/worker.js
 'use strict';
 
 const CONFIG = require('../../config');
 const { getFirestoreInstance, admin } = require('../data/firestore');
-const { sendUserNotification, getProgress } = require('../data/helpers');
+const { sendUserNotification, getProgress, cacheDel } = require('../data/helpers');
 const { runNotificationManager } = require('../ai/managers/notificationManager');
 const { runPlannerManager } = require('../ai/managers/plannerManager');
-const { runToDoManager } = require('../ai/managers/todoManager');
+const { runToDoManager } = require('../ai/managers/todoManager'); 
+const { handleGeneralQuestion } = require('../../controllers/chatController');
 const logger = require('../../utils/logger');
 
 let db;
 let workerStopped = false;
-let handleGeneralQuestionRef;
+let handleGeneralQuestionRef; // Injected dependency
 
 function initJobWorker(dependencies) {
   if (!dependencies.handleGeneralQuestion) {
@@ -22,67 +24,16 @@ function initJobWorker(dependencies) {
   logger.success('Job Worker Initialized.');
 }
 
-// --- NEW: Function to reset stuck jobs ---
-async function resetStuckJobs() {
-  try {
-    logger.info('[Worker] Checking for stuck jobs...');
-    const STUCK_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
-    const cutoffTime = new Date(Date.now() - STUCK_THRESHOLD_MS);
-    const timestamp = admin.firestore.Timestamp.fromDate(cutoffTime);
-
-    // Query jobs that are 'processing' and started before the cutoff time
-    const snapshot = await db.collection('jobs')
-      .where('status', '==', 'processing')
-      .where('startedAt', '<', timestamp)
-      .get();
-
-    if (snapshot.empty) {
-      logger.info('[Worker] No stuck jobs found.');
-      return;
-    }
-
-    logger.warn(`[Worker] Found ${snapshot.size} stuck jobs. Resetting to queued...`);
-    
-    const batch = db.batch();
-    let count = 0;
-
-    snapshot.forEach(doc => {
-      const data = doc.data();
-      const currentAttempts = data.attempts || 0;
-      
-      // If it failed too many times even after reset, mark as failed
-      if (currentAttempts >= 3) {
-        batch.update(doc.ref, { 
-          status: 'failed', 
-          lastError: 'Stuck in processing for too long (timeout)',
-          finishedAt: admin.firestore.FieldValue.serverTimestamp()
-        });
-      } else {
-        batch.update(doc.ref, { 
-          status: 'queued', 
-          startedAt: null, // Clear start time
-          lastError: 'System crash or restart detected - Retrying'
-        });
-      }
-      count++;
-    });
-
-    await batch.commit();
-    logger.success(`[Worker] Successfully reset ${count} stuck jobs.`);
-  } catch (err) {
-    logger.error('[Worker] Failed to reset stuck jobs:', err.message);
-  }
-}
-// -----------------------------------------
-
 function formatTasksHuman(tasks = [], lang = 'Arabic') {
   if (!Array.isArray(tasks)) return '';
   return tasks.map((t, i) => `${i + 1}. ${t.title} [${t.type}]`).join('\n');
 }
 
+// --- Job Processor (Queue System) ---
 async function processJob(jobDoc) {
   const id = jobDoc.id;
   const data = jobDoc.data();
+  logger.log(`[Worker] Starting job ${id} of type ${data.type}`);
 
   try {
     await jobDoc.ref.update({
@@ -101,36 +52,45 @@ async function processJob(jobDoc) {
 
     if (type === 'background_chat') {
       if (intent === 'manage_todo') {
+        logger.log(`[Worker] Job ${id}: Handling manage_todo for user ${userId}`);
         const progress = await getProgress(userId);
         const currentTasks = progress?.dailyTasks?.tasks || [];
-        const { change } = await runToDoManager(userId, message, currentTasks);
+        
+        const { updatedTasks = [], change = {} } = await runToDoManager(userId, message, currentTasks);
+        const action = change.action || 'updated';
+        const taskTitle = change.taskTitle || '';
 
         let notificationType = 'task_updated';
-        if (change.action === 'completed') notificationType = 'task_completed';
-        if (change.action === 'added') notificationType = 'task_added';
-        if (change.action === 'removed') notificationType = 'task_removed';
+        if (action === 'completed') notificationType = 'task_completed';
+        if (action === 'added') notificationType = 'task_added';
+        if (action === 'removed') notificationType = 'task_removed';
 
-        const notificationMessage = await runNotificationManager(notificationType, language, { taskTitle: change.taskTitle });
+        const notificationMessage = await runNotificationManager(notificationType, language, { taskTitle });
 
         await sendUserNotification(userId, {
-          title: 'Tasks Updated',
+          title: 'تم تحديث المهام',
           message: notificationMessage,
           lang: language,
           meta: { jobId: id, source: 'tasks' }
         });
+        logger.log(`[Worker] Job ${id}: Notification sent for todo change (${action}).`);
 
       } else if (intent === 'generate_plan') {
+        logger.log(`[Worker] Job ${id}: Handling generate_plan for user ${userId}`);
         const pathId = payload.pathId || null;
         const result = await runPlannerManager(userId, pathId);
-        const humanSummary = formatTasksHuman(result.tasks, language);
+        const tasks = result?.tasks || [];
+        const humanSummary = formatTasksHuman(tasks, language);
         await sendUserNotification(userId, {
           title: 'New Study Plan',
           message: `Your new study plan is ready:\n${humanSummary}`,
           lang: language,
           meta: { jobId: id, source: 'planner' }
         });
+        logger.log(`[Worker] Job ${id}: Planner notification sent. Tasks: ${tasks.length}`);
 
       } else {
+        // General chat handling
         if (!handleGeneralQuestionRef) {
           logger.error('processJob: handleGeneralQuestion is not set.');
           await sendUserNotification(userId, {
@@ -157,20 +117,18 @@ async function processJob(jobDoc) {
             message: reply,
             meta: { jobId: id, source: 'chat' }
           });
+          logger.log(`[Worker] Job ${id}: Chat reply sent.`);
         }
       }
-
-      await jobDoc.ref.update({ status: 'done', finishedAt: admin.firestore.FieldValue.serverTimestamp() });
-
-    } else if (type === 'scheduled_notification') {
-      await sendUserNotification(userId, payload);
-      await jobDoc.ref.update({ status: 'done', finishedAt: admin.firestore.FieldValue.serverTimestamp() });
     } else {
-      await jobDoc.ref.update({ status: 'skipped', finishedAt: admin.firestore.FieldValue.serverTimestamp() });
+      logger.log(`[Worker] Job ${id}: Unsupported job type ${type}`);
     }
 
+    await jobDoc.ref.update({ status: 'done', finishedAt: admin.firestore.FieldValue.serverTimestamp() });
+    logger.success(`[Worker] Job ${id} completed successfully.`);
+
   } catch (err) {
-    logger.error('processJob error for', id, err.message || err);
+    logger.error(`[Worker] processJob error for ${id}`, err.stack || err);
     const attempts = (data.attempts || 0) + 1;
     const update = {
       attempts,
@@ -178,10 +136,15 @@ async function processJob(jobDoc) {
       status: attempts >= 3 ? 'failed' : 'queued'
     };
     if (attempts >= 3) update.finishedAt = admin.firestore.FieldValue.serverTimestamp();
-    await jobDoc.ref.update(update);
+    try {
+      await jobDoc.ref.update(update);
+    } catch (uErr) {
+      logger.error(`[Worker] Failed to update job ${id} status after error:`, uErr.message || uErr);
+    }
   }
 }
 
+// --- Worker Loop (Processing Queue) ---
 async function jobWorkerLoop() {
   if (workerStopped) return;
   try {
@@ -191,9 +154,13 @@ async function jobWorkerLoop() {
       .where('sendAt', '<=', now)
       .get();
 
-    scheduledJobs.forEach(doc => {
-      doc.ref.update({ status: 'queued' });
-    });
+    if (!scheduledJobs.empty) {
+      const updPromises = [];
+      scheduledJobs.forEach(doc => {
+        updPromises.push(doc.ref.update({ status: 'queued' }));
+      });
+      await Promise.all(updPromises);
+    }
 
     const q = await db.collection('jobs').where('status', '==', 'queued').orderBy('createdAt').limit(5).get();
     if (!q.empty) {
@@ -201,10 +168,61 @@ async function jobWorkerLoop() {
       q.forEach(doc => { promises.push(processJob(doc)); });
       await Promise.all(promises);
     }
-  } catch (err) {
+   } catch (err) {
     logger.error('jobWorkerLoop error:', err.message || err);
   } finally {
-    if (!workerStopped) setTimeout(jobWorkerLoop, CONFIG.JOB_POLL_MS);
+    if (!workerStopped) {
+      setTimeout(jobWorkerLoop, CONFIG.JOB_POLL_MS);
+    }
+  }
+}
+
+// ✅✅✅ THE NEW TICKER FUNCTION (SMART SCHEDULER) ✅✅✅
+async function checkScheduledActions() {
+  try {
+    const now = admin.firestore.Timestamp.now();
+    
+    // 1. Find actions that are pending AND their execution time has passed (or is now)
+    const snapshot = await db.collection('scheduledActions')
+      .where('status', '==', 'pending')
+      .where('executeAt', '<=', now)
+      .limit(50) // Batch size to prevent overload
+      .get();
+
+    if (snapshot.empty) return; // Nothing to do
+
+    logger.log(`[Ticker] Found ${snapshot.size} scheduled actions due.`);
+    
+    const batch = db.batch();
+    const promises = [];
+
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      
+      // 2. Send the Notification (Title/Message was already prepared by AI)
+      const notifPromise = sendUserNotification(data.userId, {
+        title: data.title || 'تذكير ذكي',
+        message: data.message, 
+        type: data.type || 'smart_reminder',
+        meta: { actionId: doc.id, source: 'scheduler' }
+      });
+      promises.push(notifPromise);
+
+      // 3. Mark as Completed in DB
+      batch.update(doc.ref, {
+        status: 'completed',
+        executedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+    });
+
+    // 4. Execute all
+    await Promise.all(promises); // Send notifications
+    await batch.commit(); // Update DB status
+    
+    logger.success(`[Ticker] Successfully executed ${snapshot.size} actions.`);
+
+  } catch (err) {
+    logger.error('[Ticker] Error:', err.message);
   }
 }
 
@@ -217,6 +235,6 @@ module.exports = {
   initJobWorker,
   jobWorkerLoop,
   stopWorker,
-  processJob, // Export for testing/admin
-  resetStuckJobs,
+  processJob,
+  checkScheduledActions // ✅ Exported to be used in index.js
 };
