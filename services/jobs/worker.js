@@ -182,16 +182,19 @@ async function checkScheduledActions() {
   try {
     const now = admin.firestore.Timestamp.now();
     
-    // 1. Find actions that are pending AND their execution time has passed (or is now)
+    // ✅ التحسين القوي:
+    // 1. نستخدم orderBy لجلب المهام الأقدم أولاً (التي تأخرت)
+    // 2. هذا يضمن أنه لو السيرفر تعطل ساعة وعاد، سينفذ مهام الساعة 3 قبل مهام الساعة 4
     const snapshot = await db.collection('scheduledActions')
       .where('status', '==', 'pending')
-      .where('executeAt', '<=', now)
-      .limit(50) // Batch size to prevent overload
+      .where('executeAt', '<=', now) // يلتقط أي شيء فات وقته
+      .orderBy('executeAt', 'asc')    // <--- الإضافة الجديدة: رتب تصاعدياً (الأقدم أولاً)
+      .limit(50) 
       .get();
 
-    if (snapshot.empty) return; // Nothing to do
+    if (snapshot.empty) return;
 
-    logger.log(`[Ticker] Found ${snapshot.size} scheduled actions due.`);
+    logger.log(`[Ticker] Processing ${snapshot.size} due/overdue actions.`);
     
     const batch = db.batch();
     const promises = [];
@@ -199,30 +202,38 @@ async function checkScheduledActions() {
     snapshot.forEach(doc => {
       const data = doc.data();
       
-      // 2. Send the Notification (Title/Message was already prepared by AI)
+      // حساب مدة التأخير (للمراقبة فقط)
+      const delayMinutes = (now.toMillis() - data.executeAt.toMillis()) / 1000 / 60;
+      if (delayMinutes > 5) {
+        logger.warn(`[Ticker] Action ${doc.id} was delayed by ${delayMinutes.toFixed(1)} mins. Executing now.`);
+      }
+
       const notifPromise = sendUserNotification(data.userId, {
         title: data.title || 'تذكير ذكي',
-        message: data.message, 
-        type: data.type || 'smart_reminder',
-        meta: { actionId: doc.id, source: 'scheduler' }
+        message: data.message,
+        type: 'smart_reminder',
+        meta: { actionId: doc.id, originalTime: data.executeAt }
       });
       promises.push(notifPromise);
 
-      // 3. Mark as Completed in DB
       batch.update(doc.ref, {
         status: 'completed',
-        executedAt: admin.firestore.FieldValue.serverTimestamp()
+        executedAt: admin.firestore.FieldValue.serverTimestamp(),
+        executionDelayMinutes: delayMinutes // نسجل التأخير لنعرف أداء السيرفر
       });
     });
 
-    // 4. Execute all
-    await Promise.all(promises); // Send notifications
-    await batch.commit(); // Update DB status
+    await Promise.all(promises);
+    await batch.commit();
     
-    logger.success(`[Ticker] Successfully executed ${snapshot.size} actions.`);
+    logger.success(`[Ticker] Executed ${snapshot.size} actions.`);
 
   } catch (err) {
-    logger.error('[Ticker] Error:', err.message);
+    if (err.message.includes('requires an index')) {
+      logger.error('[Ticker] 🚨 MISSING INDEX! Click the link in the error to fix:', err.message);
+    } else {
+      logger.error('[Ticker] Error:', err.message);
+    }
   }
 }
 
