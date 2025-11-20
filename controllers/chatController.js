@@ -12,6 +12,7 @@ const {
 const { runMemoryAgent } = require('../services/ai/managers/memoryManager');
 const { runCurriculumAgent } = require('../services/ai/managers/curriculumManager');
 const { runConversationAgent } = require('../services/ai/managers/conversationManager');
+const { runSuggestionManager } = require('../services/ai/managers/suggestionManager'); // تأكدنا من استيراد هذا
 const { escapeForPrompt, safeSnippet, extractTextFromResult, ensureJsonOrRepair } = require('../utils');
 const logger = require('../utils/logger');
 const PROMPTS = require('../config/ai-prompts');
@@ -32,9 +33,49 @@ const db = getFirestoreInstance();
 
 // --- Helper: Generate Title ---
 async function generateTitle(message) {
-  // ... (نفس الكود السابق)
-  // للتوفير، يمكنك استخدام نموذج خفيف هنا
+  // للتوفير، نستخدم جزء من الرسالة كعنوان، أو يمكن استخدام نموذج خفيف
   return message.substring(0, 30); 
+}
+
+// --- Helper: Handle General Question (Required by Worker) ---
+// ✅ تمت إعادة هذه الدالة لأن worker.js يعتمد عليها
+async function handleGeneralQuestion(message, language, history = [], userProfile = 'No profile.', userProgress = {}, weaknesses = [], formattedProgress = '', studentName = null) {
+  const lastFive = (Array.isArray(history) ? history.slice(-5) : []).map(h => `${h.role === 'model' ? 'You' : 'User'}: ${safeSnippet(h.text || '', 500)}`).join('\n');
+  const tasksSummary = userProgress?.dailyTasks?.tasks?.length > 0 ? `Current Tasks:\n${userProgress.dailyTasks.tasks.map(t => `- ${t.title} (${t.status})`).join('\n')}` : 'The user currently has no tasks.';
+  const weaknessesSummary = weaknesses.length > 0 ? `Identified Weaknesses:\n${weaknesses.map(w => `- In "${w.subjectTitle}", lesson "${w.lessonTitle}" has a mastery of ${w.masteryScore}%.`).join('\n')}` : 'No specific weaknesses identified.';
+  const gamificationSummary = `User Stats:\n- Points: ${userProgress?.stats?.points || 0}\n- Rank: "${userProgress?.stats?.rank || 'Beginner'}"\n- Current Streak: ${userProgress?.streakCount || 0} days`;
+
+  // برومبت مبسط للردود النصية فقط (للإشعارات والمهام الخلفية)
+  const prompt = `You are EduAI, a specialized AI tutor.
+<rules>
+1. **Persona:** Helpful and encouraging. Address student by name ("${studentName || 'Student'}") if provided.
+2. **Context:** Use the provided data to answer. Do NOT say "I cannot access data".
+3. **Language:** Response MUST be in ${language}.
+4. **Format:** Text ONLY. No widgets or JSON.
+</rules>
+
+<user_context>
+  <stats>${gamificationSummary}</stats>
+  <tasks>${tasksSummary}</tasks>
+  <weaknesses>${weaknessesSummary}</weaknesses>
+  <profile>${safeSnippet(userProfile, 500)}</profile>
+  <progress>${formattedProgress}</progress>
+</user_context>
+
+<history>${lastFive}</history>
+
+User Message: "${escapeForPrompt(safeSnippet(message, 2000))}"
+Response:`;
+
+  if (!generateWithFailoverRef) {
+    logger.error('handleGeneralQuestion: generateWithFailover is not set.');
+    return (language === 'Arabic' ? 'لم أتمكن من الإجابة الآن.' : 'I could not generate an answer right now.');
+  }
+  
+  const modelResp = await generateWithFailoverRef('chat', prompt, { label: 'GeneralQuestion', timeoutMs: CONFIG.TIMEOUTS.chat });
+  const replyText = await extractTextFromResult(modelResp);
+  
+  return replyText || (language === 'Arabic' ? 'لم أتمكن من الإجابة الآن.' : 'I could not generate an answer right now.');
 }
 
 // --- MAIN ROUTE: Interactive Chat (GenUI) ---
@@ -51,11 +92,10 @@ async function chatInteractive(req, res) {
     let chatTitle = 'New Chat';
     if (!sessionId) {
       sessionId = `chat_${Date.now()}_${userId.slice(0, 5)}`;
-      chatTitle = message.substring(0, 30); // تبسيط لتسريع الاستجابة
+      chatTitle = message.substring(0, 30);
     }
 
     // 2. Parallel Context Retrieval (RAG)
-    // نستخدم Promise.all لجلب كل السياقات في وقت واحد
     const [
       memoryReport,
       curriculumReport,
@@ -99,7 +139,6 @@ async function chatInteractive(req, res) {
     const rawText = await extractTextFromResult(modelResp);
 
     // 6. Parse & Repair JSON (The Safety Net)
-    // نحاول تحويل النص إلى JSON، وإذا فشل نستخدم نموذج إصلاح
     let parsedResponse = await ensureJsonOrRepair(rawText, 'analysis');
 
     // Fallback if AI fails completely to give JSON
@@ -115,11 +154,10 @@ async function chatInteractive(req, res) {
     const botReplyText = parsedResponse.reply;
     const widgets = parsedResponse.widgets || [];
 
-    // حفظ الرسالة في التاريخ (نحفظ النص فقط لتقليل حجم الداتابيس، أو يمكن حفظ الـ widgets أيضاً)
     const updatedHistory = [
       ...history,
       { role: 'user', text: message },
-      { role: 'model', text: botReplyText, widgets: widgets } // نحفظ الـ widgets في الهيستوري
+      { role: 'model', text: botReplyText, widgets: widgets }
     ];
 
     // Fire-and-forget saving
@@ -130,10 +168,9 @@ async function chatInteractive(req, res) {
       saveMemoryChunkRef(userId, message).catch(() => {});
     }
 
-    // إرسال الرد للفرونت إند بالهيكل الجديد
     res.status(200).json({
       reply: botReplyText,
-      widgets: widgets, // المصفوفة السحرية
+      widgets: widgets,
       sessionId,
       chatTitle,
     });
@@ -165,9 +202,10 @@ async function generateChatSuggestions(req, res) {
   }
 }
 
+// ✅ الآن نقوم بتصدير handleGeneralQuestion ليستخدمها worker.js
 module.exports = {
   initChatController,
   chatInteractive,
   generateChatSuggestions,
-  handleGeneralQuestion
+  handleGeneralQuestion 
 };
