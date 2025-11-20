@@ -167,8 +167,6 @@ async function generateChatSuggestions(req, res) {
 
 module.exports = {
   initChatController,
-  chat,
   chatInteractive,
   generateChatSuggestions,
-  handleGeneralQuestion, // Export for job worker
 };
