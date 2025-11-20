@@ -5,40 +5,27 @@
 const express = require('express');
 const router = express.Router();
 
-// Import controllers
 const chatController = require('../controllers/chatController');
 const analyticsController = require('../controllers/analyticsController');
-const tasksController = require('../controllers/tasksController');
-const quizController = require('../controllers/quizController');
 const adminController = require('../controllers/adminController');
 
 // Health Check
-router.get('/health', (req, res) => {
-  const { poolNames, modelPools } = require('../services/ai'); // Access directly
-  try {
-    res.json({ ok: true, pools: Object.fromEntries(poolNames.map(p => [p, modelPools[p].length])), time: new Date().toISOString() });
-  } catch (err) { res.status(500).json({ ok: false, error: String(err) }); }
-});
+router.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));
 
-// Chat Routes
-router.post('/chat', chatController.chat);
+// ✅ The Main Brain Route
 router.post('/chat-interactive', chatController.chatInteractive);
-router.post('/generate-chat-suggestions', chatController.generateChatSuggestions);
 
-// Analytics Routes
+// Suggestions (Optional, kept for UI chips)
+router.post('/generate-chat-suggestions', chatController.generateChatSuggestions); // تأكد من تصديرها في chatController
+
+// Analytics
 router.post('/log-event', analyticsController.logEvent);
 router.post('/process-session', analyticsController.processSession);
 
-// Tasks Routes
-router.post('/update-daily-tasks', tasksController.updateDailyTasks);
-router.post('/generate-daily-tasks', tasksController.generateDailyTasks);
-
-// Quiz Routes
-router.post('/analyze-quiz', quizController.analyzeQuiz);
-
-// Admin Routes
-router.post('/enqueue-job', adminController.enqueueJobRoute);
+// Admin / Background Jobs
 router.post('/run-nightly-analysis', adminController.runNightlyAnalysis);
-router.post('/generate-title', adminController.generateTitleRoute); // Moved from chatController for separation
+
+// ❌ Removed: /update-daily-tasks, /generate-daily-tasks, /analyze-quiz
+// لأن هذه العمليات ستتم الآن ضمنياً داخل الشات أو عبر Widgets
 
 module.exports = router;
