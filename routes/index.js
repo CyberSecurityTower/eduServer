@@ -22,10 +22,4 @@ router.post('/generate-chat-suggestions', chatController.generateChatSuggestions
 router.post('/log-event', analyticsController.logEvent);
 router.post('/process-session', analyticsController.processSession);
 
-// Admin / Background Jobs
-router.post('/run-nightly-analysis', adminController.runNightlyAnalysis);
-
-// ❌ Removed: /update-daily-tasks, /generate-daily-tasks, /analyze-quiz
-// لأن هذه العمليات ستتم الآن ضمنياً داخل الشات أو عبر Widgets
-
 module.exports = router;
