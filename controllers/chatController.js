@@ -169,4 +169,5 @@ module.exports = {
   initChatController,
   chatInteractive,
   generateChatSuggestions,
+  handleGeneralQuestion
 };
