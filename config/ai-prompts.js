@@ -5,24 +5,37 @@
 const { escapeForPrompt, safeSnippet } = require('../utils');
 
 const PROMPTS = {
+  // --- Chat Controller Prompts ---
   chat: {
-    generateTitle: (message, language) => `Generate a short title (2-4 words) in ${language}. Message: "${escapeForPrompt(safeSnippet(message, 300))}"`,
-    
-      interactiveChat: (message, memoryReport, curriculumReport, conversationReport, history, formattedProgress, weaknesses) => `
+    generateTitle: (message, language) => `
+Generate a very short, descriptive title (2-4 words) for the following user message. The title should be in ${language}. Respond with ONLY the title text.
+Message: "${escapeForPrompt(safeSnippet(message, 300))}"`,
+
+    // ✅ التحديث الرئيسي هنا: دمج تعليمات التنسيق + عشوائية الكويز
+    interactiveChat: (message, memoryReport, curriculumReport, conversationReport, history, formattedProgress, weaknesses) => `
 You are EduAI, an advanced AI tutor with the ability to render interactive UI components.
 
-**YOUR CAPABILITIES (The Widget System):**
+**1. YOUR CAPABILITIES (The Widget System):**
 You can respond with text, but you can ALSO generate interactive widgets when helpful.
 Available Widgets:
-1. **quiz**: Use when the user wants to test knowledge or after explaining a complex topic.
-2. **flashcard**: Use for definitions, vocabulary, or key concepts.
-3. **summary_card**: Use to summarize long explanations or list key takeaways.
+- **quiz**: Use when the user wants to test knowledge or after explaining a complex topic.
+- **flashcard**: Use for definitions, vocabulary, or key concepts.
+- **summary_card**: Use to summarize long explanations or list key takeaways.
 
-**RESPONSE FORMAT (STRICT JSON):**
-You must ALWAYS respond with a valid JSON object. Do not use Markdown code blocks.
+**2. TEXT FORMATTING RULES (STRICT FOR FRONTEND RENDERING):**
+The text inside your "reply" field MUST follow these specific Markdown rules to look right in the App:
+*   **HEADINGS:** Use \`# Title\` for main headers and \`## Subtitle\` for sections.
+*   **HIGHLIGHT BOXES (Callouts):** Start a line with \`> \` (blockquote) to create a Highlight Box.
+    *   *Use for:* Key takeaways, formulas, definitions, or "Did you know?".
+    *   *Example:* \`> 💡 **Hint:** Inertia depends on mass.\`
+*   **LISTS:** Use \`- \` for bullet points.
+*   **EMPHASIS:** Use \`**text**\` for bolding keywords.
+
+**3. RESPONSE FORMAT (STRICT JSON):**
+You must ALWAYS respond with a valid JSON object. Do not use Markdown code blocks for the JSON itself.
 Schema:
 {
-  "reply": "Your conversational text response here (in the user's language).",
+  "reply": "Your formatted text response here (using the #, ##, >, - rules above).",
   "widgets": [
     {
       "type": "quiz", // or "flashcard", "summary_card"
@@ -31,21 +44,17 @@ Schema:
   ]
 }
 
-**Widget Data Structures:**
+**4. WIDGET DATA STRUCTURES & LOGIC:**
 - **quiz**: { 
     "question": "...", 
     "options": ["Option A", "Option B", "Option C", "Option D"], 
     "correctAnswerIndex": INTEGER (0-3), 
     "explanation": "..." 
   }
-- **flashcard**: { "front": "Term/Concept", "back": "Definition/Explanation" }
-- **summary_card**: { "title": "Key Points", "points": ["Point 1", "Point 2"] }
+  *   **CRITICAL (QUIZ):** You **MUST** randomize the position of the correct answer. Do NOT always put it at index 0. Distractors must be plausible.
 
-**CRITICAL INSTRUCTIONS FOR QUIZ GENERATION:**
-1. **RANDOMIZE ANSWERS:** You MUST randomize the position of the correct answer. 
-2. **DO NOT** always place the correct answer at index 0. 
-3. Vary the \`correctAnswerIndex\` (e.g., make it 2, then 0, then 3).
-4. Distractors (wrong answers) must be plausible but clearly incorrect.
+- **flashcard**: { "front": "Term", "back": "Definition" }
+- **summary_card**: { "title": "Key Points", "points": ["Point 1", "Point 2"] }
 
 **CONTEXT:**
 User Question: "${escapeForPrompt(safeSnippet(message, 2000))}"
@@ -58,38 +67,83 @@ Weaknesses: ${escapeForPrompt(safeSnippet(Array.isArray(weaknesses) ? weaknesses
 **INSTRUCTIONS:**
 1. Respond in the user's language (detect from input).
 2. Be personal, encouraging, and concise.
-3. DECIDE: Does this moment need a widget? If yes, include it in the "widgets" array.
-4. **CRITICAL:** Output ONLY raw JSON. No \`\`\`json wrappers.
-`
+3. Apply the **Formatting Rules** strictly in your text reply.
+4. DECIDE: Does this moment need a widget? If yes, include it.
+5. Output ONLY raw JSON.
+`,
   },
 
+  // --- Managers Prompts ---
   managers: {
-    traffic: (message) => `Analyze message. Return JSON: { "language": "Arabic"|"English", "title": "Short Title" }. Msg: "${escapeForPrompt(message)}"`,
-    
-    review: (userMessage, assistantReply) => `Rate reply (1-10). JSON: {"score": number, "feedback": "..."}. User: ${escapeForPrompt(safeSnippet(userMessage, 500))} Reply: ${escapeForPrompt(safeSnippet(assistantReply, 1000))}`,
-    
-    jsonRepair: (rawText) => `Fix JSON syntax. Return ONLY valid JSON. Text: ${rawText}`,
+    traffic: (message) => `
+Analyze the user message. Return JSON: { "language": "Arabic" | "English" | "French", "title": "Short Title" }.
+Message: "${escapeForPrompt(message)}"`,
 
-    // ✅ تمت إعادة برومبت الاقتراحات
+    review: (userMessage, assistantReply) => `
+Rate the assistant reply (1-10). Return JSON {"score": number, "feedback": "..."}.
+User: ${escapeForPrompt(safeSnippet(userMessage, 500))}
+Reply: ${escapeForPrompt(safeSnippet(assistantReply, 1000))}`,
+
+    jsonRepair: (rawText) => `
+The following text is supposed to be a JSON object matching this schema: { "reply": string, "widgets": [] }.
+Fix any syntax errors (trailing commas, missing quotes, markdown blocks).
+Return ONLY the valid JSON string.
+TEXT:
+${rawText}`,
+
+    // ✅ تمت إضافة هذا البرومبت لإصلاح الخطأ 502
     suggestion: (profileSummary, currentTasks, weaknessesSummary, conversationTranscript) => `
-You are a prediction engine. Anticipate 4 relevant, short questions the user might ask next.
+Based on the student's context, generate 4 short, engaging, and relevant follow-up suggestions (chips) for them to click.
 Context:
-- Profile: ${profileSummary}
-- Tasks: ${currentTasks}
-- Weaknesses: ${weaknessesSummary}
-- Recent Chat: ${conversationTranscript}
+- Profile: ${escapeForPrompt(safeSnippet(profileSummary, 500))}
+- Tasks: ${escapeForPrompt(safeSnippet(currentTasks, 500))}
+- Weaknesses: ${escapeForPrompt(safeSnippet(weaknessesSummary, 500))}
+- Recent Chat: ${escapeForPrompt(safeSnippet(conversationTranscript, 1000))}
 
-Rules:
-1. Generate 4 distinct questions from the USER'S perspective.
-2. Max 6 words per question.
-3. Language: Arabic (unless chat context is English).
-4. Respond ONLY with JSON: { "suggestions": ["...", "...", "...", "..."] }
-`
+Instructions:
+1. Suggestions should be very short (2-5 words).
+2. Written in the same language as the recent chat (mostly Arabic).
+3. Should be actionable (e.g., "Quiz me", "Explain more", "My tasks").
+4. Return ONLY JSON: { "suggestions": ["Sug 1", "Sug 2", "Sug 3", "Sug 4"] }
+`,
+
+    // ✅ نحتاج أيضاً لـ planner و todo و quiz لأن الكنترولرز (workers) يستخدمونها
+    planner: (weaknessesPrompt) => `
+Create a daily study plan (5 tasks max) for the student.
+${weaknessesPrompt}
+Return JSON: { "tasks": [ { "id": "...", "title": "...", "type": "review|quiz|new_lesson", "relatedSubjectId": "..." } ] }`,
+
+    todo: (currentTasksJSON, userRequest) => `
+User Request: "${escapeForPrompt(userRequest)}"
+Current Tasks: ${currentTasksJSON}
+Update the tasks based on the request (mark completed, add new, remove).
+Return JSON: { "tasks": [ ...updated list... ] }`,
+
+    quiz: (lessonTitle, totalScore, totalQuestions, masteryScore, performanceSummary) => `
+Analyze this quiz result.
+Lesson: ${lessonTitle}, Score: ${totalScore}/${totalQuestions} (${masteryScore}%).
+Details:
+${performanceSummary}
+
+Return JSON:
+{
+  "newMasteryScore": number,
+  "feedbackSummary": "Constructive feedback string",
+  "suggestedNextStep": "What to do next",
+  "dominantErrorType": "conceptual|calculation|attention",
+  "recommendedResource": "Lesson title to review"
+}`
   },
   
   notification: {
-    ack: (lang) => `Return short acknowledgement in ${lang}.`,
-    reEngagement: (context) => `Write friendly re-engagement msg in Arabic based on: ${context}`
+    ack: (lang) => `Return a short acknowledgement in ${lang}.`,
+    reEngagement: (context, taskTitle) => `Write a short, friendly re-engagement notification in Arabic. Context: ${context}. Task: ${taskTitle || 'General review'}.`,
+    taskCompleted: (lang, task) => `Write a short congratulatory message in ${lang} for completing: "${task}".`,
+    taskAdded: (lang, task) => `Write a short confirmation in ${lang} that task "${task}" was added.`,
+    taskRemoved: (lang, task) => `Write a short confirmation in ${lang} that task "${task}" was removed.`,
+    taskUpdated: (lang) => `Write a short confirmation in ${lang} that tasks were updated.`,
+    interventionUnplanned: (lesson, lang) => `The student started viewing lesson "${lesson}" without planning. Write a short encouraging message in ${lang} praising their initiative.`,
+    interventionTimer: (lang) => `The student started a timer but hasn't done much. Write a gentle, non-intrusive check-in message in ${lang}.`
   }
 };
 
