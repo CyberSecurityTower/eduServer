@@ -10,6 +10,9 @@ const {
 const { runMemoryAgent } = require('../services/ai/managers/memoryManager');
 const { runCurriculumAgent } = require('../services/ai/managers/curriculumManager');
 const { runConversationAgent } = require('../services/ai/managers/conversationManager');
+// ✅ استيراد مدير الاقتراحات
+const { runSuggestionManager } = require('../services/ai/managers/suggestionManager');
+
 const { escapeForPrompt, safeSnippet, extractTextFromResult, ensureJsonOrRepair } = require('../utils');
 const logger = require('../utils/logger');
 const PROMPTS = require('../config/ai-prompts');
@@ -26,76 +29,69 @@ function initChatController(dependencies) {
 
 // --- GenUI Main Handler ---
 async function chatInteractive(req, res) {
-  try {
-    const { userId, message, history = [], sessionId: clientSessionId, context = {} } = req.body;
-    if (!userId || !message) return res.status(400).json({ error: 'Missing data' });
-
-    // 1. Setup Session
-    const sessionId = clientSessionId || `chat_${Date.now()}_${userId.slice(0, 5)}`;
-    const chatTitle = message.substring(0, 30);
-
-    // 2. Gather Context (Parallel)
-    const [memory, curriculum, conversation, progress, weaknesses, progressFmt] = await Promise.all([
-      runMemoryAgent(userId, message).catch(() => ''),
-      runCurriculumAgent(userId, message).catch(() => ''),
-      runConversationAgent(userId, message).catch(() => ''),
-      getProgress(userId).catch(() => ({})),
-      fetchUserWeaknesses(userId).catch(() => []),
-      formatProgressForAI(userId).catch(() => '')
-    ]);
-
-    // 3. Prepare History
-    const lastFive = (Array.isArray(history) ? history.slice(-5) : [])
-      .map(h => `${h.role === 'model' ? 'EduAI' : 'User'}: ${safeSnippet(h.text || '', 200)}`).join('\n');
-
-    // 4. Prompt
-    const prompt = PROMPTS.chat.interactiveChat(
-      message, memory, curriculum, conversation, lastFive, progressFmt, weaknesses
-    );
-
-    // 5. Generate
-    const modelResp = await generateWithFailoverRef('chat', prompt, { label: 'GenUI', timeoutMs: 25000 });
-    const rawText = await extractTextFromResult(modelResp);
-
-    // 6. Parse JSON
-    let parsed = await ensureJsonOrRepair(rawText, 'chat'); // Use 'chat' pool for repair to be safe
-    if (!parsed || !parsed.reply) {
-      parsed = { reply: rawText || "عذراً، حدث خطأ.", widgets: [] };
-    }
-
-    // 7. Save & Respond
-    const updatedHistory = [...history, { role: 'user', text: message }, { role: 'model', text: parsed.reply, widgets: parsed.widgets }];
+    try {
+        const { userId, message, history = [], sessionId: clientSessionId, context = {} } = req.body;
+        if (!userId || !message) return res.status(400).json({ error: 'Missing data' });
     
-    // Fire & Forget Saving
-    saveChatSession(sessionId, userId, chatTitle, updatedHistory, context.type || 'main', context).catch(e => logger.error('SaveChat err', e));
-    if (saveMemoryChunkRef) saveMemoryChunkRef(userId, message).catch(() => {});
+        const sessionId = clientSessionId || `chat_${Date.now()}_${userId.slice(0, 5)}`;
+        const chatTitle = message.substring(0, 30);
+    
+        const [memory, curriculum, conversation, progress, weaknesses, progressFmt] = await Promise.all([
+          runMemoryAgent(userId, message).catch(() => ''),
+          runCurriculumAgent(userId, message).catch(() => ''),
+          runConversationAgent(userId, message).catch(() => ''),
+          getProgress(userId).catch(() => ({})),
+          fetchUserWeaknesses(userId).catch(() => []),
+          formatProgressForAI(userId).catch(() => '')
+        ]);
+    
+        const lastFive = (Array.isArray(history) ? history.slice(-5) : [])
+          .map(h => `${h.role === 'model' ? 'EduAI' : 'User'}: ${safeSnippet(h.text || '', 200)}`).join('\n');
+    
+        const prompt = PROMPTS.chat.interactiveChat(
+          message, memory, curriculum, conversation, lastFive, progressFmt, weaknesses
+        );
+    
+        const modelResp = await generateWithFailoverRef('chat', prompt, { label: 'GenUI', timeoutMs: 25000 });
+        const rawText = await extractTextFromResult(modelResp);
+    
+        let parsed = await ensureJsonOrRepair(rawText, 'chat');
+        if (!parsed || !parsed.reply) {
+          parsed = { reply: rawText || "عذراً، حدث خطأ.", widgets: [] };
+        }
+    
+        const updatedHistory = [...history, { role: 'user', text: message }, { role: 'model', text: parsed.reply, widgets: parsed.widgets }];
+        
+        saveChatSession(sessionId, userId, chatTitle, updatedHistory, context.type || 'main', context).catch(e => logger.error('SaveChat err', e));
+        if (saveMemoryChunkRef) saveMemoryChunkRef(userId, message).catch(() => {});
+    
+        res.json({
+          reply: parsed.reply,
+          widgets: parsed.widgets || [],
+          sessionId,
+          chatTitle
+        });
+    
+      } catch (err) {
+        logger.error('chatInteractive Error:', err);
+        res.status(500).json({ reply: "حدث خطأ في الخادم.", widgets: [] });
+      }
+}
 
-    res.json({
-      reply: parsed.reply,
-      widgets: parsed.widgets || [],
-      sessionId,
-      chatTitle
-    });
+// ✅ دالة الاقتراحات الذكية
+async function generateChatSuggestions(req, res) {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
 
-  } catch (err) {
-    logger.error('chatInteractive Error:', err);
-    res.status(500).json({ reply: "حدث خطأ في الخادم.", widgets: [] });
+    const suggestions = await runSuggestionManager(userId);
+    res.json({ suggestions });
+  } catch (error) {
+    logger.error('generateChatSuggestions Error:', error);
+    res.status(500).json({ suggestions: ["لخص لي هذا الدرس", "أعطني كويز سريع", "اشرح لي المفهوم الأساسي"] });
   }
 }
 
-// ✅ دالة الاقتراحات (مبسطة جداً للسرعة)
-async function generateChatSuggestions(req, res) {
-  // اقتراحات ثابتة أو عشوائية لتخفيف الحمل، أو يمكنك استخدام الموديل إذا أردت
-  const suggestions = [
-    "لخص لي هذا الدرس",
-    "أعطني كويز سريع",
-    "اشرح لي المفهوم الأساسي",
-    "ما هي خطوتي التالية؟"
-  ];
-  res.json({ suggestions });
-}
-
-// ✅ دالة للـ Worker (مطلوبة لـ initJobWorker)
 async function handleGeneralQuestion(message, lang) {
     return "هذه ميزة قيد التحديث."; 
 }
