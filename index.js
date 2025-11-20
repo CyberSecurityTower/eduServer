@@ -2,8 +2,6 @@
 // index.js
 'use strict';
 
-// ❌ تم الحذف: require('dotenv').config();
-
 const app = require('./app');
 const CONFIG = require('./config');
 const logger = require('./utils/logger');
@@ -14,6 +12,9 @@ const { initializeModelPools } = require('./services/ai');
 const generateWithFailover = require('./services/ai/failover');
 const { initDataHelpers } = require('./services/data/helpers');
 const { initJobWorker, jobWorkerLoop, stopWorker } = require('./services/jobs/worker');
+
+const { initSessionAnalyzer } = require('./services/ai/managers/sessionAnalyzer'); 
+const { checkScheduledActions } = require('./services/jobs/worker'); 
 
 const { initChatController, handleGeneralQuestion } = require('./controllers/chatController');
 const { initAdminController } = require('./controllers/adminController');
@@ -31,7 +32,7 @@ async function boot() {
     setGenerateWithFailover(generateWithFailover);
     embeddingService.init({ db, CONFIG });
     initDataHelpers({ embeddingService, generateWithFailover });
-
+    initSessionAnalyzer({ generateWithFailover }); 
     // Initialize Managers
     initMemoryManager({ db, embeddingService });
     initConversationManager({ generateWithFailover });
@@ -49,7 +50,11 @@ async function boot() {
     initJobWorker({ handleGeneralQuestion });
 
     setTimeout(jobWorkerLoop, 1000);
-
+    // 🔥 تشغيل الـ Ticker كل 60 ثانية (1 دقيقة)
+    // هذا هو القلب النابض الذي سيفحص المواعيد بدقة
+    setInterval(() => {
+      checkScheduledActions().catch(e => logger.error('Ticker failed:', e));
+    }, 60 * 1000);
     const server = app.listen(CONFIG.PORT, () => {
       logger.success(`EduAI Brain V2.1 (Production) running on port ${CONFIG.PORT}`);
     });
