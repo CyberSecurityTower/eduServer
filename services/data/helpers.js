@@ -377,20 +377,60 @@ async function getCachedEducationalPathById(pathId) {
 
 async function sendUserNotification(userId, payload = {}) {
   if (!userId) return;
+  
+  const title = payload.title || 'تنبيه من EduAI';
+  const message = payload.message || '';
+  const type = payload.type || 'system';
+  const meta = payload.meta || {};
+
   try {
+    // 1. الحفظ في قاعدة البيانات (ليظهر في قائمة الإشعارات داخل التطبيق)
+    // هذا الجزء كان موجوداً ويعمل
     await db.collection('userNotifications').doc(userId).collection('inbox').add({
-      title: payload.title || 'Notification',
-      message: payload.message || '',
-      meta: payload.meta || {},
+      title: title,
+      message: message,
+      type: type,
+      meta: meta,
       read: false,
-      lang: payload.lang || 'Arabic',
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
+    
+    logger.log(`[Notification] Saved to DB for user ${userId}`);
+
+    // 2. الإرسال للهاتف (Push Notification via FCM) 🔥 هذا هو الجديد
+    const userDoc = await db.collection('users').doc(userId).get();
+    
+    if (userDoc.exists) {
+      const userData = userDoc.data();
+      const fcmToken = userData.fcmToken; // ⚠️ تأكد أن التطبيق يحفظ التوكن بهذا الاسم
+
+      if (fcmToken) {
+        await admin.messaging().send({
+          token: fcmToken,
+          notification: {
+            title: title,
+            body: message,
+          },
+          data: {
+            click_action: 'FLUTTER_NOTIFICATION_CLICK', // مهم لتطبيقات Flutter
+            type: type,
+            // يجب تحويل أي بيانات في meta إلى String لأن FCM لا يقبل JSON متداخل
+            ...Object.keys(meta).reduce((acc, key) => {
+              acc[key] = String(meta[key]); 
+              return acc;
+            }, {})
+          }
+        });
+        logger.success(`[Notification] 📲 Push sent to user ${userId}`);
+      } else {
+        logger.warn(`[Notification] User ${userId} has no fcmToken. Saved to DB only.`);
+      }
+    }
+
   } catch (err) {
-    logger.error(`sendUserNotification write failed for ${userId}:`, err && err.message ? err.message : err);
+    logger.error(`sendUserNotification failed for ${userId}:`, err.message);
   }
 }
-
 module.exports = {
   initDataHelpers,
   getUserDisplayName,
@@ -404,6 +444,6 @@ module.exports = {
   analyzeAndSaveMemory,
   getCachedEducationalPathById,
   sendUserNotification,
-  cacheDel, // Export cacheDel for invalidating profile cache
+  cacheDel, 
   calculateSafeProgress
 };
