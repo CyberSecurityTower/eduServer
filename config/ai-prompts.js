@@ -5,83 +5,56 @@
 const { escapeForPrompt, safeSnippet } = require('../utils');
 
 const PROMPTS = {
-  // --- Chat Controller Prompts ---
   chat: {
-    generateTitle: (message, language) => `
-Generate a very short, descriptive title (2-4 words) for the following user message. The title should be in ${language}. Respond with ONLY the title text.
-Message: "${escapeForPrompt(safeSnippet(message, 300))}"`,
-
-    // ✅ هذا هو البرومبت الرئيسي الجديد للـ Generative UI
+    generateTitle: (message, language) => `Generate a short title (2-4 words) in ${language}. Message: "${escapeForPrompt(safeSnippet(message, 300))}"`,
+    
     interactiveChat: (message, memoryReport, curriculumReport, conversationReport, history, formattedProgress, weaknesses) => `
-You are EduAI, an advanced AI tutor with the ability to render interactive UI components.
+You are EduAI. Respond in JSON format ONLY.
+Schema: { "reply": "string", "widgets": [{ "type": "quiz"|"flashcard"|"summary_card", "data": object }] }
 
-**YOUR CAPABILITIES (The Widget System):**
-You can respond with text, but you can ALSO generate interactive widgets when helpful.
-Available Widgets:
-1. **quiz**: Use when the user wants to test knowledge or after explaining a complex topic.
-2. **flashcard**: Use for definitions, vocabulary, or key concepts.
-3. **summary_card**: Use to summarize long explanations or list key takeaways.
-
-**RESPONSE FORMAT (STRICT JSON):**
-You must ALWAYS respond with a valid JSON object. Do not use Markdown code blocks.
-Schema:
-{
-  "reply": "Your conversational text response here (in the user's language).",
-  "widgets": [
-    {
-      "type": "quiz", // or "flashcard", "summary_card"
-      "data": { ...specific data structure... }
-    }
-  ]
-}
-
-**Widget Data Structures:**
-- **quiz**: { "question": "...", "options": ["A", "B", "C", "D"], "correctAnswerIndex": 0, "explanation": "..." }
-- **flashcard**: { "front": "Term/Concept", "back": "Definition/Explanation" }
-- **summary_card**: { "title": "Key Points", "points": ["Point 1", "Point 2"] }
-
-**CONTEXT:**
-User Question: "${escapeForPrompt(safeSnippet(message, 2000))}"
+CONTEXT:
+User: "${escapeForPrompt(safeSnippet(message, 2000))}"
 Memory: ${escapeForPrompt(safeSnippet(memoryReport, 1000))}
-Curriculum Context: ${escapeForPrompt(safeSnippet(curriculumReport, 1000))}
+Curriculum: ${escapeForPrompt(safeSnippet(curriculumReport, 1000))}
 History: ${history}
-Student Progress: ${escapeForPrompt(safeSnippet(formattedProgress, 500))}
+Progress: ${escapeForPrompt(safeSnippet(formattedProgress, 500))}
 Weaknesses: ${escapeForPrompt(safeSnippet(Array.isArray(weaknesses) ? weaknesses.join('; ') : String(weaknesses || ''), 500))}
 
-**INSTRUCTIONS:**
-1. Respond in the user's language (detect from input).
-2. Be personal, encouraging, and concise.
-3. DECIDE: Does this moment need a widget? If yes, include it in the "widgets" array. If no, leave "widgets" empty [].
-4. **CRITICAL:** Output ONLY raw JSON. No \`\`\`json wrappers.
-`,
+INSTRUCTIONS:
+1. Reply in user's language.
+2. Be helpful and concise.
+3. Add widgets ONLY if relevant.
+4. Output RAW JSON.
+`
   },
 
-  // --- Managers Prompts (تم تقليصها للأدوات الضرورية فقط) ---
   managers: {
-    // نحتفظ بـ traffic لتحديد اللغة والعنوان فقط، وليس لتوجيه الترافيك المعقد
-    traffic: (message) => `
-Analyze the user message. Return JSON: { "language": "Arabic" | "English" | "French", "title": "Short Title" }.
-Message: "${escapeForPrompt(message)}"`,
+    traffic: (message) => `Analyze message. Return JSON: { "language": "Arabic"|"English", "title": "Short Title" }. Msg: "${escapeForPrompt(message)}"`,
+    
+    review: (userMessage, assistantReply) => `Rate reply (1-10). JSON: {"score": number, "feedback": "..."}. User: ${escapeForPrompt(safeSnippet(userMessage, 500))} Reply: ${escapeForPrompt(safeSnippet(assistantReply, 1000))}`,
+    
+    jsonRepair: (rawText) => `Fix JSON syntax. Return ONLY valid JSON. Text: ${rawText}`,
 
-    // نحتفظ بـ review لضمان الجودة
-    review: (userMessage, assistantReply) => `
-Rate the assistant reply (1-10). Return JSON {"score": number, "feedback": "..."}.
-User: ${escapeForPrompt(safeSnippet(userMessage, 500))}
-Reply: ${escapeForPrompt(safeSnippet(assistantReply, 1000))}`,
+    // ✅ تمت إعادة برومبت الاقتراحات
+    suggestion: (profileSummary, currentTasks, weaknessesSummary, conversationTranscript) => `
+You are a prediction engine. Anticipate 4 relevant, short questions the user might ask next.
+Context:
+- Profile: ${profileSummary}
+- Tasks: ${currentTasks}
+- Weaknesses: ${weaknessesSummary}
+- Recent Chat: ${conversationTranscript}
 
-    // نحتفظ بـ jsonRepair لأنها جوهرية الآن
-    jsonRepair: (rawText) => `
-The following text is supposed to be a JSON object matching this schema: { "reply": string, "widgets": [] }.
-Fix any syntax errors (trailing commas, missing quotes, markdown blocks).
-Return ONLY the valid JSON string.
-TEXT:
-${rawText}`
+Rules:
+1. Generate 4 distinct questions from the USER'S perspective.
+2. Max 6 words per question.
+3. Language: Arabic (unless chat context is English).
+4. Respond ONLY with JSON: { "suggestions": ["...", "...", "...", "..."] }
+`
   },
   
-  // Notification prompts remain useful
   notification: {
-    ack: (lang) => `Return a short acknowledgement in ${lang}.`,
-    reEngagement: (context) => `Write a short, friendly re-engagement notification in Arabic based on: ${context}`
+    ack: (lang) => `Return short acknowledgement in ${lang}.`,
+    reEngagement: (context) => `Write friendly re-engagement msg in Arabic based on: ${context}`
   }
 };
 
