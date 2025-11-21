@@ -10,7 +10,58 @@ const { escapeForPrompt, safeSnippet, extractTextFromResult } = require('../util
 const logger = require('../utils/logger');
 
 let generateWithFailoverRef; // Injected dependency
+const { getFirestoreInstance, admin } = require('../services/data/firestore');
+const embeddingService = require('../services/embeddings'); // تأكد من المسار
 
+// دالة لفهرسة درس واحد فقط عند الطلب
+async function indexSpecificLesson(req, res) {
+  try {
+    const { lessonId } = req.body; // نرسل الـ ID
+    if (!lessonId) return res.status(400).json({ error: 'lessonId required' });
+
+    const db = getFirestoreInstance();
+    
+    // 1. جلب محتوى الدرس
+    const contentDoc = await db.collection('lessonsContent').doc(lessonId).get();
+    if (!contentDoc.exists) return res.status(404).json({ error: 'Content not found' });
+    
+    const text = contentDoc.data().content || '';
+    if (!text) return res.status(400).json({ error: 'Lesson is empty' });
+
+    // 2. التقسيم (Chunking) - نفس منطق indexCurriculum
+    // (للتبسيط هنا سنفترض دالة تقسيم بسيطة أو نعيد استخدام تلك الموجودة)
+    const chunks = text.match(/[\s\S]{1,1000}/g) || [text]; 
+
+    const batch = db.batch();
+    
+    // 3. مسح الـ Embeddings القديمة لهذا الدرس (لتجنب التكرار عند التحديث)
+    const oldEmbeddings = await db.collection('curriculumEmbeddings').where('lessonId', '==', lessonId).get();
+    oldEmbeddings.forEach(doc => batch.delete(doc.ref));
+
+    // 4. إنشاء Embeddings جديدة
+    for (const chunk of chunks) {
+      const vec = await embeddingService.generateEmbedding(chunk);
+      const newRef = db.collection('curriculumEmbeddings').doc();
+      batch.set(newRef, {
+        lessonId,
+        // أضفنا العنوان والمسار هنا ليعرف النظام السياق
+        lessonTitle: req.body.lessonTitle || 'Unknown Title', 
+        pathId: req.body.pathId || 'Unknown Path',
+        chunkText: chunk,
+        embedding: vec,
+        type: 'curriculum', // نميزه أنه منهج
+        createdAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+    }
+
+    await batch.commit();
+    return res.json({ success: true, message: `Indexed ${chunks.length} chunks for lesson ${lessonId}` });
+
+  } catch (e) {
+    logger.error('Indexing failed:', e);
+    return res.status(500).json({ error: e.message });
+  }
+}
 function initAdminController(dependencies) {
   if (!dependencies.generateWithFailover) {
     throw new Error('Admin Controller requires generateWithFailover for initialization.');
