@@ -34,7 +34,7 @@ async function boot() {
     initDataHelpers({ embeddingService, generateWithFailover });
     initSessionAnalyzer({ generateWithFailover }); 
     // Initialize Managers
-    initMemoryManager({ db, embeddingService });
+    initMemoryManager({ db, embeddingService, generateWithFailover  });
     initConversationManager({ generateWithFailover });
     initCurriculumManager({ embeddingService });
     initSuggestionManager({ generateWithFailover }); // ✅ تهيئة مدير الاقتراحات
