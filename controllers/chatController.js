@@ -1,186 +1,268 @@
 
-// controllers/adminController.js
+// controllers/chatController.js
 'use strict';
 
 const CONFIG = require('../config');
 const { getFirestoreInstance, admin } = require('../services/data/firestore');
-const { enqueueJob } = require('../services/jobs/queue');
-const embeddingService = require('../services/embeddings'); // ✅ هام جداً للفهرسة
-const { escapeForPrompt, safeSnippet, extractTextFromResult } = require('../utils');
+const {
+  getProfile, getProgress, fetchUserWeaknesses, formatProgressForAI, getUserDisplayName,
+  saveChatSession
+} = require('../services/data/helpers');
+
+// Managers
+const { runMemoryAgent, saveMemoryChunk } = require('../services/ai/managers/memoryManager');
+const { runCurriculumAgent } = require('../services/ai/managers/curriculumManager');
+const { runConversationAgent } = require('../services/ai/managers/conversationManager');
+const { runSuggestionManager } = require('../services/ai/managers/suggestionManager');
+const { analyzeSessionForEvents } = require('../services/ai/managers/sessionAnalyzer');
+
+const { escapeForPrompt, safeSnippet, extractTextFromResult, ensureJsonOrRepair } = require('../utils');
 const logger = require('../utils/logger');
 const PROMPTS = require('../config/ai-prompts');
+const CREATOR_PROFILE = require('../config/creator-profile');
 
-let generateWithFailoverRef; // Injected dependency
+// محاولة استيراد نظام التعليم (مع حماية في حال عدم وجود الملف)
+let EDU_SYSTEM;
+try {
+  EDU_SYSTEM = require('../config/education-system');
+} catch (e) {
+  EDU_SYSTEM = { info: "Standard Algerian Curriculum" };
+}
 
-function initAdminController(dependencies) {
+let generateWithFailoverRef;
+
+function initChatController(dependencies) {
   if (!dependencies.generateWithFailover) {
-    throw new Error('Admin Controller requires generateWithFailover for initialization.');
+    throw new Error('Chat Controller requires generateWithFailover.');
   }
   generateWithFailoverRef = dependencies.generateWithFailover;
-  logger.info('Admin Controller initialized.');
+  logger.info('Chat Controller initialized (GenUI + Scheduler Ready).');
 }
 
 const db = getFirestoreInstance();
 
-// ============================================================================
-// 1. FCM TOKEN MANAGEMENT (تحديث توكن الإشعارات)
-// ============================================================================
+// --- Helper: Format Time for Memory ---
+function formatMemoryTime(memoryObject) {
+  if (!memoryObject) return "";
+  // ندعم الحالتين: كائن به timestamp أو نص مباشر
+  const ts = memoryObject.timestamp || null;
+  const val = memoryObject.value || memoryObject.text || memoryObject;
+  
+  if (!ts) return val;
 
-async function updateFcmToken(req, res) {
-  try {
-    const { userId, token } = req.body;
+  const eventDate = new Date(ts);
+  const now = new Date();
+  const diffMs = now - eventDate;
+  const diffHours = diffMs / (1000 * 60 * 60);
+  const diffDays = diffHours / 24;
 
-    if (!userId || !token) {
-      return res.status(400).json({ error: 'userId and token are required.' });
-    }
+  let timeString = "";
+  if (diffHours < 1) timeString = "Just now";
+  else if (diffHours < 24) timeString = `${Math.floor(diffHours)} hours ago`;
+  else if (diffDays < 2) timeString = "Yesterday";
+  else timeString = `${Math.floor(diffDays)} days ago`;
 
-    // حفظ التوكن في وثيقة المستخدم (Merge لعدم حذف البيانات الأخرى)
-    await db.collection('users').doc(userId).set({
-      fcmToken: token,
-      lastTokenUpdate: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
-
-    logger.info(`FCM Token updated for user ${userId}`);
-    res.status(200).json({ success: true });
-
-  } catch (error) {
-    logger.error('Error updating FCM token:', error);
-    res.status(500).json({ error: 'Failed to update token' });
-  }
+  return `(${timeString}): ${val}`;
 }
 
-// ============================================================================
-// 2. CURRICULUM INDEXING (تحديث درس محدد في الـ RAG)
-// ============================================================================
-
-async function indexSpecificLesson(req, res) {
+// --- MAIN ROUTE: Interactive Chat ---
+async function chatInteractive(req, res) {
   try {
-    const { lessonId, lessonTitle, pathId } = req.body;
+    const { userId, message, history = [], sessionId: clientSessionId, context = {} } = req.body;
     
-    if (!lessonId) return res.status(400).json({ error: 'lessonId required' });
-
-    // 1. جلب محتوى الدرس من قاعدة البيانات
-    const contentDoc = await db.collection('lessonsContent').doc(lessonId).get();
-    if (!contentDoc.exists) return res.status(404).json({ error: 'Content not found' });
-    
-    const text = contentDoc.data().content || '';
-    if (!text) return res.status(400).json({ error: 'Lesson is empty' });
-
-    // 2. تقسيم النص (Chunking)
-    // نقسم النص إلى أجزاء صغيرة (حوالي 1000 حرف) لضمان دقة البحث
-    const chunks = text.match(/[\s\S]{1,1000}/g) || [text]; 
-
-    const batch = db.batch();
-    
-    // 3. مسح الـ Embeddings القديمة لهذا الدرس (لتجنب التكرار عند التعديل)
-    const oldEmbeddings = await db.collection('curriculumEmbeddings').where('lessonId', '==', lessonId).get();
-    oldEmbeddings.forEach(doc => batch.delete(doc.ref));
-
-    // 4. إنشاء وحفظ Embeddings جديدة
-    for (const chunk of chunks) {
-      const vec = await embeddingService.generateEmbedding(chunk);
-      
-      if (vec && vec.length > 0) {
-        const newRef = db.collection('curriculumEmbeddings').doc();
-        batch.set(newRef, {
-          lessonId,
-          lessonTitle: lessonTitle || 'Updated Lesson', 
-          pathId: pathId || 'Unknown Path',
-          chunkText: chunk,
-          embedding: vec,
-          type: 'curriculum', // نميزه أنه منهج دراسي
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        });
-      }
+    if (!userId || !message) {
+      return res.status(400).json({ error: 'userId and message are required' });
     }
 
-    await batch.commit();
-    logger.success(`Indexed ${chunks.length} chunks for lesson ${lessonId}`);
-    return res.json({ success: true, message: `Successfully indexed ${chunks.length} chunks.` });
-
-  } catch (e) {
-    logger.error('Indexing failed:', e);
-    return res.status(500).json({ error: e.message });
-  }
-}
-
-// ============================================================================
-// 3. UTILITY ROUTES (أدوات مساعدة: العناوين، الجدولة اليدوية)
-// ============================================================================
-
-async function generateTitleRoute(req, res) {
-  try {
-    const { message, language = 'Arabic' } = req.body || {};
-    if (!message || typeof message !== 'string' || message.trim().length === 0) {
-      return res.status(400).json({ error: 'A non-empty message is required.' });
+    // 1. Session Management
+    let sessionId = clientSessionId;
+    let chatTitle = 'New Chat';
+    if (!sessionId) {
+      sessionId = `chat_${Date.now()}_${userId.slice(0, 5)}`;
+      chatTitle = message.substring(0, 30);
     }
 
-    // استخدام البرومبت المركزي
-    const prompt = PROMPTS.chat.generateTitle(message, language);
+    // 2. Parallel Data Retrieval
+    // نجلب وثيقة المستخدم (userDoc) للوصول للذاكرة الهيكلية (facts, missions)
+    const [
+      memoryReport,
+      curriculumReport,
+      conversationReport,
+      userDocSnapshot,
+      formattedProgress,
+      weaknesses
+    ] = await Promise.all([
+      runMemoryAgent(userId, message).catch(() => ''),
+      runCurriculumAgent(userId, message).catch(() => ''),
+      runConversationAgent(userId, message).catch(() => ''),
+      db.collection('users').doc(userId).get(),
+      formatProgressForAI(userId).catch(() => ''),
+      fetchUserWeaknesses(userId).catch(() => [])
+    ]);
 
-    if (!generateWithFailoverRef) {
-      // Fallback في حالة عدم تهيئة النموذج
-      return res.json({ title: message.substring(0, 30) });
+    const userData = userDocSnapshot.exists ? userDocSnapshot.data() : {};
+    const memory = userData.memory || {};
+
+    // 3. Prepare Temporal Context (Memory Timeline)
+    let emotionalContext = '';
+    if (memory.emotions && Array.isArray(memory.emotions)) {
+       // نأخذ أحدث 3 ونعكسهم
+       const recent = memory.emotions.slice(-3).reverse().map(formatMemoryTime).join('\n- '); 
+       if (recent) emotionalContext = `Recent Emotions:\n- ${recent}`;
+    }
+    
+    let romanceContext = '';
+    if (memory.romance && Array.isArray(memory.romance)) {
+       const recent = memory.romance.slice(-2).reverse().map(formatMemoryTime).join('\n- ');
+       if (recent) romanceContext = `❤️ Romance:\n- ${recent}`;
     }
 
-    const modelResp = await generateWithFailoverRef('titleIntent', prompt, {
-      label: 'GenerateTitle',
-      timeoutMs: 5000,
+    const noteToSelf = userData.aiNoteToSelf || '';
+    
+    // 4. Prepare System Context & Discovery Missions
+    const systemContext = Object.entries(EDU_SYSTEM || {}).map(([k, v]) => `- ${k}: ${v}`).join('\n');
+    // إضافة المهام السرية (Discovery Missions) إذا وجدت في userData
+    // ملاحظة: البرومبت الحالي في ai-prompts.js يتعامل مع userProfileData لاستخراج النواقص،
+    // ويمكننا دمج المهام النشطة في userProfileData.facts أو تمريرها لاحقاً إذا عدلنا البرومبت.
+    // حالياً البرومبت يعتمد على userProfileData.
+
+    // 5. Prepare History string
+    const lastFive = (Array.isArray(history) ? history.slice(-5) : [])
+      .map(h => `${h.role === 'model' ? 'EduAI' : 'User'}: ${safeSnippet(h.text || '', 500)}`)
+      .join('\n');
+
+    // 6. Construct Prompt
+    // ✅ هنا كان الخطأ سابقاً: تأكدنا من الأقواس والترتيب
+    const finalPrompt = PROMPTS.chat.interactiveChat(
+      message,            // message
+      memoryReport,       // memoryReport (Vector)
+      curriculumReport,   // curriculumReport (RAG)
+      conversationReport, // conversationReport
+      lastFive,           // history
+      formattedProgress,  // formattedProgress
+      weaknesses,         // weaknesses
+      emotionalContext,   // emotionalContext (Timeline)
+      romanceContext,     // romanceContext (Timeline)
+      noteToSelf,         // noteToSelfParam
+      CREATOR_PROFILE,    // creatorProfileParam
+      userData,           // userProfileData (Contains facts for discovery)
+      systemContext       // systemContext
+    );
+
+    // 7. Call AI Model
+    if (!generateWithFailoverRef) throw new Error('AI Service not ready');
+    
+    const modelResp = await generateWithFailoverRef('chat', finalPrompt, {
+      label: 'GenUI-Chat',
+      timeoutMs: CONFIG.TIMEOUTS.chat
     });
 
-    const title = await extractTextFromResult(modelResp);
-    
-    // تنظيف العنوان من علامات التنصيص
-    const cleanTitle = (title || message.substring(0, 30)).replace(/["']/g, '');
-    
-    return res.json({ title: cleanTitle });
+    const rawText = await extractTextFromResult(modelResp);
 
-  } catch (err) {
-    logger.error('/generate-title error:', err.stack);
-    const fallbackTitle = req.body.message ? req.body.message.substring(0, 30) : 'New Chat';
-    return res.status(500).json({ title: fallbackTitle });
-  }
-}
+    // 8. Parse JSON & Repair
+    let parsedResponse = await ensureJsonOrRepair(rawText, 'analysis');
 
-async function enqueueJobRoute(req, res) {
-  try {
-    const job = req.body;
-    if (!job) return res.status(400).json({ error: 'job body required' });
-    const id = await enqueueJob(job);
-    return res.json({ jobId: id });
-  } catch (err) { 
-    res.status(500).json({ error: String(err) }); 
-  }
-}
-
-// ============================================================================
-// 4. LEGACY SUPPORT (التحليل الليلي القديم)
-// ============================================================================
-
-async function runNightlyAnalysis(req, res) {
-  try {
-    const providedSecret = req.headers['x-job-secret'];
-    if (providedSecret !== CONFIG.NIGHTLY_JOB_SECRET) {
-      return res.status(401).json({ error: 'Unauthorized.' });
+    if (!parsedResponse || !parsedResponse.reply) {
+      logger.warn('Failed to parse GenUI JSON, falling back.');
+      parsedResponse = {
+        reply: rawText || "عذراً، حدث خطأ تقني بسيط. هل يمكنك إعادة السؤال؟",
+        widgets: [],
+        needsScheduling: false
+      };
     }
 
-    // ⚠️ ملاحظة: تم نقل المنطق الذكي إلى worker.js (Real-time Scheduler)
-    // هذه الدالة موجودة فقط للتوافق مع أي CRON JOB قديم
-    
-    logger.log(`Legacy Nightly Analysis triggered (Skipping heavy operations in favor of Ticker).`);
-    res.status(202).json({ message: 'Legacy job skipped. Use Ticker for real-time scheduling.' });
+    // 9. TRIGGER: Smart Scheduling (Fire & Forget)
+    if (parsedResponse.needsScheduling === true) {
+       logger.info(`[Scheduler] Triggered for user ${userId}`);
+       // نرسل التاريخ كامل مع الرد الجديد للتحليل
+       const fullHistory = [
+          ...history, 
+          { role: 'user', text: message }, 
+          { role: 'model', text: parsedResponse.reply }
+       ];
+       analyzeSessionForEvents(userId, fullHistory).catch(e => logger.error('Scheduler trigger failed', e));
+    }
 
+    // 10. TRIGGER: Fact Harvesting (Real-time)
+    if (parsedResponse.newFact) {
+        const { category, value } = parsedResponse.newFact;
+        if (category && value) {
+            const updates = {};
+            // حفظ الحقيقة مع Timestamp
+            const factObj = { value, timestamp: new Date().toISOString() };
+            updates[`memory.${category}`] = admin.firestore.FieldValue.arrayUnion(factObj);
+            
+            db.collection('users').doc(userId).set(updates, { merge: true })
+              .then(() => logger.success(`[Discovery] AI learned: ${category} -> ${value}`))
+              .catch(e => logger.error('Fact save failed', e));
+        }
+    }
+
+    // 11. Save Session & Memory
+    const botReplyText = parsedResponse.reply;
+    const widgets = parsedResponse.widgets || [];
+
+    const updatedHistory = [
+      ...history,
+      { role: 'user', text: message },
+      { role: 'model', text: botReplyText, widgets: widgets }
+    ];
+
+    saveChatSession(sessionId, userId, chatTitle, updatedHistory, context.type || 'main_chat', context)
+      .catch(e => logger.error('saveChatSession failed:', e));
+    
+    // حفظ الذاكرة النصية (Vector)
+    saveMemoryChunk(userId, message).catch(() => {});
+
+    // 12. Send Response
+    res.status(200).json({
+      reply: botReplyText,
+      widgets: widgets,
+      sessionId,
+      chatTitle,
+    });
+
+  } catch (err) {
+    logger.error('/chat-interactive error:', err.stack || err);
+    res.status(500).json({ 
+      reply: "واجهت مشكلة تقنية بسيطة. حاول مرة أخرى.", 
+      widgets: [] 
+    });
+  }
+}
+
+// --- Helper: General Question (For Worker/Notifications) ---
+async function handleGeneralQuestion(message, language, history = [], userProfile = 'No profile.', userProgress = {}, weaknesses = [], formattedProgress = '', studentName = null) {
+  // Simple prompt for background tasks
+  const prompt = `You are EduAI.
+User: ${studentName || 'Student'}
+Context: ${formattedProgress}
+Question: "${escapeForPrompt(safeSnippet(message, 2000))}"
+Reply in ${language}. Keep it short and helpful.`;
+
+  if (!generateWithFailoverRef) return "Service unavailable.";
+  
+  const modelResp = await generateWithFailoverRef('chat', prompt, { label: 'GeneralQuestion', timeoutMs: CONFIG.TIMEOUTS.chat });
+  return await extractTextFromResult(modelResp);
+}
+
+// --- Route: Chat Suggestions ---
+async function generateChatSuggestions(req, res) {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId is required.' });
+
+    const suggestions = await runSuggestionManager(userId);
+    res.status(200).json({ suggestions });
   } catch (error) {
-    logger.error('[/run-nightly-analysis] error:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
+    logger.error('/generate-chat-suggestions error:', error.stack);
+    res.status(500).json({ suggestions: ["ما هي مهامي؟", "لخص لي الدرس", "نكتة", "نصيحة"] });
   }
 }
 
 module.exports = {
-  initAdminController,
-  enqueueJobRoute,
-  runNightlyAnalysis,
-  generateTitleRoute,
-  indexSpecificLesson, // ✅ المصدر الجديد للفهرسة
-  updateFcmToken       // ✅ المصدر الجديد للتوكن
+  initChatController,
+  chatInteractive,
+  generateChatSuggestions,
+  handleGeneralQuestion
 };
