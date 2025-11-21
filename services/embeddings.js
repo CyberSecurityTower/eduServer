@@ -3,81 +3,96 @@
 'use strict';
 
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { getFirestoreInstance } = require('./data/firestore'); // Import Firestore instance
-const logger = require('../utils/logger'); // Add logger
+const { getFirestoreInstance } = require('./data/firestore');
+const logger = require('../utils/logger');
 
 let db;
 let CONFIG;
 let googleAiClient;
 
-/**
- * يقوم بتهيئة الخدمة وتمرير الإعدادات وقاعدة البيانات من الملف الرئيسي.
- * @param {object} initConfig - كائن يحتوي على db و CONFIG.
- */
 function init(initConfig) {
-  if (!initConfig.db || !initConfig.CONFIG) {
-    throw new Error('Embedding service requires db and CONFIG for initialization.');
-  }
-  db = initConfig.db; // Use the injected db instance
+  db = initConfig.db;
   CONFIG = initConfig.CONFIG;
-
-  const apiKey = process.env.GOOGLE_API_KEY || process.env.GOOGLE_API_KEY_1;
-  if (!apiKey) {
-    throw new Error('No Google API Key found for Embedding service.');
-  }
+  const apiKey = process.env.GOOGLE_API_KEY;
   googleAiClient = new GoogleGenerativeAI(apiKey);
-  logger.success('Embedding Service Initialized.');
 }
 
 async function generateEmbedding(text) {
-  if (!text || typeof text !== 'string' || text.trim().length === 0) {
-    logger.warn('generateEmbedding called with empty or invalid text.');
-    return [];
-  }
   try {
+    if (!text) return [];
     const model = googleAiClient.getGenerativeModel({ model: CONFIG.MODEL.embedding });
     const result = await model.embedContent(text);
     return result.embedding.values;
   } catch (err) {
-    logger.error(`[Embedding Service] Failed to generate embedding for text: "${text.substring(0, 50)}..."`, err.message);
-    throw err;
+    logger.error('Embedding generation failed:', err.message);
+    return [];
   }
 }
 
+// دالة حساب التشابه الرياضية
 function cosineSimilarity(vecA, vecB) {
   if (!vecA || !vecB || vecA.length !== vecB.length) return 0;
-  const dotProduct = vecA.reduce((acc, val, i) => acc + val * vecB[i], 0);
-  const magA = Math.sqrt(vecA.reduce((acc, val) => acc + val * val, 0));
-  const magB = Math.sqrt(vecB.reduce((acc, val) => acc + val * val, 0));
+  let dotProduct = 0;
+  let magA = 0;
+  let magB = 0;
+  for (let i = 0; i < vecA.length; i++) {
+    dotProduct += vecA[i] * vecB[i];
+    magA += vecA[i] * vecA[i];
+    magB += vecB[i] * vecB[i];
+  }
+  magA = Math.sqrt(magA);
+  magB = Math.sqrt(magB);
   if (magA === 0 || magB === 0) return 0;
   return dotProduct / (magA * magB);
 }
 
-async function findSimilarEmbeddings(queryEmbedding, collectionName, topN = 3, userId = null) {
+/**
+ * ✅ النسخة المحسنة: البحث الدقيق
+ * @param {number} minScore - أقل نسبة تشابه مقبولة (0.0 - 1.0)
+ */
+async function findSimilarEmbeddings(queryEmbedding, collectionName, topN = 3, userId = null, minScore = 0.70) {
   try {
-    const dbInstance = getFirestoreInstance(); // Ensure db is initialized
+    const dbInstance = getFirestoreInstance();
     let query = dbInstance.collection(collectionName);
+    
+    // فلترة حسب المستخدم لتسريع البحث وتقليل التكلفة
     if (userId) {
       query = query.where('userId', '==', userId);
     }
 
-    const snapshot = await query.limit(500).get();
+    // ⚠️ ملاحظة: في الإنتاج الضخم (10k+ docs) نستخدم Vector DB مثل Pinecone
+    // لكن مع Firestore والعدد المحدود، سنحدد السقف بـ 200 مستند أحدث
+    if (userId) {
+        // للذكريات الشخصية، نبحث في الأحدث
+        query = query.orderBy('timestamp', 'desc').limit(200); 
+    } else {
+        // للمنهج الدراسي، قد نحتاج لعدد أكبر أو تقسيم للكوليكشن
+        query = query.limit(500); 
+    }
+
+    const snapshot = await query.get();
     if (snapshot.empty) return [];
 
     const similarities = [];
     snapshot.forEach(doc => {
       const data = doc.data();
-      if (data.embedding && Array.isArray(data.embedding)) {
-        const similarity = cosineSimilarity(queryEmbedding, data.embedding);
-        similarities.push({ ...data, score: similarity });
+      if (data.embedding) {
+        const score = cosineSimilarity(queryEmbedding, data.embedding);
+        // ✅ الفلتر الذهبي: استبعاد المعلومات غير ذات الصلة
+        if (score >= minScore) {
+            similarities.push({ ...data, score });
+        }
       }
     });
 
+    // ترتيب تنازلي حسب الأفضل
     similarities.sort((a, b) => b.score - a.score);
+    
+    // إرجاع أفضل N نتائج فقط
     return similarities.slice(0, topN);
 
   } catch (error) {
-    logger.error(`[Embedding Service] Error finding similar embeddings in "${collectionName}":`, error.message);
+    logger.error(`Similarity search failed in ${collectionName}:`, error.message);
     return [];
   }
 }
