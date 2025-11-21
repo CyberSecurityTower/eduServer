@@ -25,7 +25,8 @@ Message: "${escapeForPrompt(safeSnippet(message, 300))}"`,
       romanceContext = '',
       noteToSelfParam = '',
       creatorProfileParam = null,
-      userProfileData = {}
+      userProfileData = {},
+      systemContext
     ) => {
       // Resolve creator/profile sources
       const creator = creatorProfileParam || CREATOR_PROFILE;
@@ -176,7 +177,8 @@ Curriculum / Subject Context: ${safeCurriculum}
 Progress / Stats: ${safeProgress}
 Memory Snapshot: ${safeMemory}
 Weaknesses (auto): ${safeWeaknesses}
-
+**EDUCATION SYSTEM RULES:**
+${systemContext}
 **INSTRUCTIONS (Concise):**
 1. Speak in Derja with the Algerian vibe, use the emoji guide.
 2. Follow formatting rules for the "reply".
