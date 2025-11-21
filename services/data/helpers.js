@@ -431,6 +431,98 @@ async function sendUserNotification(userId, payload = {}) {
     logger.error(`sendUserNotification failed for ${userId}:`, err.message);
   }
 }
+async function sendUserNotification(userId, payload = {}) {
+  if (!userId) return;
+
+  const title = payload.title || 'EduAI';
+  const message = payload.message || '';
+  const type = payload.type || 'system';
+  const meta = payload.meta || {};
+
+  try {
+    // 1. حفظ الإشعار في قاعدة البيانات (لأرشيف التطبيق)
+    await db.collection('userNotifications').doc(userId).collection('inbox').add({
+      title: title,
+      message: message,
+      type: type,
+      meta: meta,
+      read: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    
+    logger.log(`[Notification] Saved to DB for user ${userId}`);
+
+    // 2. جلب التوكن الخاص بالمستخدم
+    const userDoc = await db.collection('users').doc(userId).get();
+    
+    if (!userDoc.exists) {
+      logger.warn(`[Notification] User ${userId} not found.`);
+      return;
+    }
+
+    const userData = userDoc.data();
+    const fcmToken = userData.fcmToken; // ✅ هذا الاسم يطابق الكود الذي أرسلته لي
+
+    if (!fcmToken) {
+      logger.log(`[Notification] No FCM Token for user ${userId} (User might be offline/logged out).`);
+      return;
+    }
+
+    // 3. تجهيز رسالة FCM
+    // تحويل الـ meta إلى String لأن FCM لا يقبل JSON متداخل في الـ data
+    const stringifiedMeta = Object.keys(meta).reduce((acc, key) => {
+      acc[key] = String(meta[key]);
+      return acc;
+    }, {});
+
+    const messagePayload = {
+      token: fcmToken,
+      notification: {
+        title: title,
+        body: message,
+      },
+      // بيانات إضافية للتعامل معها برمجياً عند الضغط على الإشعار
+      data: {
+        click_action: 'FLUTTER_NOTIFICATION_CLICK',
+        type: type,
+        userId: userId,
+        ...stringifiedMeta
+      },
+      // إعدادات أندرويد لضمان الوصول
+      android: {
+        priority: 'high',
+        notification: {
+          sound: 'default',
+          channelId: 'eduai_alerts', // تأكد من إنشاء هذه القناة في الفرونت إند
+        }
+      },
+      // إعدادات iOS
+      apns: {
+        payload: {
+          aps: {
+            sound: 'default',
+            badge: 1,
+          }
+        }
+      }
+    };
+
+    // 4. الإرسال الفعلي
+    await admin.messaging().send(messagePayload);
+    logger.success(`[Notification] 📲 Push sent successfully to ${userId}`);
+
+  } catch (err) {
+    // التعامل مع التوكنات منتهية الصلاحية
+    if (err.code === 'messaging/registration-token-not-registered') {
+      logger.warn(`[Notification] Token invalid for user ${userId}. Removing from DB.`);
+      await db.collection('users').doc(userId).update({
+        fcmToken: admin.firestore.FieldValue.delete()
+      });
+    } else {
+      logger.error(`[Notification] Failed to send push: ${err.message}`);
+    }
+  }
+}
 module.exports = {
   initDataHelpers,
   getUserDisplayName,
