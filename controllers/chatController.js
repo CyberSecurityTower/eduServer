@@ -117,6 +117,27 @@ async function chatInteractive(req, res) {
             widgets: [] 
         });
       }
+   // 9. Memory Harvesting (Real-time)
+    const updates = {};
+    
+    // هل اكتشفنا معلومة جديدة؟ (المهمة السرية نجحت!)
+    if (parsedResponse.newFact) {
+        const { category, value } = parsedResponse.newFact;
+        // حفظ في map: facts.music = "Rai"
+        updates[`facts.${category}`] = admin.firestore.FieldValue.arrayUnion(value); 
+        logger.success(`[Discovery] AI learned: ${category} -> ${value}`);
+    }
+
+    // هل ترك الـ AI ملاحظة لنفسه؟
+    if (parsedResponse.noteToNextSelf) {
+        updates['aiNoteToSelf'] = parsedResponse.noteToNextSelf;
+        logger.info(`[Self-Note] Saved: ${parsedResponse.noteToNextSelf}`);
+    }
+
+    // تنفيذ التحديث إذا وجد
+    if (Object.keys(updates).length > 0) {
+        await db.collection('users').doc(userId).set(updates, { merge: true });
+    }
 }
 
 // --- Suggestions Handler ---
