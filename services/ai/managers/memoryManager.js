@@ -8,10 +8,11 @@ const logger = require('../../../utils/logger');
 
 let db;
 let embeddingServiceRef;
-let generateWithFailoverRef; // ✅ نحتاج هذا لتحليل النصوص واستخراج المعلومات
+let generateWithFailoverRef;
+
 const COLLECTION_NAME = 'userMemoryEmbeddings';
 
-// ✅ التحديث: استقبال generateWithFailover
+// ✅ تهيئة المدير مع التبعيات اللازمة
 function initMemoryManager(initConfig) {
   if (!initConfig.db || !initConfig.embeddingService || !initConfig.generateWithFailover) {
     throw new Error('Memory Manager requires db, embeddingService, and generateWithFailover.');
@@ -19,10 +20,10 @@ function initMemoryManager(initConfig) {
   db = initConfig.db;
   embeddingServiceRef = initConfig.embeddingService;
   generateWithFailoverRef = initConfig.generateWithFailover;
-  logger.success('Memory Manager Initialized (Vector + Structured).');
+  logger.success('Memory Manager Initialized (Vector + Temporal Structured).');
 }
 
-// 1. الذاكرة المتجهة (Vector Memory) - للبحث العام
+// 1. الذاكرة المتجهة (Vector Memory) - للبحث العام في الأرشيف
 async function saveMemoryChunk(userId, text) {
   if (!userId || !text || text.trim().length < 10) return;
   try {
@@ -41,7 +42,7 @@ async function saveMemoryChunk(userId, text) {
   }
 }
 
-// 2. استرجاع الذاكرة المتجهة
+// 2. استرجاع الذاكرة المتجهة (للسياق العام)
 async function runMemoryAgent(userId, userMessage) {
   try {
     if (!embeddingServiceRef) return '';
@@ -62,70 +63,70 @@ async function runMemoryAgent(userId, userMessage) {
   }
 }
 
-// 3. ✅ (الجديد) الذاكرة الهيكلية - لاستخراج الحقائق والمشاعر
+// 3. ✅ الذاكرة الهيكلية الزمنية (Temporal Structured Memory)
+// تستخرج الحقائق والمشاعر وتربطها بوقت حدوثها
 async function analyzeAndSaveMemory(userId, history) {
   try {
     // نأخذ آخر جزء من المحادثة للتحليل
-    const recentChat = history.slice(-10).map(m => `${m.role}: ${m.text}`).join('\n');
+    const recentChat = history.slice(-15).map(m => `${m.role}: ${m.text}`).join('\n');
     
     const prompt = `
-    Analyze this conversation segment. Extract specific FACTS about the user and organize them.
+    Analyze the conversation deeply. Extract TIMED FACTS about the user.
     
     **Categories:**
-    - **emotions**: Current mood (stressed, confident, happy).
-    - **family**: Mentions of parents, siblings, names.
-    - **preferences**: Favorite music, food, subject, hobbies.
-    - **goals**: Academic or personal goals.
-    
-    **Also:** Write a short "Note to Self" for the AI to use in the NEXT conversation (e.g., "Ask about the math test result").
+    1. **emotions**: Current mood (Sad, Excited, Angry, Stressed).
+    2. **romance**: Crushes, relationships, heartbreaks.
+    3. **preferences**: Fav music (e.g., Rai, Rap), food, hobbies.
+    4. **family**: Parents, siblings, friends.
+    5. **struggles**: Academic or personal problems.
 
-    **Conversation:**
+    **Also:** Write a "Note to Self" (optional) for the next conversation.
+
+    **Input Transcript:**
     ${recentChat}
 
     **Output JSON ONLY:**
     {
-      "facts": {
-        "emotions": ["..."],
-        "family": ["..."],
-        "preferences": ["..."],
-        "goals": ["..."]
-      },
-      "noteToSelf": "..."
+      "newFacts": [
+        { "category": "emotions", "text": "Feeling down because of a fight with dad" },
+        { "category": "preferences", "text": "Loves eating Mahjouba" }
+      ],
+      "noteToSelf": "Ask him if he made up with his dad next time."
     }
-    Return {} if nothing significant found.
     `;
 
-    // نستخدم نموذج التحليل
+    // نستخدم نموذج التحليل (Flash أو Pro حسب التوفر)
     const res = await generateWithFailoverRef('analysis', prompt, { label: 'MemoryExtractor' });
     const raw = await extractTextFromResult(res);
     const data = await ensureJsonOrRepair(raw, 'analysis');
 
-    if (data) {
+    if (data && data.newFacts && Array.isArray(data.newFacts) && data.newFacts.length > 0) {
       const updates = {};
-      let hasUpdates = false;
+      const now = new Date().toISOString(); // ⏰ الوقت الحالي للسيرفر
 
-      // تحديث الحقائق (باستخدام arrayUnion لعدم تكرار البيانات)
-      if (data.facts) {
-        for (const [category, items] of Object.entries(data.facts)) {
-          if (Array.isArray(items) && items.length > 0) {
-            // نخزنها في حقل: memory.preferences, memory.family ...
-            updates[`memory.${category}`] = admin.firestore.FieldValue.arrayUnion(...items);
-            hasUpdates = true;
-            logger.info(`[Memory] Learned ${category}: ${items.join(', ')}`);
-          }
+      // معالجة كل حقيقة وإضافة الزمن لها
+      data.newFacts.forEach(fact => {
+        if (fact.category && fact.text) {
+          const memoryObject = {
+            value: fact.text,   // المعلومة
+            timestamp: now      // 🕒 متى عرفنا هذه المعلومة
+          };
+          
+          // نستخدم arrayUnion لإضافتها للقائمة المناسبة في وثيقة المستخدم
+          // مثال: memory.emotions, memory.romance
+          updates[`memory.${fact.category}`] = admin.firestore.FieldValue.arrayUnion(memoryObject);
+          
+          logger.info(`[Memory] Learned (${fact.category}): "${fact.text}" at ${now}`);
         }
-      }
+      });
 
-      // تحديث الملاحظة للمستقبل
+      // تحديث الملاحظة المستقبلية
       if (data.noteToSelf) {
         updates['aiNoteToSelf'] = data.noteToSelf;
-        hasUpdates = true;
       }
 
-      // الحفظ في وثيقة المستخدم
-      if (hasUpdates) {
-        await db.collection('users').doc(userId).set(updates, { merge: true });
-      }
+      // الحفظ في وثيقة المستخدم الرئيسية
+      await db.collection('users').doc(userId).set(updates, { merge: true });
     }
 
   } catch (error) {
@@ -137,5 +138,5 @@ module.exports = {
   initMemoryManager,
   saveMemoryChunk,
   runMemoryAgent,
-  analyzeAndSaveMemory // ✅ الآن موجودة ومصدرة
+  analyzeAndSaveMemory
 };
