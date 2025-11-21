@@ -1,256 +1,186 @@
 
-// controllers/chatController.js
+// controllers/adminController.js
 'use strict';
 
 const CONFIG = require('../config');
 const { getFirestoreInstance, admin } = require('../services/data/firestore');
-const {
-  getProgress, fetchUserWeaknesses, formatProgressForAI, saveChatSession
-} = require('../services/data/helpers');
-
-// Managers
-const { runMemoryAgent } = require('../services/ai/managers/memoryManager');
-const { runCurriculumAgent } = require('../services/ai/managers/curriculumManager');
-const { runConversationAgent } = require('../services/ai/managers/conversationManager');
-const { runSuggestionManager } = require('../services/ai/managers/suggestionManager');
-const { analyzeSessionForEvents } = require('../services/ai/managers/sessionAnalyzer'); // ✅ Smart Scheduler
-const EDU_SYSTEM = require('../config/education-system');
-
-// Configs & Utils
-const CREATOR_PROFILE = require('../config/creator-profile'); // ✅ استيراد البروفايل
-const { escapeForPrompt, safeSnippet, extractTextFromResult, ensureJsonOrRepair } = require('../utils');
+const { enqueueJob } = require('../services/jobs/queue');
+const embeddingService = require('../services/embeddings'); // ✅ هام جداً للفهرسة
+const { escapeForPrompt, safeSnippet, extractTextFromResult } = require('../utils');
 const logger = require('../utils/logger');
 const PROMPTS = require('../config/ai-prompts');
 
-let generateWithFailoverRef;
-let saveMemoryChunkRef;
-const db = getFirestoreInstance(); // Initialize DB instance
+let generateWithFailoverRef; // Injected dependency
 
-function initChatController(dependencies) {
-  if (!dependencies.generateWithFailover) throw new Error('Chat Controller needs generateWithFailover');
+function initAdminController(dependencies) {
+  if (!dependencies.generateWithFailover) {
+    throw new Error('Admin Controller requires generateWithFailover for initialization.');
+  }
   generateWithFailoverRef = dependencies.generateWithFailover;
-  saveMemoryChunkRef = dependencies.saveMemoryChunk;
-  logger.info('Chat Controller initialized.');
+  logger.info('Admin Controller initialized.');
 }
 
-// ✅ Helper: Format Time for Memory (Context Awareness)
-function formatMemoryTime(memoryObject) {
-  if (!memoryObject || !memoryObject.timestamp) return "";
-  
-  const eventDate = new Date(memoryObject.timestamp);
-  const now = new Date();
-  const diffMs = now - eventDate;
-  const diffHours = diffMs / (1000 * 60 * 60);
-  const diffDays = diffHours / 24;
+const db = getFirestoreInstance();
 
-  let timeString = "";
-  if (diffHours < 1) timeString = "Just now";
-  else if (diffHours < 24) timeString = `${Math.floor(diffHours)} hours ago`;
-  else if (diffDays < 2) timeString = "Yesterday";
-  else timeString = `${Math.floor(diffDays)} days ago`;
+// ============================================================================
+// 1. FCM TOKEN MANAGEMENT (تحديث توكن الإشعارات)
+// ============================================================================
 
-  // نفترض أن الحقل المخزن اسمه 'value' أو 'text'
-  const content = memoryObject.value || memoryObject.text || ""; 
-  return `(${timeString}): ${content}`;
-}
-
-// --- GenUI Main Handler ---
-async function chatInteractive(req, res) {
-    const { userId, message, history = [], sessionId: clientSessionId, context = {} } = req.body;
-    
-    if (!userId || !message) {
-        return res.status(400).json({ error: 'Missing userId or message' });
-    }
-
-    const sessionId = clientSessionId || `chat_${Date.now()}_${userId.slice(0, 5)}`;
-    const chatTitle = message.substring(0, 30);
-
-    try {
-        // 1. RAG & Context Retrieval (Parallel for speed)
-        const [
-          vectorMemoryReport, // الذاكرة النصية القديمة (Embeddings)
-          curriculumReport,
-          conversationReport,
-          progress,
-          weaknesses,
-          formattedProgress,
-          userDocSnapshot // ✅ نجلب وثيقة المستخدم كاملة للذاكرة الهيكلية
-        ] = await Promise.all([
-          runMemoryAgent(userId, message).catch(() => ''),
-          runCurriculumAgent(userId, message).catch(() => ''),
-          runConversationAgent(userId, message).catch(() => ''),
-          getProgress(userId).catch(() => ({})),
-          fetchUserWeaknesses(userId).catch(() => []),
-          formatProgressForAI(userId).catch(() => ''),
-          db.collection('users').doc(userId).get(),
-        ]);
-
-        // 2. معالجة الذاكرة الهيكلية والزمنية (Temporal & Structured Memory)
-        const userData = userDocSnapshot.exists ? userDocSnapshot.data() : {};
-        const structuredMemory = userData.memory || {};
-
-        // A. Emotional Context
-        let emotionalContext = "Mood: Stable/Unknown.";
-        if (structuredMemory.emotions && Array.isArray(structuredMemory.emotions) && structuredMemory.emotions.length > 0) {
-            // نأخذ آخر 3 مشاعر (الأحدث أولاً)
-            const recent = structuredMemory.emotions.slice(-3).reverse().map(formatMemoryTime);
-            emotionalContext = `Recent Moods:\n- ${recent.join('\n- ')}`;
-        }
-
-        // B. Romance Context
-        let romanceContext = "";
-        if (structuredMemory.romance && Array.isArray(structuredMemory.romance) && structuredMemory.romance.length > 0) {
-            const recent = structuredMemory.romance.slice(-2).reverse().map(formatMemoryTime);
-            romanceContext = `❤️ Romance Life:\n- ${recent.join('\n- ')}`;
-        }
-        
-        // C. Note From Past Self
-        const noteToSelf = userData.aiNoteToSelf 
-            ? `📝 **NOTE FROM YOUR PAST SELF:** "${userData.aiNoteToSelf}"` 
-            : "";
-
-        // 3. تجهيز سجل المحادثة (Last 5 exchanges)
-        const lastFive = (Array.isArray(history) ? history.slice(-5) : [])
-          .map(h => `${h.role === 'model' ? 'EduAI' : 'User'}: ${safeSnippet(h.text || '', 200)}`).join('\n');
-      const systemContext = `🎓 **SYSTEM RULES:**\n` + 
-  Object.entries(EDU_SYSTEM).map(([k, v]) => `- ${k}: ${v}`).join('\n');
-
-// نمرره للبرومبت
-const finalPrompt = PROMPTS.chat.interactiveChat(
-        // 4. بناء البرومبت النهائي (Prompt Engineering)
-        const finalPrompt = PROMPTS.chat.interactiveChat(
-          message,
-          vectorMemoryReport,
-          curriculumReport,
-          conversationReport,
-          lastFive,
-          formattedProgress,
-          weaknesses,
-          emotionalContext, // ✅ سياق المشاعر
-          romanceContext,   // ✅ سياق العلاقات
-          noteToSelf,       // ✅ ملاحظة للذات
-          CREATOR_PROFILE,   // ✅ ملف المؤسس
-          systemContext
-        );
-
-        // 5. توليد الرد (AI Generation)
-        const modelResp = await generateWithFailoverRef('chat', finalPrompt, { label: 'GenUI', timeoutMs: 25000 });
-        const rawText = await extractTextFromResult(modelResp);
-
-        // 6. تحليل وإصلاح الـ JSON (Parsing & Repair)
-        let parsed = await ensureJsonOrRepair(rawText, 'chat');
-        
-        // Fallback safety
-        if (!parsed || !parsed.reply) {
-          logger.warn(`JSON parsing failed for user ${userId}, falling back to raw text.`);
-          parsed = { reply: rawText || "عذراً، حدث خطأ بسيط في المعالجة.", widgets: [], needsScheduling: false };
-        }
-
-        const botReplyText = parsed.reply;
-        const widgets = parsed.widgets || [];
-
-        // 7. بناء التاريخ المحدث (Updated History)
-        const updatedHistory = [
-            ...history, 
-            { role: 'user', text: message }, 
-            { role: 'model', text: botReplyText, widgets: widgets }
-        ];
-        
-        // 8. إرسال الرد للعميل (Fast Response) 🚀
-        res.status(200).json({
-          reply: botReplyText,
-          widgets: widgets,
-          sessionId,
-          chatTitle
-        });
-
-        // ============================================================
-        // 9. مهام الخلفية (Post-Response Background Tasks) 🏃‍♂️💨
-        // ============================================================
-
-        // A. حفظ الجلسة
-        saveChatSession(sessionId, userId, chatTitle, updatedHistory, context.type || 'main', context)
-          .catch(e => logger.error('SaveChat err', e));
-        
-        // B. حفظ الذاكرة المتجهة (Vector)
-        if (saveMemoryChunkRef) {
-            saveMemoryChunkRef(userId, message).catch(() => {});
-        }
-
-        // C. الجدولة الذكية (Smart Scheduler Trigger)
-        if (parsed.needsScheduling === true) {
-            logger.info(`[Scheduler] Triggered for user ${userId}`);
-            // نرسل السجل كاملاً ليعرف الماناجر على ماذا وافق المستخدم
-            analyzeSessionForEvents(userId, updatedHistory).catch(err => {
-                logger.warn(`[Scheduler] Analysis failed:`, err.message);
-            });
-        }
-
-        // D. حصاد المعلومات الفوري (Memory Harvesting)
-        // إذا اكتشف الـ AI معلومة جديدة أثناء المحادثة وقرر إرسالها فوراً
-        const updates = {};
-        
-        // هل اكتشفنا معلومة جديدة؟ (المهمة السرية نجحت!)
-        if (parsed.newFact) {
-            const { category, value } = parsed.newFact;
-            if (category && value) {
-                const memoryObject = {
-                    value: value,
-                    timestamp: new Date().toISOString() // نضيف التوقيت هنا
-                };
-                // حفظ في: memory.preferences = [...]
-                updates[`memory.${category}`] = admin.firestore.FieldValue.arrayUnion(memoryObject); 
-                logger.success(`[Discovery] AI learned: ${category} -> ${value}`);
-            }
-        }
-
-        // هل ترك الـ AI ملاحظة لنفسه للمرة القادمة؟
-        if (parsed.noteToNextSelf) {
-            updates['aiNoteToSelf'] = parsed.noteToNextSelf;
-            logger.info(`[Self-Note] Saved: ${parsed.noteToNextSelf}`);
-        }
-
-        // تنفيذ التحديث
-        if (Object.keys(updates).length > 0) {
-            db.collection('users').doc(userId).set(updates, { merge: true })
-              .catch(err => logger.error('Harvesting Save Error:', err));
-        }
-    
-    } catch (err) {
-        logger.error('chatInteractive Critical Error:', err);
-        // رد آمن في حالة الانهيار التام
-        if (!res.headersSent) {
-            res.status(500).json({ 
-                reply: "واجهت مشكلة تقنية بسيطة. هل يمكنك إعادة السؤال؟", 
-                widgets: [] 
-            });
-        }
-    }
-}
-
-// --- Suggestions Handler ---
-async function generateChatSuggestions(req, res) {
+async function updateFcmToken(req, res) {
   try {
-    const { userId } = req.body;
-    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const { userId, token } = req.body;
 
-    const suggestions = await runSuggestionManager(userId);
-    res.status(200).json({ suggestions });
+    if (!userId || !token) {
+      return res.status(400).json({ error: 'userId and token are required.' });
+    }
+
+    // حفظ التوكن في وثيقة المستخدم (Merge لعدم حذف البيانات الأخرى)
+    await db.collection('users').doc(userId).set({
+      fcmToken: token,
+      lastTokenUpdate: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    logger.info(`FCM Token updated for user ${userId}`);
+    res.status(200).json({ success: true });
+
   } catch (error) {
-    logger.error('generateChatSuggestions Error:', error);
-    res.status(500).json({ suggestions: ["لخص لي هذا الدرس", "أعطني كويز سريع", "اشرح لي المفهوم الأساسي"] });
+    logger.error('Error updating FCM token:', error);
+    res.status(500).json({ error: 'Failed to update token' });
   }
 }
 
-// --- Legacy Handler (for Worker fallback) ---
-async function handleGeneralQuestion(message, language = 'Arabic') {
-    // هذه الدالة تستخدمها الـ Workers للرد النصي البسيط
-    return "أنا هنا لمساعدتك! (رد تلقائي)"; 
+// ============================================================================
+// 2. CURRICULUM INDEXING (تحديث درس محدد في الـ RAG)
+// ============================================================================
+
+async function indexSpecificLesson(req, res) {
+  try {
+    const { lessonId, lessonTitle, pathId } = req.body;
+    
+    if (!lessonId) return res.status(400).json({ error: 'lessonId required' });
+
+    // 1. جلب محتوى الدرس من قاعدة البيانات
+    const contentDoc = await db.collection('lessonsContent').doc(lessonId).get();
+    if (!contentDoc.exists) return res.status(404).json({ error: 'Content not found' });
+    
+    const text = contentDoc.data().content || '';
+    if (!text) return res.status(400).json({ error: 'Lesson is empty' });
+
+    // 2. تقسيم النص (Chunking)
+    // نقسم النص إلى أجزاء صغيرة (حوالي 1000 حرف) لضمان دقة البحث
+    const chunks = text.match(/[\s\S]{1,1000}/g) || [text]; 
+
+    const batch = db.batch();
+    
+    // 3. مسح الـ Embeddings القديمة لهذا الدرس (لتجنب التكرار عند التعديل)
+    const oldEmbeddings = await db.collection('curriculumEmbeddings').where('lessonId', '==', lessonId).get();
+    oldEmbeddings.forEach(doc => batch.delete(doc.ref));
+
+    // 4. إنشاء وحفظ Embeddings جديدة
+    for (const chunk of chunks) {
+      const vec = await embeddingService.generateEmbedding(chunk);
+      
+      if (vec && vec.length > 0) {
+        const newRef = db.collection('curriculumEmbeddings').doc();
+        batch.set(newRef, {
+          lessonId,
+          lessonTitle: lessonTitle || 'Updated Lesson', 
+          pathId: pathId || 'Unknown Path',
+          chunkText: chunk,
+          embedding: vec,
+          type: 'curriculum', // نميزه أنه منهج دراسي
+          createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+      }
+    }
+
+    await batch.commit();
+    logger.success(`Indexed ${chunks.length} chunks for lesson ${lessonId}`);
+    return res.json({ success: true, message: `Successfully indexed ${chunks.length} chunks.` });
+
+  } catch (e) {
+    logger.error('Indexing failed:', e);
+    return res.status(500).json({ error: e.message });
+  }
+}
+
+// ============================================================================
+// 3. UTILITY ROUTES (أدوات مساعدة: العناوين، الجدولة اليدوية)
+// ============================================================================
+
+async function generateTitleRoute(req, res) {
+  try {
+    const { message, language = 'Arabic' } = req.body || {};
+    if (!message || typeof message !== 'string' || message.trim().length === 0) {
+      return res.status(400).json({ error: 'A non-empty message is required.' });
+    }
+
+    // استخدام البرومبت المركزي
+    const prompt = PROMPTS.chat.generateTitle(message, language);
+
+    if (!generateWithFailoverRef) {
+      // Fallback في حالة عدم تهيئة النموذج
+      return res.json({ title: message.substring(0, 30) });
+    }
+
+    const modelResp = await generateWithFailoverRef('titleIntent', prompt, {
+      label: 'GenerateTitle',
+      timeoutMs: 5000,
+    });
+
+    const title = await extractTextFromResult(modelResp);
+    
+    // تنظيف العنوان من علامات التنصيص
+    const cleanTitle = (title || message.substring(0, 30)).replace(/["']/g, '');
+    
+    return res.json({ title: cleanTitle });
+
+  } catch (err) {
+    logger.error('/generate-title error:', err.stack);
+    const fallbackTitle = req.body.message ? req.body.message.substring(0, 30) : 'New Chat';
+    return res.status(500).json({ title: fallbackTitle });
+  }
+}
+
+async function enqueueJobRoute(req, res) {
+  try {
+    const job = req.body;
+    if (!job) return res.status(400).json({ error: 'job body required' });
+    const id = await enqueueJob(job);
+    return res.json({ jobId: id });
+  } catch (err) { 
+    res.status(500).json({ error: String(err) }); 
+  }
+}
+
+// ============================================================================
+// 4. LEGACY SUPPORT (التحليل الليلي القديم)
+// ============================================================================
+
+async function runNightlyAnalysis(req, res) {
+  try {
+    const providedSecret = req.headers['x-job-secret'];
+    if (providedSecret !== CONFIG.NIGHTLY_JOB_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized.' });
+    }
+
+    // ⚠️ ملاحظة: تم نقل المنطق الذكي إلى worker.js (Real-time Scheduler)
+    // هذه الدالة موجودة فقط للتوافق مع أي CRON JOB قديم
+    
+    logger.log(`Legacy Nightly Analysis triggered (Skipping heavy operations in favor of Ticker).`);
+    res.status(202).json({ message: 'Legacy job skipped. Use Ticker for real-time scheduling.' });
+
+  } catch (error) {
+    logger.error('[/run-nightly-analysis] error:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
 }
 
 module.exports = {
-  initChatController,
-  chatInteractive,
-  generateChatSuggestions,
-  handleGeneralQuestion
+  initAdminController,
+  enqueueJobRoute,
+  runNightlyAnalysis,
+  generateTitleRoute,
+  indexSpecificLesson, // ✅ المصدر الجديد للفهرسة
+  updateFcmToken       // ✅ المصدر الجديد للتوكن
 };
