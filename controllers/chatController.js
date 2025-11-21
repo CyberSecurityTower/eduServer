@@ -14,6 +14,7 @@ const { runCurriculumAgent } = require('../services/ai/managers/curriculumManage
 const { runConversationAgent } = require('../services/ai/managers/conversationManager');
 const { runSuggestionManager } = require('../services/ai/managers/suggestionManager');
 const { analyzeSessionForEvents } = require('../services/ai/managers/sessionAnalyzer'); // ✅ Smart Scheduler
+const EDU_SYSTEM = require('../config/education-system');
 
 // Configs & Utils
 const CREATOR_PROFILE = require('../config/creator-profile'); // ✅ استيراد البروفايل
@@ -111,7 +112,11 @@ async function chatInteractive(req, res) {
         // 3. تجهيز سجل المحادثة (Last 5 exchanges)
         const lastFive = (Array.isArray(history) ? history.slice(-5) : [])
           .map(h => `${h.role === 'model' ? 'EduAI' : 'User'}: ${safeSnippet(h.text || '', 200)}`).join('\n');
+      const systemContext = `🎓 **SYSTEM RULES:**\n` + 
+  Object.entries(EDU_SYSTEM).map(([k, v]) => `- ${k}: ${v}`).join('\n');
 
+// نمرره للبرومبت
+const finalPrompt = PROMPTS.chat.interactiveChat(
         // 4. بناء البرومبت النهائي (Prompt Engineering)
         const finalPrompt = PROMPTS.chat.interactiveChat(
           message,
@@ -124,7 +129,8 @@ async function chatInteractive(req, res) {
           emotionalContext, // ✅ سياق المشاعر
           romanceContext,   // ✅ سياق العلاقات
           noteToSelf,       // ✅ ملاحظة للذات
-          CREATOR_PROFILE   // ✅ ملف المؤسس
+          CREATOR_PROFILE,   // ✅ ملف المؤسس
+          systemContext
         );
 
         // 5. توليد الرد (AI Generation)
