@@ -6,7 +6,7 @@
 const CONFIG = {
   PORT: Number(process.env.PORT || 3000),
   MODEL: {
-    chat: 'gemini-2.5-pro',
+    chat: 'gemini-3-pro-preview',
     todo: 'gemini-2.5-flash',
     planner: 'gemini-2.5-flash',
     review: 'gemini-2.5-flash',
@@ -17,8 +17,8 @@ const CONFIG = {
     embedding: 'text-embedding-004',
   },
  TIMEOUTS: {
-    default: Number(process.env.TIMEOUT_DEFAULT_MS || 15000), // زيادة المهلة الافتراضية
-    chat: Number(process.env.TIMEOUT_CHAT_MS || 20000), // زيادة مهلة الدردشة
+    default: Number(process.env.TIMEOUT_DEFAULT_MS || 15000), 
+    chat: Number(process.env.TIMEOUT_CHAT_MS || 20000), 
     notification: Number(process.env.TIMEOUT_NOTIFICATION_MS || 10000),
     review: Number(process.env.TIMEOUT_REVIEW_MS || 10000),
     analysis: Number(process.env.TIMEOUT_ANALYSIS_MS || 15000),
