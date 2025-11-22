@@ -10,7 +10,6 @@ const { escapeForPrompt, safeSnippet, extractTextFromResult } = require('../util
 const logger = require('../utils/logger');
 
 let generateWithFailoverRef; // Injected dependency
-const { getFirestoreInstance, admin } = require('../services/data/firestore');
 const embeddingService = require('../services/embeddings'); // تأكد من المسار
 
 // دالة لفهرسة درس واحد فقط عند الطلب
