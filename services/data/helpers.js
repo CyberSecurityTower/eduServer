@@ -523,6 +523,56 @@ async function sendUserNotification(userId, payload = {}) {
     }
   }
 }
+/**
+ * 🕰️ خوارزمية الوقت الذهبي
+ * تبحث في تاريخ المستخدم لتجد الساعة المفضلة لديه للدراسة
+ */
+async function getOptimalStudyTime(userId) {
+  try {
+    // 1. نفترض أن لديك كوليكشن analytics_logs (أو نستخدم أوقات الرسائل في chatSessions كبديل سريع)
+    // هنا سنستخدم chatSessions لأنها ممتلئة بالبيانات بالفعل
+    const sessions = await db.collection('chatSessions')
+      .where('userId', '==', userId)
+      .orderBy('updatedAt', 'desc')
+      .limit(20) // نحلل آخر 20 جلسة
+      .get();
+
+    let bestHour = 19; // الافتراضي: 7 مساءً
+
+    if (!sessions.empty) {
+      const hourCounts = {};
+      
+      sessions.forEach(doc => {
+        // نأخذ توقيت آخر رسالة
+        const date = doc.data().updatedAt.toDate();
+        // نأخذ الساعة (0-23)
+        const h = date.getHours();
+        hourCounts[h] = (hourCounts[h] || 0) + 1;
+      });
+
+      // إيجاد الساعة الأكثر تكراراً
+      bestHour = Object.keys(hourCounts).reduce((a, b) => hourCounts[a] > hourCounts[b] ? a : b);
+    }
+
+    // 2. تجهيز تاريخ الغد في هذه الساعة
+    const targetDate = new Date();
+    targetDate.setDate(targetDate.getDate() + 1); // غداً
+    targetDate.setHours(parseInt(bestHour), 0, 0, 0); // في الساعة المفضلة
+
+    // 3. (تحسين بسيط) إذا كانت الساعة المفضلة ميتة (مثل 3 صباحاً)، نجعلها 8 مساءً
+    if (targetDate.getHours() >= 0 && targetDate.getHours() < 6) {
+        targetDate.setHours(20, 0, 0, 0);
+    }
+
+    return targetDate;
+
+  } catch (err) {
+    logger.error('Error calculating optimal time:', err);
+    // Fallback
+    const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(19, 0, 0, 0);
+    return d;
+  }
+}
 module.exports = {
   initDataHelpers,
   getUserDisplayName,
