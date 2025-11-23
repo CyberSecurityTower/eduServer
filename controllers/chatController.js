@@ -202,7 +202,18 @@ async function chatInteractive(req, res) {
        ];
        analyzeSessionForEvents(userId, fullHistory).catch(e => logger.error('Scheduler trigger failed', e));
     }
+    // إذا كان الرد يحتوي على توديع أو نوم، نحفظ الحالة
+    // يمكننا جعل الـ AI يقرر هذا ويضعه في حقل جديد في JSON
+    // أضف حقلاً لـ AI output schema: "userExitState": "sleeping" | "studying" | null
 
+    if (parsedResponse.userExitState) {
+        await db.collection('users').doc(userId).update({
+            lastExitContext: {
+                state: parsedResponse.userExitState,
+                timestamp: new Date().toISOString()
+            }
+        });
+    }
     // 10. TRIGGER: Fact Harvesting (Real-time)
     if (parsedResponse.newFact) {
         const { category, value } = parsedResponse.newFact;
@@ -217,7 +228,7 @@ async function chatInteractive(req, res) {
               .catch(e => logger.error('Fact save failed', e));
         }
     }
-
+    
     // 11. Save Session & Memory
     const botReplyText = parsedResponse.reply;
     const widgets = parsedResponse.widgets || [];
