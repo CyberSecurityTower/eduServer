@@ -12,7 +12,7 @@ let generateWithFailoverRef;
 
 const COLLECTION_NAME = 'userMemoryEmbeddings';
 
-// ✅ تهيئة المدير مع التبعيات اللازمة
+// ✅ تهيئة المدير
 function initMemoryManager(initConfig) {
   if (!initConfig.db || !initConfig.embeddingService || !initConfig.generateWithFailover) {
     throw new Error('Memory Manager requires db, embeddingService, and generateWithFailover.');
@@ -20,10 +20,12 @@ function initMemoryManager(initConfig) {
   db = initConfig.db;
   embeddingServiceRef = initConfig.embeddingService;
   generateWithFailoverRef = initConfig.generateWithFailover;
-  logger.success('Memory Manager Initialized (Vector + Temporal Structured).');
+  logger.success('Memory Manager Initialized (Vector + Structured + Context).');
 }
 
-// 1. الذاكرة المتجهة (Vector Memory) - للبحث العام في الأرشيف
+// ============================================================================
+// 1. الذاكرة المتجهة (Vector Memory) - للبحث العام
+// ============================================================================
 async function saveMemoryChunk(userId, text) {
   if (!userId || !text || text.trim().length < 10) return;
   try {
@@ -42,7 +44,7 @@ async function saveMemoryChunk(userId, text) {
   }
 }
 
-// 2. استرجاع الذاكرة المتجهة (للسياق العام)
+// استرجاع الذاكرة المتجهة
 async function runMemoryAgent(userId, userMessage) {
   try {
     if (!embeddingServiceRef) return '';
@@ -63,24 +65,29 @@ async function runMemoryAgent(userId, userMessage) {
   }
 }
 
-// 3. ✅ الذاكرة الهيكلية الزمنية (Temporal Structured Memory)
-// تستخرج الحقائق والمشاعر وتربطها بوقت حدوثها
-async function analyzeAndSaveMemory(userId, history) {
+// ============================================================================
+// 2. الذاكرة الهيكلية الزمنية (Temporal Structured Memory)
+// ============================================================================
+async function analyzeAndSaveMemory(userId, history, activeMissions = []) {
   try {
     // نأخذ آخر جزء من المحادثة للتحليل
     const recentChat = history.slice(-15).map(m => `${m.role}: ${m.text}`).join('\n');
     
     const prompt = `
-    Analyze the conversation deeply. Extract TIMED FACTS about the user.
+    Analyze the conversation deeply. 
     
-    **Categories:**
-    1. **emotions**: Current mood (Sad, Excited, Angry, Stressed).
-    2. **romance**: Crushes, relationships, heartbreaks.
-    3. **preferences**: Fav music (e.g., Rai, Rap), food, hobbies.
-    4. **family**: Parents, siblings, friends.
-    5. **struggles**: Academic or personal problems.
+    **GOAL 1: Extract TIMED FACTS:**
+    - **emotions**: Current mood (Sad, Excited, Angry, Stressed).
+    - **romance**: Crushes, relationships.
+    - **preferences**: Fav music, food, hobbies.
+    - **family**: Parents, siblings.
+    - **struggles**: Academic or personal problems.
 
-    **Also:** Write a "Note to Self" (optional) for the next conversation.
+    **GOAL 2: DETECT MYSTERIES (Discovery Missions):**
+    - Did the user mention an event/emotion WITHOUT explaining "Why"? 
+    - Current Active Missions: ${JSON.stringify(activeMissions)}
+    - If a mission is SOLVED by this chat, add to "completedMissions".
+    - If a NEW mystery appears, add to "newMissions".
 
     **Input Transcript:**
     ${recentChat}
@@ -88,49 +95,91 @@ async function analyzeAndSaveMemory(userId, history) {
     **Output JSON ONLY:**
     {
       "newFacts": [
-        { "category": "emotions", "text": "Feeling down because of a fight with dad" },
-        { "category": "preferences", "text": "Loves eating Mahjouba" }
+        { "category": "emotions", "text": "Feeling down because of fight with dad" }
       ],
-      "noteToSelf": "Ask him if he made up with his dad next time."
+      "newMissions": ["Find out why he fought with dad"],
+      "completedMissions": [],
+      "noteToSelf": "Check on his mood next time."
     }
     `;
 
-    // نستخدم نموذج التحليل (Flash أو Pro حسب التوفر)
     const res = await generateWithFailoverRef('analysis', prompt, { label: 'MemoryExtractor' });
     const raw = await extractTextFromResult(res);
     const data = await ensureJsonOrRepair(raw, 'analysis');
 
-    if (data && data.newFacts && Array.isArray(data.newFacts) && data.newFacts.length > 0) {
+    if (data) {
       const updates = {};
-      const now = new Date().toISOString(); // ⏰ الوقت الحالي للسيرفر
+      const now = new Date().toISOString();
+      let hasUpdates = false;
 
-      // معالجة كل حقيقة وإضافة الزمن لها
-      data.newFacts.forEach(fact => {
-        if (fact.category && fact.text) {
-          const memoryObject = {
-            value: fact.text,   // المعلومة
-            timestamp: now      // 🕒 متى عرفنا هذه المعلومة
-          };
-          
-          // نستخدم arrayUnion لإضافتها للقائمة المناسبة في وثيقة المستخدم
-          // مثال: memory.emotions, memory.romance
-          updates[`memory.${fact.category}`] = admin.firestore.FieldValue.arrayUnion(memoryObject);
-          
-          logger.info(`[Memory] Learned (${fact.category}): "${fact.text}" at ${now}`);
-        }
-      });
-
-      // تحديث الملاحظة المستقبلية
-      if (data.noteToSelf) {
-        updates['aiNoteToSelf'] = data.noteToSelf;
+      // 1. حفظ الحقائق مع الزمن
+      if (data.newFacts && Array.isArray(data.newFacts) && data.newFacts.length > 0) {
+        data.newFacts.forEach(fact => {
+          if (fact.category && fact.text) {
+            const memoryObject = { value: fact.text, timestamp: now };
+            updates[`memory.${fact.category}`] = admin.firestore.FieldValue.arrayUnion(memoryObject);
+            logger.info(`[Memory] Learned (${fact.category}): "${fact.text}"`);
+            hasUpdates = true;
+          }
+        });
       }
 
-      // الحفظ في وثيقة المستخدم الرئيسية
-      await db.collection('users').doc(userId).set(updates, { merge: true });
-    }
+      // 2. إدارة المهام السرية (Missions)
+      if (data.newMissions && data.newMissions.length > 0) {
+        updates['aiDiscoveryMissions'] = admin.firestore.FieldValue.arrayUnion(...data.newMissions);
+        hasUpdates = true;
+      }
+      if (data.completedMissions && data.completedMissions.length > 0) {
+        updates['aiDiscoveryMissions'] = admin.firestore.FieldValue.arrayRemove(...data.completedMissions);
+        hasUpdates = true;
+      }
 
+      // 3. الملاحظة المستقبلية
+      if (data.noteToSelf) {
+        updates['aiNoteToSelf'] = data.noteToSelf;
+        hasUpdates = true;
+      }
+
+      if (hasUpdates) {
+        await db.collection('users').doc(userId).set(updates, { merge: true });
+      }
+    }
   } catch (error) {
-    logger.error(`[Memory] Structured Analysis failed: ${error.message}`);
+    logger.error(`[Memory] Analysis failed: ${error.message}`);
+  }
+}
+
+// ============================================================================
+// 3. سياق الخروج (The Gap/Contradiction Detector)
+// ============================================================================
+async function saveLastInteractionContext(userId, userMessage, aiReply) {
+  try {
+    const prompt = `
+    Analyze the END of this chat.
+    User said: "${userMessage}"
+    AI replied: "${aiReply}"
+    
+    Summarize the user's current state/intent for leaving.
+    Examples: "Going to sleep", "Going to exam", "Battery dying", "Guests arrived", "Just bored".
+    
+    Return JSON: { "exitState": "string description" }
+    `;
+
+    const res = await generateWithFailoverRef('analysis', prompt, { label: 'ExitContext' });
+    const raw = await extractTextFromResult(res);
+    const parsed = await ensureJsonOrRepair(raw, 'analysis');
+  
+    if (parsed && parsed.exitState) {
+       await db.collection('users').doc(userId).update({
+         lastExitContext: {
+           state: parsed.exitState,
+           timestamp: new Date().toISOString()
+         }
+       });
+       logger.log(`[Memory] Exit context saved: ${parsed.exitState}`);
+    }
+  } catch (error) {
+    logger.warn(`[Memory] Failed to save exit context: ${error.message}`);
   }
 }
 
@@ -138,5 +187,6 @@ module.exports = {
   initMemoryManager,
   saveMemoryChunk,
   runMemoryAgent,
-  analyzeAndSaveMemory
+  analyzeAndSaveMemory,
+  saveLastInteractionContext // ✅ تم تصديرها الآن
 };
