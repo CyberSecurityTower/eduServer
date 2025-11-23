@@ -26,6 +26,7 @@ Message: "${escapeForPrompt(safeSnippet(message, 300))}"`,
       noteToSelfParam = '',
       creatorProfileParam = null,
       userProfileData = {},
+      gapContextParam = '', // ✅ الإضافة هنا: استقبلنا المتغير
       systemContext
     ) => {
       // Resolve creator/profile sources
@@ -52,7 +53,7 @@ Message: "${escapeForPrompt(safeSnippet(message, 300))}"`,
       const safeMemory = escapeForPrompt(safeSnippet(memoryReport, 500));
       const safeWeaknesses = escapeForPrompt(safeSnippet(Array.isArray(weaknesses) ? weaknesses.join(', ') : '', 300));
       const safeHistory = history || '(no history)';
-
+      const gapContext = gapContextParam || '(no gap context)';
       return `
 You are **EduAI**, an advanced, friendly, witty Algerian study companion (NOT a boring textbook).
 Your mission: make learning addictive, personalized, and supportive — act like a helpful older sibling.
