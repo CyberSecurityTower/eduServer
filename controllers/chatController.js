@@ -150,6 +150,26 @@ async function chatInteractive(req, res) {
              - Rule: If time passed contradicts state (e.g. "Sleep" but 10m passed), TEASE them.
              `;
         }
+      if (lastExit.state === 'sleeping' && diffMinutes < 180) { // أقل من 3 ساعات
+             gapContext = `
+             🚨 **CONTRADICTION ALERT!**
+             - User said: "I am going to sleep".
+             - But they came back after ONLY ${Math.floor(diffMinutes)} minutes!
+             - ACTION: Tease them! (e.g., "Hada win r9adt?", "Tar enna3ss?", "Phone addiction?").
+             `;
+        } 
+        else if (lastExit.state === 'in_exam' && diffMinutes < 30) {
+             gapContext = `
+             🚨 **SUSPICIOUS!**
+             - User said they have an EXAM.
+             - Back in ${Math.floor(diffMinutes)} mins?
+             - ACTION: Ask if they finished early or are cheating/using phone! 😂
+             `;
+        }
+        else {
+             // عودة طبيعية
+             gapContext = `User is back from "${lastExit.state}" after ${Math.floor(diffMinutes)} mins. Welcome them back normally.`;
+        }
         // تنظيف السياق القديم
         db.collection('users').doc(userId).update({ 
             lastExitContext: admin.firestore.FieldValue.delete() 
