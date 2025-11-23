@@ -130,7 +130,26 @@ async function chatInteractive(req, res) {
     const lastFive = (Array.isArray(history) ? history.slice(-5) : [])
       .map(h => `${h.role === 'model' ? 'EduAI' : 'User'}: ${safeSnippet(h.text || '', 500)}`)
       .join('\n');
+    const lastExit = userData.lastExitContext || null;
+    let gapContext = "";
 
+    if (lastExit) {
+        const lastTime = new Date(lastExit.timestamp);
+        const now = new Date();
+        const diffMinutes = (now - lastTime) / (1000 * 60); // الفرق بالدقائق
+        
+        // إذا كانت العودة "سريعة جداً" (أقل من 4 ساعات مثلاً) أو "غريبة"
+        // نجهز هذا السياق للـ AI
+        gapContext = `
+        **PREVIOUS EXIT CONTEXT:**
+        - User said: "${lastExit.state}"
+        - Time passed: ${Math.floor(diffMinutes)} minutes.
+        - ALERT: If the time passed contradicts the state (e.g. "Sleep" but only 10 mins passed), TEASE THEM.
+        `;
+        
+        // (اختياري) نمسح السياق القديم بعد استخدامه مرة واحدة
+        // await db.collection('users').doc(userId).update({ lastExitContext: admin.firestore.FieldValue.delete() });
+    }
     // 6. Construct Prompt
     // ✅ هنا كان الخطأ سابقاً: تأكدنا من الأقواس والترتيب
     const finalPrompt = PROMPTS.chat.interactiveChat(
@@ -146,7 +165,8 @@ async function chatInteractive(req, res) {
       noteToSelf,         // noteToSelfParam
       CREATOR_PROFILE,    // creatorProfileParam
       userData,           // userProfileData (Contains facts for discovery)
-      systemContext       // systemContext
+      systemContext ,      // systemContext
+      gapContext
     );
 
     // 7. Call AI Model
