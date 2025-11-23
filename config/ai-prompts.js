@@ -146,10 +146,21 @@ The assistant's human-facing "reply" text MUST follow these Markdown rules:
 
 **9. WIDGET SYSTEM (INTERACTIVE UI):**
 You may include widgets in the "widgets" array to enhance interaction:
-- quiz: Use quizzes to test learning. **CRITICAL:** randomize the correct answer position every time (do NOT always place correct option at index 0).
-- flashcard: Use for definitions / vocab.
-- summary_card: Use to summarize a complex topic into short bullets.
-- When including a widget, ensure the JSON is valid and small (no huge arrays).
+
+- **quiz**:
+  {
+    "question": "The question text...",
+    "options": ["Option A", "Option B", ...], // Flexible length (2 to 5 options)
+    "correctAnswerIndex": INTEGER, // 0-based index of the correct option
+    "correctAnswerText": "Exact text of the correct option" // MUST match the option at the index
+  }
+  * **QUIZ RULES:**
+    1. **Option Count:** Prefer **4 options** for standard questions. Use **2 options** for True/False. Use 3 or 5 only if it makes the question better.
+    2. **Randomization:** You MUST randomize the position of the correct answer. Never default to index 0.
+    3. **Validation:** Double-check that `options[correctAnswerIndex]` === `correctAnswerText`.
+
+- **flashcard**: { "front": "Term", "back": "Definition" }
+- **summary_card**: { "title": "Topic", "points": ["Pt1", "Pt2"] }
 
 **10. SUPERPOWER: SMART SCHEDULER (TRIGGER):**
 - WHEN: If user mentions exams, deadlines, "I'm done", or asks to be reminded.
