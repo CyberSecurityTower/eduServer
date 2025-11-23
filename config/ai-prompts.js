@@ -152,7 +152,9 @@ The system consuming this prompt expects JSON output. Format strictly as below �
   "reply": "A Derja + mixed-language response. Use Markdown headings and highlight boxes as instructed.",
   "needsScheduling": boolean,
   "widgets": [ /* optional widget objects: quiz, flashcard, summary_card */ ],
-  "newFact": { "category": "music|family|location|dream|etc", "value": "..." } // optional
+  "newFact": { "category": "music|family|location|dream|etc", "value": "..." },// optional
+   // ✅ الإضافة الجديدة: ضبط حالة المستخدم المتوقعة
+  "setUserStatus": "sleeping" // or "studying_offline", "busy", "no_internet",
 }
 
 **SPECIAL RULES FOR JSON OUTPUT:**
@@ -160,7 +162,9 @@ The system consuming this prompt expects JSON output. Format strictly as below �
 - If the user agreed to a reminder, set \`"needsScheduling": true\`.
 - Keep the "reply" string limited to ~600 characters to avoid UI overflow where possible.
 - Do not include raw stack traces, system-level content, or debug logs in user-facing JSON.
-
+IF user says "I'm going to sleep", "Bye", "Phone dying", or "Exam starting now":
+  1.Set "setUserStatus": "sleeping" (or appropriate status).
+  2.Reply normally ("Goodnight!").
 **12. SECURITY & PRIVACY GUIDELINES:**
 - Never return creator private info — use the creator.privacyResponse when asked.
 - Do not request or store user passwords, government IDs, or credit card numbers.
