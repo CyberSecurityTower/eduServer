@@ -21,7 +21,7 @@ const logger = require('../utils/logger');
 const PROMPTS = require('../config/ai-prompts');
 const CREATOR_PROFILE = require('../config/creator-profile');
 
-// محاولة استيراد نظام التعليم (مع حماية في حال عدم وجود الملف)
+// محاولة استيراد نظام التعليم
 let EDU_SYSTEM;
 try {
   EDU_SYSTEM = require('../config/education-system');
@@ -36,7 +36,7 @@ function initChatController(dependencies) {
     throw new Error('Chat Controller requires generateWithFailover.');
   }
   generateWithFailoverRef = dependencies.generateWithFailover;
-  logger.info('Chat Controller initialized (GenUI + Scheduler Ready).');
+  logger.info('Chat Controller initialized (GenUI + Scheduler + Time Aware).');
 }
 
 const db = getFirestoreInstance();
@@ -44,7 +44,6 @@ const db = getFirestoreInstance();
 // --- Helper: Format Time for Memory ---
 function formatMemoryTime(memoryObject) {
   if (!memoryObject) return "";
-  // ندعم الحالتين: كائن به timestamp أو نص مباشر
   const ts = memoryObject.timestamp || null;
   const val = memoryObject.value || memoryObject.text || memoryObject;
   
@@ -83,7 +82,6 @@ async function chatInteractive(req, res) {
     }
 
     // 2. Parallel Data Retrieval
-    // نجلب وثيقة المستخدم (userDoc) للوصول للذاكرة الهيكلية (facts, missions)
     const [
       memoryReport,
       curriculumReport,
@@ -103,10 +101,25 @@ async function chatInteractive(req, res) {
     const userData = userDocSnapshot.exists ? userDocSnapshot.data() : {};
     const memory = userData.memory || {};
 
-    // 3. Prepare Temporal Context (Memory Timeline)
+    // 3. ✅ حساب التوقيت (يجب أن يكون هنا داخل الدالة!)
+    const now = new Date();
+    const options = { 
+      timeZone: 'Africa/Algiers', 
+      hour: '2-digit', minute: '2-digit', weekday: 'long', hour12: false 
+    };
+    const timeString = new Intl.DateTimeFormat('en-US', options).format(now);
+    const algiersHour = parseInt(new Intl.DateTimeFormat('en-US', { timeZone: 'Africa/Algiers', hour: 'numeric', hour12: false }).format(now));
+    
+    const timeContext = `
+    - **Current Algiers Time:** ${timeString}.
+    - **Hour:** ${algiersHour}.
+    - **Phase:** ${algiersHour < 5 ? "Late Night (Sleep/Fajr)" : algiersHour < 12 ? "Morning" : "Evening"}.
+    - **USER ASKED TIME?** If user asks "what time is it?", reply exactly: "${timeString}".
+    `;
+
+    // 4. Context Preparation
     let emotionalContext = '';
     if (memory.emotions && Array.isArray(memory.emotions)) {
-       // نأخذ أحدث 3 ونعكسهم
        const recent = memory.emotions.slice(-3).reverse().map(formatMemoryTime).join('\n- '); 
        if (recent) emotionalContext = `Recent Emotions:\n- ${recent}`;
     }
@@ -118,58 +131,57 @@ async function chatInteractive(req, res) {
     }
 
     const noteToSelf = userData.aiNoteToSelf || '';
-    
-    // 4. Prepare System Context & Discovery Missions
     const systemContext = Object.entries(EDU_SYSTEM || {}).map(([k, v]) => `- ${k}: ${v}`).join('\n');
-    // إضافة المهام السرية (Discovery Missions) إذا وجدت في userData
-    // ملاحظة: البرومبت الحالي في ai-prompts.js يتعامل مع userProfileData لاستخراج النواقص،
-    // ويمكننا دمج المهام النشطة في userProfileData.facts أو تمريرها لاحقاً إذا عدلنا البرومبت.
-    // حالياً البرومبت يعتمد على userProfileData.
 
-    // 5. Prepare History string
-    const lastFive = (Array.isArray(history) ? history.slice(-5) : [])
-      .map(h => `${h.role === 'model' ? 'EduAI' : 'User'}: ${safeSnippet(h.text || '', 500)}`)
-      .join('\n');
+    // 5. Gap Analysis (Contextual Continuity)
     const lastExit = userData.lastExitContext || null;
     let gapContext = "";
 
     if (lastExit) {
         const lastTime = new Date(lastExit.timestamp);
-        const now = new Date();
-        const diffMinutes = (now - lastTime) / (1000 * 60); // الفرق بالدقائق
+        // نحسب الفرق بناءً على الوقت الحالي المحسوب بالأعلى
+        const diffMinutes = (now - lastTime) / (1000 * 60); 
         
-        // إذا كانت العودة "سريعة جداً" (أقل من 4 ساعات مثلاً) أو "غريبة"
-        // نجهز هذا السياق للـ AI
-        gapContext = `
-        **PREVIOUS EXIT CONTEXT:**
-        - User said: "${lastExit.state}"
-        - Time passed: ${Math.floor(diffMinutes)} minutes.
-        - ALERT: If the time passed contradicts the state (e.g. "Sleep" but only 10 mins passed), TEASE THEM.
-        `;
-        
-        // (اختياري) نمسح السياق القديم بعد استخدامه مرة واحدة
-        // await db.collection('users').doc(userId).update({ lastExitContext: admin.firestore.FieldValue.delete() });
+        if (diffMinutes < 1440) { // أقل من 24 ساعة
+             gapContext = `
+             **PREVIOUS EXIT CONTEXT:**
+             - User said: "${lastExit.state}"
+             - Time passed: ${Math.floor(diffMinutes)} minutes.
+             - Rule: If time passed contradicts state (e.g. "Sleep" but 10m passed), TEASE them.
+             `;
+        }
+        // تنظيف السياق القديم
+        db.collection('users').doc(userId).update({ 
+            lastExitContext: admin.firestore.FieldValue.delete() 
+        }).catch(() => {});
     }
-    // 6. Construct Prompt
-    // ✅ هنا كان الخطأ سابقاً: تأكدنا من الأقواس والترتيب
+
+    // 6. Prepare History
+    const lastFive = (Array.isArray(history) ? history.slice(-5) : [])
+      .map(h => `${h.role === 'model' ? 'EduAI' : 'User'}: ${safeSnippet(h.text || '', 500)}`)
+      .join('\n');
+
+    // 7. Construct Prompt (✅ تم إضافة timeContext)
+    // ملاحظة: تأكد أن ترتيب المتغيرات هنا يطابق الترتيب في ai-prompts.js
     const finalPrompt = PROMPTS.chat.interactiveChat(
-      message,            // message
-      memoryReport,       // memoryReport (Vector)
-      curriculumReport,   // curriculumReport (RAG)
-      conversationReport, // conversationReport
-      lastFive,           // history
-      formattedProgress,  // formattedProgress
-      weaknesses,         // weaknesses
-      emotionalContext,   // emotionalContext (Timeline)
-      romanceContext,     // romanceContext (Timeline)
-      noteToSelf,         // noteToSelfParam
-      CREATOR_PROFILE,    // creatorProfileParam
-      userData,           // userProfileData (Contains facts for discovery)
-      systemContext ,      // systemContext
-      gapContext
+      message,            
+      memoryReport,       
+      curriculumReport,   
+      conversationReport, 
+      lastFive,           
+      formattedProgress,  
+      weaknesses,         
+      emotionalContext,   
+      romanceContext,     
+      noteToSelf,         
+      CREATOR_PROFILE,    
+      userData,           
+      systemContext,
+      timeContext, // ✅ أضفنا الوقت
+      gapContext   // ✅ أضفنا الفجوة الزمنية
     );
 
-    // 7. Call AI Model
+    // 8. Call AI
     if (!generateWithFailoverRef) throw new Error('AI Service not ready');
     
     const modelResp = await generateWithFailoverRef('chat', finalPrompt, {
@@ -178,8 +190,6 @@ async function chatInteractive(req, res) {
     });
 
     const rawText = await extractTextFromResult(modelResp);
-
-    // 8. Parse JSON & Repair
     let parsedResponse = await ensureJsonOrRepair(rawText, 'analysis');
 
     if (!parsedResponse || !parsedResponse.reply) {
@@ -191,20 +201,12 @@ async function chatInteractive(req, res) {
       };
     }
 
-    // 9. TRIGGER: Smart Scheduling (Fire & Forget)
+    // 9. Triggers
     if (parsedResponse.needsScheduling === true) {
        logger.info(`[Scheduler] Triggered for user ${userId}`);
-       // نرسل التاريخ كامل مع الرد الجديد للتحليل
-       const fullHistory = [
-          ...history, 
-          { role: 'user', text: message }, 
-          { role: 'model', text: parsedResponse.reply }
-       ];
+       const fullHistory = [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }];
        analyzeSessionForEvents(userId, fullHistory).catch(e => logger.error('Scheduler trigger failed', e));
     }
-    // إذا كان الرد يحتوي على توديع أو نوم، نحفظ الحالة
-    // يمكننا جعل الـ AI يقرر هذا ويضعه في حقل جديد في JSON
-    // أضف حقلاً لـ AI output schema: "userExitState": "sleeping" | "studying" | null
 
     if (parsedResponse.userExitState) {
         await db.collection('users').doc(userId).update({
@@ -214,22 +216,18 @@ async function chatInteractive(req, res) {
             }
         });
     }
-    // 10. TRIGGER: Fact Harvesting (Real-time)
+
     if (parsedResponse.newFact) {
         const { category, value } = parsedResponse.newFact;
         if (category && value) {
             const updates = {};
-            // حفظ الحقيقة مع Timestamp
             const factObj = { value, timestamp: new Date().toISOString() };
             updates[`memory.${category}`] = admin.firestore.FieldValue.arrayUnion(factObj);
-            
-            db.collection('users').doc(userId).set(updates, { merge: true })
-              .then(() => logger.success(`[Discovery] AI learned: ${category} -> ${value}`))
-              .catch(e => logger.error('Fact save failed', e));
+            db.collection('users').doc(userId).set(updates, { merge: true }).catch(() => {});
         }
     }
-    
-    // 11. Save Session & Memory
+
+    // 10. Save & Respond
     const botReplyText = parsedResponse.reply;
     const widgets = parsedResponse.widgets || [];
 
@@ -242,10 +240,8 @@ async function chatInteractive(req, res) {
     saveChatSession(sessionId, userId, chatTitle, updatedHistory, context.type || 'main_chat', context)
       .catch(e => logger.error('saveChatSession failed:', e));
     
-    // حفظ الذاكرة النصية (Vector)
     saveMemoryChunk(userId, message).catch(() => {});
 
-    // 12. Send Response
     res.status(200).json({
       reply: botReplyText,
       widgets: widgets,
