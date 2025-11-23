@@ -15,7 +15,7 @@ const { runCurriculumAgent } = require('../services/ai/managers/curriculumManage
 const { runConversationAgent } = require('../services/ai/managers/conversationManager');
 const { runSuggestionManager } = require('../services/ai/managers/suggestionManager');
 const { analyzeSessionForEvents } = require('../services/ai/managers/sessionAnalyzer');
-
+const { getOptimalStudyTime } = require('../services/data/helpers');
 const { escapeForPrompt, safeSnippet, extractTextFromResult, ensureJsonOrRepair } = require('../utils');
 const logger = require('../utils/logger');
 const PROMPTS = require('../config/ai-prompts');
@@ -211,7 +211,71 @@ async function chatInteractive(req, res) {
 
     const rawText = await extractTextFromResult(modelResp);
     let parsedResponse = await ensureJsonOrRepair(rawText, 'analysis');
+    // 🔥 SMART REVIEW SCHEDULER LOGIC
+    if (parsedResponse.quizAnalysis && parsedResponse.quizAnalysis.processed) {
+        const analysis = parsedResponse.quizAnalysis;
+        const lessonId = context.lessonId || 'general';
+        
+        // 1. حفظ نقاط الضعف (إذا وجدت)
+        if (analysis.weaknessTags && analysis.weaknessTags.length > 0) {
+            // Fire & forget update to user profile
+            db.collection('users').doc(userId).set({
+                weaknesses: admin.firestore.FieldValue.arrayUnion(...analysis.weaknessTags)
+            }, { merge: true }).catch(e => logger.error('Weakness save failed', e));
+        }
 
+        // 2. إدارة الجدولة (نجاح أو رسوب)
+        const tasksRef = db.collection('scheduledActions');
+        
+        // نبحث هل توجد مراجعة مجدولة سابقاً لنفس الدرس؟
+        const pendingReviews = await tasksRef
+            .where('userId', '==', userId)
+            .where('type', '==', 'smart_review')
+            .where('context.lessonId', '==', lessonId)
+            .where('status', '==', 'pending')
+            .get();
+
+        if (analysis.passed) {
+            // ✅ نجح: الغاء أي مراجعة عقابية قادمة (لأنه أثبت جدارته)
+            if (!pendingReviews.empty) {
+                const batch = db.batch();
+                pendingReviews.forEach(doc => batch.delete(doc.ref));
+                await batch.commit();
+                logger.info(`[Scheduler] Cancelled punishment review for ${lessonId} (User passed).`);
+            }
+        } else {
+            // ❌ رسب: يجب الجدولة (أو تحديث الجدولة الموجودة)
+            const optimalTime = await getOptimalStudyTime(userId); // 🔮 السحر هنا
+
+            if (!pendingReviews.empty) {
+                // موجودة؟ نحدثها فقط (نؤجلها للغد + نزيد عداد المحاولات)
+                // هذا يمنع الـ Spam (تكرار الإشعارات)
+                const doc = pendingReviews.docs[0];
+                await doc.ref.update({
+                    executeAt: admin.firestore.Timestamp.fromDate(optimalTime),
+                    "context.retryCount": admin.firestore.FieldValue.increment(1)
+                });
+                logger.info(`[Scheduler] Rescheduled review for ${lessonId} (Retry)`);
+            } else {
+                // جديدة؟ ننشئها
+                await tasksRef.add({
+                    userId,
+                    type: 'smart_review', // نوع جديد يعالجه الـ Worker
+                    title: 'مراجعة ذكية 🧠',
+                    // نترك الرسالة فارغة، الـ Worker سيولدها غداً حسب السياق
+                    executeAt: admin.firestore.Timestamp.fromDate(optimalTime),
+                    status: 'pending',
+                    context: {
+                        lessonId: lessonId,
+                        lessonTitle: context.lessonTitle || 'الدرس',
+                        retryCount: 1
+                    },
+                    createdAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+                logger.info(`[Scheduler] Created new Smart Review for ${lessonId} at ${optimalTime}`);
+            }
+        }
+    }
     if (!parsedResponse || !parsedResponse.reply) {
       logger.warn('Failed to parse GenUI JSON, falling back.');
       parsedResponse = {
