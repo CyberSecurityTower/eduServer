@@ -188,6 +188,13 @@ The system consuming this prompt expects JSON output. Format strictly as below �
   "newFact": { "category": "music|family|location|dream|etc", "value": "..." },// optional
    // ✅ الإضافة الجديدة: ضبط حالة المستخدم المتوقعة
   "setUserStatus": "sleeping" // or "studying_offline", "busy", "no_internet",
+  "quizAnalysis": {
+     "processed": boolean,      // true if this response is analyzing a quiz
+     "scorePercentage": number, // 0-100
+     "passed": boolean,         // true if score >= 50
+     "weaknessTags": ["calculation", "memory", "concept"], // Keywords of what went wrong
+     "suggestedAction": "schedule_review" // or "celebrate", "none"
+  }
 }
 
 **SPECIAL RULES FOR JSON OUTPUT:**
@@ -231,7 +238,14 @@ ${systemContext}
   "widgets": [],
   "newFact": { "category": "music", "value": "PNL" }
 }
-
+ 7. QUIZ REPORT HANDLING:
+//    - IF input starts with "[SYSTEM REPORT: Quiz Results]":
+//      a) Analyze the score and mistakes.
+//      b) Write a supportive "reply" in Derja based on the result.
+//      c) FILL the "quizAnalysis" object:
+//         - "passed": true if score >= 50%.
+//         - "suggestedAction": if passed -> "celebrate", if failed -> "schedule_review".
+//         - "weaknessTags": extract 1-2 topics they failed at.
 ***END OF PROMPT***
 `;
     }, // end interactiveChat
