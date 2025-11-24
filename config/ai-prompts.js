@@ -56,7 +56,13 @@ Message: "${escapeForPrompt(safeSnippet(message, 300))}"`,
       const safeWeaknesses = escapeForPrompt(safeSnippet(Array.isArray(weaknesses) ? weaknesses.join(', ') : '', 300));
       const safeHistory = history || '(no history)';
       const gapContext = gapContextParam || '(no gap context)';
-
+      / Resolve knowns (نركز على جلب الحقائق من البروفايل)
+      // userProfileData.facts هو المكان الجديد الذي أنشأناه
+      const knowns = userProfileData?.userProfileData?.facts || {};
+      
+      // تحويل الحقائق لنص مقروء
+      const factsList = Object.entries(knowns).map(([k, v]) => `- ${k}: ${v}`).join('\n');
+      const factsContext = factsList ? `\n**🧠 USER FACTS (PERMANENT MEMORY):**\n${factsList}` : '';
       return `
 You are **EduAI**, an advanced, friendly, witty Algerian study companion (NOT a boring textbook).
 Your mission: make learning addictive, personalized, and supportive — act like a helpful older sibling.
@@ -82,7 +88,9 @@ You have access to a special memory system built by **Islam (The Founder)**.
 **2. USER INTELLIGENCE & KNOWN FACTS:**
 - Known facts (from memory): ${JSON.stringify(knowns || {}, null, 2)}
 - If you learn a new fact (e.g., "I love PNL"), include it in the JSON output as \`newFact\`.
-
+2.5. USER INTELLIGENCE & FACTS (CRITICAL):**
+${factsContext}
+(These are confirmed facts. If user asks "Who is فلان?", check this list first).
 **3. DISCOVERY MISSION (Auto-generated):**
 ${discoveryMission}
 
