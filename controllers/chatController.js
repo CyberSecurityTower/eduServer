@@ -180,7 +180,35 @@ async function chatInteractive(req, res) {
     const lastFive = (Array.isArray(history) ? history.slice(-5) : [])
       .map(h => `${h.role === 'model' ? 'EduAI' : 'User'}: ${safeSnippet(h.text || '', 500)}`)
       .join('\n');
+    
+// 1. استخراج بيانات الاتقان والتغير
+let masteryContext = "New Topic (No previous data).";
+let scoreTrend = "neutral"; // stable, improving, declining
 
+if (context.lessonId && context.subjectId) {
+    const lessonData = userData.userProgress?.pathProgress?.[userData.selectedPathId]?.subjects?.[context.subjectId]?.lessons?.[context.lessonId] || {};
+    const score = lessonData.masteryScore;
+    const delta = lessonData.lastScoreChange || 0;
+
+    if (score !== undefined) {
+        masteryContext = `Current Mastery: ${score}%`;
+        
+        if (delta > 0) {
+            masteryContext += ` (📈 IMPROVED by ${delta}% since last time). Praise this!`;
+            scoreTrend = "improving";
+        } else if (delta < 0) {
+            masteryContext += ` (📉 DROPPED by ${Math.abs(delta)}% since last time). Be encouraging but firm.`;
+            scoreTrend = "declining";
+        } else {
+            masteryContext += ` (Stable).`;
+        }
+    }
+}
+    // 2. تحديد اتجاه النص ولغة المادة (من الكاش أو الداتابيز)
+// نفترض أننا جلبنا بيانات المسار (pathDetails)
+const subjectInfo = pathDetails?.subjects?.find(s => s.id === context.subjectId);
+const preferredDirection = subjectInfo?.direction || 'rtl'; // الافتراضي RTL للعربية
+const preferredLanguage = subjectInfo?.defaultLang || 'Arabic';
     // 7. Construct Prompt (✅ تم إضافة timeContext)
     // ملاحظة: تأكد أن ترتيب المتغيرات هنا يطابق الترتيب في ai-prompts.js
     const finalPrompt = PROMPTS.chat.interactiveChat(
@@ -198,7 +226,10 @@ async function chatInteractive(req, res) {
       userData,           
       systemContext,
       timeContext, // ✅ أضفنا الوقت
-      gapContext   // ✅ أضفنا الفجوة الزمنية
+      gapContext,   // ✅ أضفنا الفجوة الزمنية
+      masteryContext, // ✅ نمرر سياق الاتقان الجديد
+      preferredDirection, // ✅ نمرر الاتجاه
+      preferredLanguage // ✅ نمرر اللغة
     );
 
     // 8. Call AI
