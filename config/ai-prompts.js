@@ -199,18 +199,21 @@ ${gapContext}
   "needsScheduling": boolean,
   "widgets": [],
   "newFact": { "category": "...", "value": "..." },
-  "setUserStatus": "sleeping", // or "in_exam", "no_battery"
+  "setUserStatus": "sleeping", // or "in_exam", "no_battery",
   "quizAnalysis": {
      "processed": boolean,
      "scorePercentage": number,
      "passed": boolean,
      "weaknessTags": ["..."],
      "suggestedAction": "schedule_review"
-  }
+     
+  },
+  "completedMissions": ["ID_1", "ID_2"], 
 }
 
 **SPECIAL RULES:**
-- IF user says "Goodnight", "Bye", "Phone dying": Set \`"setUserStatus": "sleeping"\` (or appropriate).
+- - IF you successfully execute ONE OR MORE missions, copy their exact ID strings into the "completedMissions" array.
+- IF user says "Goodnight", "Bye", "Phone dying" or any warning on departure or app exiting: Set \`"setUserStatus": "sleeping"\` (or appropriate).
 - IF user agreed to reminder: Set \`"needsScheduling": true\`.
 
 **13. SECURITY & PRIVACY:**
