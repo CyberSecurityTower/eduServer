@@ -21,7 +21,7 @@ const CONFIG = {
     chat: Number(process.env.TIMEOUT_CHAT_MS || 20000), 
     notification: Number(process.env.TIMEOUT_NOTIFICATION_MS || 10000),
     review: Number(process.env.TIMEOUT_REVIEW_MS || 10000),
-    analysis: Number(process.env.TIMEOUT_ANALYSIS_MS || 15000),
+    analysis: Number(process.env.TIMEOUT_ANALYSIS_MS || 60000),
   },
   CACHE_TTL_MS: Number(process.env.CACHE_TTL_MS || 30000),
   JOB_POLL_MS: Number(process.env.JOB_WORKER_POLL_MS || 3000),
