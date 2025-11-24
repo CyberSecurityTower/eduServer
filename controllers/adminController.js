@@ -126,28 +126,29 @@ async function runNightlyAnalysisForUser(userId) {
                 // 🔥 1. توليد الرسالة المخصصة (بالذكاء الاصطناعي)
                 const reEngagementMessage = await runReEngagementManager(userId, intensity);
                 
-                if (reEngagementMessage) {
-                    // 🔥 2. حساب الوقت المناسب لهذا المستخدم تحديداً
+                 if (reEngagementMessage) {
                     const primeHour = await calculateUserPrimeTime(userId);
-
-                    // إعداد وقت الإرسال
                     const scheduleTime = new Date();
-                    scheduleTime.setHours(primeHour, 0, 0, 0); // الساعة المفضلة، الدقيقة 00
-                    
-                    // إذا الوقت فات اليوم، نرسله غداً في نفس التوقيت المفضل
+                    scheduleTime.setHours(primeHour, 0, 0, 0);
                     if (scheduleTime < new Date()) scheduleTime.setDate(scheduleTime.getDate() + 1);
 
+                    // 🔥 هنا نضع الهيكل (JSON) الذي سألت عنه
                     await enqueueJob({
                         type: 'scheduled_notification',
                         userId: userId,
+                        sendAt: admin.firestore.Timestamp.fromDate(scheduleTime),
                         payload: {
-                            title: intensity === 'urgent' ? 'وين راك؟ 😢' : 'تذكير من EduAI',
+                            title: intensity === 'urgent' ? 'وين راك؟ 😢' : 'تذكير للدراسة',
                             message: reEngagementMessage,
-                            intensity: intensity 
-                        },
-                        sendAt: admin.firestore.Timestamp.fromDate(scheduleTime)
+                            type: 're_engagement', // ✅ النوع
+                            // ✅ نحفظ النص والشدة لنستخدمهم لما يرجع المستخدم
+                            meta: { 
+                                originalMessage: reEngagementMessage,
+                                intensity: intensity
+                            }
+                        }
                     });
-                    logger.info(`[Nightly] Scheduled '${intensity}' msg for ${userId} at ${primeHour}:00`);
+                    logger.info(`[Nightly] Scheduled re-engagement for ${userId}`);
                 }
             }
         }
