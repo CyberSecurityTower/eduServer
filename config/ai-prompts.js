@@ -255,19 +255,35 @@ ${systemContext}
     jsonRepair: (rawText) => `Fix this text to be valid JSON matching schema {reply: string, widgets: [], needsScheduling: bool}. TEXT: ${rawText}`,
 
     suggestion: (profileSummary, currentTasks, weaknessesSummary, conversationTranscript) => `
-    Generate 4 short, engaging, clickable suggestion chips (2-5 words) based on context.
-    Language: Same as chat.
-    Context: ${escapeForPrompt(safeSnippet(conversationTranscript, 500))}
-    Return JSON: { "suggestions": ["Sug 1", "Sug 2", "Sug 3", "Sug 4"] }`,
+    You are a UX Writer for an addictive learning app. 
+    Generate 4 short, punchy, and clickable suggestion chips based on the user's context.
 
-    planner: (weaknessesPrompt) => `Create a study plan. ${weaknessesPrompt} Return JSON: { "tasks": [{ "title": "...", "type": "review" }] }`,
+    **CONTEXT:**
+    - Recent Chat: "${escapeForPrompt(safeSnippet(conversationTranscript, 300))}"
+    - Weaknesses: ${weaknessesSummary}
+    - Tasks: ${currentTasks}
 
-    todo: (currentTasksJSON, userRequest) => `Update tasks based on request. Request: "${userRequest}". Current: ${currentTasksJSON}. Return JSON: { "tasks": [] }`,
+    **RULES (STRICT):**
+    1. **Length:** Minimum 2 words, Maximum 6 words. (Short & Sweet).
+    2. **Tone:** Algerian Derja mixed with simple Arabic. Casual, friendly, motivating.
+    3. **Variety:**
+       - Chip 1: A direct study action (e.g., "هيا نكملو الدرس", "بداية درس الاقتصاد").
+       - Chip 2: A challenge/Quiz (e.g., "تحدي كويز سريع 🔥", "نختابر معلوماتي").
+       - Chip 3: Curiosity/Fun (e.g., "احكيلي سر", "واش رايك في...").
+       - Chip 4: Next Step/Planning (e.g., "واش لازم ندير درك؟").
 
-    quiz: (lessonTitle, totalScore, totalQuestions, masteryScore, performanceSummary) => `
-    Analyze quiz. Lesson: ${lessonTitle}. Score: ${totalScore}/${totalQuestions}. 
-    Mistakes: ${performanceSummary}
-    Return JSON: { "newMasteryScore": number, "feedbackSummary": "...", "suggestedNextStep": "...", "dominantErrorType": "..." }`
+    **BAD EXAMPLES (Do NOT do this):**
+    - "هل تريد القيام باختبار في مادة أخرى؟" (Too long, too formal).
+    - "ملخص محاضرات اليوم" (Boring).
+
+    **GOOD EXAMPLES:**
+    - "نديرو كويز خفيف؟ 🔥"
+    - "لخصلي واش قرينا"
+    - "وين حبسنا المرة لي فاتت؟"
+    - "اعطيني معلومة غريبة"
+
+  
+    Return JSON: { "suggestions": ["Sug 1", "Sug 2", "Sug 3", "Sug 4"] }`
   },
 
   notification: {
