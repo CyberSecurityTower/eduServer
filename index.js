@@ -34,6 +34,14 @@ async function boot() {
     initDataHelpers({ embeddingService, generateWithFailover });
     initSessionAnalyzer({ generateWithFailover }); 
     // Initialize Managers
+// ✅ التعديل هنا: تمرير generateWithFailover لمدير الإشعارات
+const { initNotificationManager } = require('./services/ai/managers/notificationManager'); // تأكد من الاستيراد
+initNotificationManager({ 
+  generateWithFailover, 
+  getProgress: require('./services/data/helpers').getProgress 
+});
+
+    // Initialize Managers
     initMemoryManager({ db, embeddingService, generateWithFailover  });
     initConversationManager({ generateWithFailover });
     initCurriculumManager({ embeddingService });
