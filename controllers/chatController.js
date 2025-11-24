@@ -251,7 +251,7 @@ async function chatInteractive(req, res) {
     saveMemoryChunk(userId, message, parsedResponse.reply).catch(e => logger.warn('MemChunk Save Error', e));
 
     // ج) التحليل العميق (Extract Facts & Mood) ✅
-    analyzeAndSaveMemory(userId, [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }])
+    analyzeAndSaveMemory(userId, [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }], userData.aiDiscoveryMissions || [] )
       .catch(e => logger.warn(`[Background Analysis Failed] ${e.message}`));
 
   } catch (err) {
