@@ -209,14 +209,32 @@ async function chatInteractive(req, res) {
             if (lessonId && subjectId && pathId) {
                 const lessonPath = `pathProgress.${pathId}.subjects.${subjectId}.lessons.${lessonId}`;
                 
-                // حساب العلامة الجديدة (Weighted Average)
-                // (تفترض وجود البيانات القديمة، يمكنك تحسينها بجلبها بدقة أكثر)
-                const currentQuizScore = analysis.scorePercentage || 0;
-                // ... منطق الحساب البسيط هنا لتوفير المساحة ...
+                // حساب العلامة الجديدة (Weighted Average
+               const currentQuizScore = analysis.scorePercentage || 0;
                 
-                progressUpdates[`${lessonPath}.masteryScore`] = currentQuizScore; // تبسيط للحساب
+                // 👇 استبدل التعليق بهذا الكود الحسابي 👇
+                const pathP = progressData.pathProgress || {};
+                const oldLessonData = pathP[pathId]?.subjects?.[subjectId]?.lessons?.[lessonId] || {};
+                const oldScore = oldLessonData.masteryScore || 0;
+                const attempts = oldLessonData.attempts || 0;
+
+                let newMasteryScore = currentQuizScore;
+                
+                // إذا كانت هناك محاولات سابقة، نستخدم المتوسط المرجح
+                if (attempts > 0 && oldLessonData.masteryScore !== undefined) {
+                    // 70% للعلامة القديمة (للحفاظ على الجهد) + 30% للجديدة
+                    newMasteryScore = Math.round((oldScore * 0.7) + (currentQuizScore * 0.3));
+                }
+
+                // حساب التغير (Delta) لعرضه للمستخدم (IMPROVED +5%)
+                const scoreDelta = newMasteryScore - oldScore;
+                
+                progressUpdates[`${lessonPath}.masteryScore`] = newMasteryScore;
+                progressUpdates[`${lessonPath}.lastScoreChange`] = scoreDelta;
+                progressUpdates[`${lessonPath}.attempts`] = admin.firestore.FieldValue.increment(1);
+                // 👆 انتهى الكود الحسابي 👆
+
                 progressUpdates[`${lessonPath}.status`] = 'completed';
-                progressUpdates[`${lessonPath}.lastAttempt`] = new Date().toISOString();
 
                 // تحديث نقاط الضعف
                 if (analysis.passed === false) {
