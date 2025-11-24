@@ -212,40 +212,56 @@ async function chatInteractive(req, res) {
     const rawText = await extractTextFromResult(modelResp);
     let parsedResponse = await ensureJsonOrRepair(rawText, 'analysis');
     // 🔥 SMART REVIEW SCHEDULER LOGIC
-    if (parsedResponse.quizAnalysis && parsedResponse.quizAnalysis.processed) {
-        const analysis = parsedResponse.quizAnalysis;
-        const lessonId = context.lessonId || 'general';
-        
-        // 1. حفظ نقاط الضعف (إذا وجدت)
-        if (analysis.weaknessTags && analysis.weaknessTags.length > 0) {
-            // Fire & forget update to user profile
-            db.collection('users').doc(userId).set({
-                weaknesses: admin.firestore.FieldValue.arrayUnion(...analysis.weaknessTags)
-            }, { merge: true }).catch(e => logger.error('Weakness save failed', e));
-        }
+   
+const analysis = parsedResponse.quizAnalysis;
+const lessonId = context.lessonId;
+const subjectId = context.subjectId;
+const pathId = userData.selectedPathId; // نحصل عليه من بيانات المستخدم
 
-        // 2. إدارة الجدولة (نجاح أو رسوب)
-        const tasksRef = db.collection('scheduledActions');
-        
-        // نبحث هل توجد مراجعة مجدولة سابقاً لنفس الدرس؟
-        const pendingReviews = await tasksRef
-            .where('userId', '==', userId)
-            .where('type', '==', 'smart_review')
-            .where('context.lessonId', '==', lessonId)
-            .where('status', '==', 'pending')
-            .get();
+if (lessonId && subjectId && pathId) {
+    const progressRef = db.collection('userProgress').doc(userId);
+    
+    // 1. جلب البيانات الحالية (نحتاج قراءة المعدل القديم)
+    const docSnap = await progressRef.get();
+    const currentData = docSnap.exists ? docSnap.data() : {};
+    
+    // الوصول لمسار الدرس بدقة
+    const lessonPath = `pathProgress.${pathId}.subjects.${subjectId}.lessons.${lessonId}`;
+    // (ملاحظة: في الكود الحقيقي نستخدم lodash.get أو منطق آمن للوصول للبيانات المتداخلة)
+    const oldLessonData = currentData.pathProgress?.[pathId]?.subjects?.[subjectId]?.lessons?.[lessonId] || {};
+    
+    const oldScore = oldLessonData.masteryScore || 0; 
+    const quizScore = analysis.scorePercentage || 0;
 
-        if (analysis.passed) {
-            // ✅ نجح: الغاء أي مراجعة عقابية قادمة (لأنه أثبت جدارته)
-            if (!pendingReviews.empty) {
-                const batch = db.batch();
-                pendingReviews.forEach(doc => batch.delete(doc.ref));
-                await batch.commit();
-                logger.info(`[Scheduler] Cancelled punishment review for ${lessonId} (User passed).`);
-            }
-        } else {
-            // ❌ رسب: يجب الجدولة (أو تحديث الجدولة الموجودة)
-            const optimalTime = await getOptimalStudyTime(userId); // 🔮 السحر هنا
+    // 2. 🧮 تطبيق المعادلة (المتوسط المرجح)
+    let newMasteryScore = quizScore; // لو كان أول مرة
+    if (oldLessonData.masteryScore !== undefined) {
+        // المعادلة: 70% للقديم + 30% للجديد
+        newMasteryScore = Math.round((oldScore * 0.7) + (quizScore * 0.3));
+    }
+
+    // حساب التغير (ليعرف الـ AI هل تحسن الطالب أم تراجع)
+    const scoreDelta = newMasteryScore - oldScore; // مثلاً: +5 أو -3
+
+    // 3. التحديث في Firestore
+    const updates = {
+        [`${lessonPath}.masteryScore`]: newMasteryScore,
+        [`${lessonPath}.lastScoreChange`]: scoreDelta, // ✅ نحفظ التغير هنا
+        [`${lessonPath}.status`]: 'completed',
+        [`${lessonPath}.lastAttempt`]: new Date().toISOString()
+    };
+
+    // تحديث نقاط الضعف إذا رسب
+    if (!analysis.passed) {
+        updates['weaknesses'] = admin.firestore.FieldValue.arrayUnion(lessonId);
+    } else {
+        updates['weaknesses'] = admin.firestore.FieldValue.arrayRemove(lessonId);
+    }
+
+    await progressRef.update(updates);
+    
+    logger.info(`[Score Update] ${lessonId}: ${oldScore} -> ${newMasteryScore} (Delta: ${scoreDelta})`);
+}
 
             if (!pendingReviews.empty) {
                 // موجودة؟ نحدثها فقط (نؤجلها للغد + نزيد عداد المحاولات)
