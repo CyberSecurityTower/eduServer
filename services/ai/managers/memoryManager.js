@@ -88,6 +88,14 @@ async function analyzeAndSaveMemory(userId, history, activeMissions = []) {
     const prompt = `
     Analyze the conversation deeply. 
      **TARGET INFORMATION:**
+     
+    **1. ACTIVE MISSIONS (Look for answers to these):**
+    ${pendingMysteries || "No active mysteries."}
+
+    **2. GOALS:**
+    - If user answered a mission above, add it to "completedMissions".
+    - Extract new "facts" (Permanent Info).
+    - If a NEW mystery appears (e.g., user mentions "Her" but no name), add to "newMissions . or missing information".
     1. **Names & Relationships:** Friends (e.g., Anis), Family, Teachers.
     2. **Identity:** Name, Age, Location, Dream Job (e.g., Billionaire).
     3. **Preferences:** Music type, specific hobbies.
@@ -124,53 +132,45 @@ async function analyzeAndSaveMemory(userId, history, activeMissions = []) {
     }
     `;
 
-    const res = await generateWithFailoverRef('analysis', prompt, { label: 'DeepMemoryExtractor' });
+    const res = await generateWithFailoverRef('analysis', prompt, { label: 'DeepMemory' });
     const raw = await extractTextFromResult(res);
     const data = await ensureJsonOrRepair(raw, 'analysis');
 
-   if (data) {
+    if (data) {
       const updates = {};
       let hasUpdates = false;
 
-      // 🔥 هنا السحر: تخزين الحقائق كـ Map في Firestore
+      // 1. حفظ الحقائق (Save Info)
       if (data.facts && Object.keys(data.facts).length > 0) {
-        // نستخدم Notation النقطة لتحديث حقول محددة دون مسح القديم
         Object.keys(data.facts).forEach(key => {
-          updates[`userProfileData.facts.${key}`] = data.facts[key];
+            updates[`userProfileData.facts.${key}`] = data.facts[key];
         });
-        logger.success(`[Memory] 🧠 Extracted Facts: ${JSON.stringify(data.facts)}`);
         hasUpdates = true;
       }
 
+      // 2. حذف المهام المنجزة (Delete Mission)
+      if (data.completedMissions && data.completedMissions.length > 0) {
+        // نستخدم arrayRemove لحذف المهمة لأنها أنجزت
+        updates['aiDiscoveryMissions'] = admin.firestore.FieldValue.arrayRemove(...data.completedMissions);
+        hasUpdates = true;
+        logger.success(`[Memory] ✅ Mystery Solved & Removed: ${data.completedMissions}`);
+      }
 
-      // 2. إدارة المهام السرية (Missions)
+      // 3. إضافة مهام جديدة (Add New Mystery)
       if (data.newMissions && data.newMissions.length > 0) {
         updates['aiDiscoveryMissions'] = admin.firestore.FieldValue.arrayUnion(...data.newMissions);
         hasUpdates = true;
       }
-      if (data.completedMissions && data.completedMissions.length > 0) {
-        updates['aiDiscoveryMissions'] = admin.firestore.FieldValue.arrayRemove(...data.completedMissions);
-        hasUpdates = true;
-      }
 
-      // 3. الملاحظة المستقبلية
-      if (data.noteToSelf) {
-        updates['aiNoteToSelf'] = data.noteToSelf;
-        hasUpdates = true;
-      }
-
-         if (hasUpdates) {
-        await db.collection('users').doc(userId).update(updates).catch(async e => {
-            // في حالة كان الملف غير موجود او الحقل غير موجود، نستخدم set مع merge
-            await db.collection('users').doc(userId).set(updates, { merge: true });
-        });
+      if (hasUpdates) {
+        // نستخدم set مع merge لضمان إنشاء الوثيقة إذا لم تكن موجودة وتحديث الحقول
+        await db.collection('users').doc(userId).set(updates, { merge: true });
       }
     }
   } catch (error) {
     logger.error(`[Memory] Analysis failed: ${error.message}`);
   }
 }
-
 
 // ============================================================================
 // 3. سياق الخروج (The Gap/Contradiction Detector)
