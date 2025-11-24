@@ -30,6 +30,25 @@ function scheduleTriggerLiveCoach(userId, eventName, eventData) {
   procrastinationTimers.set(key, timer);
 }
 
+
+async function logSessionStart(req, res) {
+  const { userId } = req.body;
+  if (!userId) return res.status(400).send('UserId required');
+
+  try {
+    // نسجل وثيقة صغيرة وسريعة
+    await db.collection('analytics_sessions').add({
+      userId,
+      startTime: admin.firestore.FieldValue.serverTimestamp(),
+      // يمكن إضافة معلومات الجهاز لاحقاً
+    });
+    
+    res.status(200).send('Logged');
+  } catch (e) {
+    console.error(e);
+    res.status(500).send('Error');
+  }
+}
 async function triggerLiveCoach(userId, eventName, eventData) {
   const userDoc = await db.collection('users').doc(userId).get();
   if (!userDoc.exists) return;
@@ -124,4 +143,5 @@ async function processSession(req, res) {
 module.exports = {
   logEvent,
   processSession,
+  logSessionStart
 };
