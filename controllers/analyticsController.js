@@ -92,6 +92,7 @@ async function triggerLiveCoach(userId, eventName, eventData) {
   }
 }
 
+// دالة مصححة لِـ logEvent
 async function logEvent(req, res) {
   try {
     const { userId, eventName, eventData = {} } = req.body;
@@ -102,31 +103,71 @@ async function logEvent(req, res) {
 
     const analyticsRef = db.collection('userBehaviorAnalytics').doc(userId);
 
+    // سجل الحدث داخل المجموعة events
     await analyticsRef.collection('events').add({
       name: eventName,
       data: eventData,
       timestamp: admin.firestore.FieldValue.serverTimestamp(),
     });
 
+    // تحديث عداد الدروس عند بدء مشاهدة الدرس
     if (eventName === 'lesson_view_start') {
-      await analyticsRef.set({
-        lessonsViewedCount: admin.firestore.FieldValue.increment(1),
-      }, { merge: true });
+      await analyticsRef.set(
+        { lessonsViewedCount: admin.firestore.FieldValue.increment(1) },
+        { merge: true }
+      );
     }
 
-    res.status(202).json({ message: 'Event logged. Coach is analyzing.' });
+    // معالجة نقرة الإشعار (notification click)
+    if (eventName === 'notification_click') {
+      // eventData قد يحتوي على شيء مثل: { message: "...", type: "re_engagement" }
+      if (eventData.type === 're_engagement') {
+        await db.collection('users').doc(userId).update({
+          pendingReEngagement: {
+            active: true,
+            triggerMessage: eventData.message || 'Unknown message',
+            timestamp: new Date().toISOString(),
+          },
+        });
 
-    scheduleTriggerLiveCoach(userId, eventName, eventData);
+        if (typeof logger !== 'undefined' && logger.success) {
+          logger.success(`[Analytics] User ${userId} returned via Notification!`);
+        }
+      }
+    }
+
+    // جدولة/تشغيل الـ coach (نفّذها، ولا تنتج استجابة أخرى بعد هذا السطر)
+    try {
+      // إذا scheduleTriggerLiveCoach هو دالة غير حظية، يمكنك اختيار await أو تركها بدون await
+      // هنا سأُشغّلها بدون await حتى لا نؤخر الرد HTTP (لكن يمكنك تغييرها إلى await إذا أردت الانتظار)
+      scheduleTriggerLiveCoach(userId, eventName, eventData);
+    } catch (schedErr) {
+      // لا نريد أن يفشل الرد لأن فشل جدولـة الـ coach — فقط سجل الخطأ
+      if (typeof logger !== 'undefined' && logger.error) {
+        logger.error('[Analytics] scheduleTriggerLiveCoach error:', schedErr);
+      }
+    }
+
+    // أرسل استجابة واحدة فقط
+    return res.status(202).json({ message: 'Event logged. Coach is analyzing.' });
 
   } catch (error) {
-    logger.error('/log-event error:', error);
+    // خطأ عام أثناء المعالجة
+    if (typeof logger !== 'undefined' && logger.error) {
+      logger.error('/log-event error:', error);
+    }
     if (!res.headersSent) {
-      res.status(500).json({ error: 'Failed to log event.' });
+      return res.status(500).json({ error: 'Failed to log event.' });
     } else {
-      logger.error('Error after response sent:', error);
+      // إذا كانت الاستجابة قد أُرسلت مسبقاً — فقط سجّل الخطأ
+      if (typeof logger !== 'undefined' && logger.error) {
+        logger.error('Error after response sent:', error);
+      }
+      return;
     }
   }
 }
+
 
 async function processSession(req, res) {
   const { userId, sessionId } = req.body;
