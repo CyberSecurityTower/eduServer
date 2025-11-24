@@ -527,63 +527,74 @@ async function getOptimalStudyTime(userId) {
 }
 
 // ✅ (مدمجة ومحسنة) دالة إرسال الإشعارات
-async function sendUserNotification(userId, payload = {}) {
-  if (!userId) return;
 
-  const title = payload.title || 'EduAI';
-  const message = payload.message || '';
-  const type = payload.type || 'system';
-  const meta = payload.meta || {};
+/**
+ * دالة إرسال الإشعارات (الجوكر)
+ * @param {string} userId
+ * @param {object} notification
+ * @param {string} notification.title
+ * @param {string} notification.message
+ * @param {string} notification.type - نوع الإشعار (chat, lesson, quiz, re_engagement)
+ * @param {string} [notification.targetId] - (اختياري) ID الشيء المراد فتحه
+ * @param {object} [notification.meta] - (اختياري) أي بيانات إضافية
+ */
+async function sendUserNotification(userId, notification) {
+  const db = getFirestoreInstance();
 
   try {
-    // 1. Save to DB Inbox
+    // 1. التخزين في الأرشيف (Inbox)
     await db.collection('userNotifications').doc(userId).collection('inbox').add({
-      title, message, type, meta,
+      title: notification.title,
+      message: notification.message,
+      type: notification.type || 'system', // chat, lesson, quiz...
+      targetId: notification.targetId || null, // ✅ نضيفه هنا ليستخدمه التطبيق عند الفتح
       read: false,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      meta: notification.meta || {} 
     });
 
-    // 2. Get FCM Token
+    // 2. الإرسال للهاتف (Push Notification)
     const userDoc = await db.collection('users').doc(userId).get();
-    if (!userDoc.exists) return;
+    
+    if (userDoc.exists) {
+      const userData = userDoc.data();
+      const fcmToken = userData.fcmToken;
 
-    const userData = userDoc.data();
-    const fcmToken = userData.fcmToken;
+      if (fcmToken) {
+        // بناء الـ Data Payload الذكي
+        const dataPayload = {
+          click_action: 'FLUTTER_NOTIFICATION_CLICK', 
+          type: notification.type || 'general',
+          userId: userId,
+          // ✅ نمرر targetId و meta للهاتف
+          targetId: notification.targetId || '', 
+        };
 
-    if (!fcmToken) return;
+        // إذا كان هناك بيانات meta إضافية، نضيفها كـ Strings (لأن FCM يقبل Strings فقط في data)
+        if (notification.meta) {
+            Object.keys(notification.meta).forEach(k => {
+                dataPayload[k] = String(notification.meta[k]);
+            });
+        }
 
-    // 3. Stringify Meta for FCM Data Payload
-    const stringifiedMeta = Object.keys(meta).reduce((acc, key) => {
-      acc[key] = String(meta[key]);
-      return acc;
-    }, {});
+        const payload = {
+          notification: {
+            title: notification.title,
+            body: notification.message,
+          },
+          data: dataPayload, // البيانات التي سيقرأها التطبيق للتوجيه
+          token: fcmToken
+        };
 
-    // 4. Send FCM
-    const messagePayload = {
-      token: fcmToken,
-      notification: { title, body: message },
-      data: {
-        click_action: 'FLUTTER_NOTIFICATION_CLICK',
-        type: type,
-        userId: userId,
-        ...stringifiedMeta
-      },
-      android: { priority: 'high', notification: { sound: 'default', channelId: 'eduai_alerts' } },
-      apns: { payload: { aps: { sound: 'default', badge: 1 } } }
-    };
-
-    await admin.messaging().send(messagePayload);
-    logger.success(`[Notification] Push sent to ${userId}`);
-
-  } catch (err) {
-    if (err.code === 'messaging/registration-token-not-registered') {
-      await db.collection('users').doc(userId).update({ fcmToken: admin.firestore.FieldValue.delete() });
-    } else {
-      logger.error(`[Notification] Failed: ${err.message}`);
+        await admin.messaging().send(payload);
+        logger.success(`[Notification] 📲 Push sent to ${userId} (Type: ${notification.type})`);
+      }
     }
+
+  } catch (error) {
+    logger.error(`[Notification] Failed to send to ${userId}:`, error.message);
   }
 }
-
 module.exports = {
   initDataHelpers,
   getUserDisplayName,
