@@ -30,34 +30,29 @@ function initMemoryManager(initConfig) {
 /**
  * نقوم الآن بحفظ "تبادل كامل" (User + AI) لضمان ترابط المعنى
  */
+// ✅ 1. تحديث وظيفة حفظ الذاكرة المتجهة (لتخزين المحادثة كاملة)
 async function saveMemoryChunk(userId, userMessage, aiReply) {
-  // دمج السؤال والجواب يعطي الـ Embedding قوة أكبر في الربط المستقبلي
+  // ندمج السؤال والجواب لنضمن السياق
   const combinedText = `User: ${userMessage}\nAI: ${aiReply}`;
   
-  if (!userId || !combinedText || combinedText.length < 15) return;
+  if (!userId || !combinedText || combinedText.length < 10) return;
 
   try {
     if (!embeddingServiceRef) return;
-    
-    // توليد المتجه للنص المدمج
     const embedding = await embeddingServiceRef.generateEmbedding(combinedText);
     if (!embedding.length) return;
 
     await db.collection(COLLECTION_NAME).add({
       userId,
-      originalText: combinedText, // نحفظ النص الكامل
-      userQuery: userMessage,     // نحفظ السؤال للتصنيف (اختياري)
+      originalText: combinedText, // نحفظ النص المدمج
       embedding,
       timestamp: new Date().toISOString(),
-      type: 'conversation_history' 
+      type: 'conversation_exchange' // نوع جديد لتمييزه
     });
-    
-    logger.success(`[Memory] Saved Contextual Chunk for user ${userId}`);
   } catch (error) {
     logger.error(`[Memory] Vector Save failed: ${error.message}`);
   }
 }
-
 // استرجاع الذاكرة (تم تحسين العرض في الـ Prompt)
 async function runMemoryAgent(userId, userMessage) {
   try {
@@ -92,7 +87,11 @@ async function analyzeAndSaveMemory(userId, history, activeMissions = []) {
     
     const prompt = `
     Analyze the conversation deeply. 
-    
+     **TARGET INFORMATION:**
+    1. **Names & Relationships:** Friends (e.g., Anis), Family, Teachers.
+    2. **Identity:** Name, Age, Location, Dream Job (e.g., Billionaire).
+    3. **Preferences:** Music type, specific hobbies.
+    4. **Current Status:** Exams, sickness, travel.
     **GOAL 1: Extract TIMED FACTS:**
     - **emotions**: Current mood (Sad, Excited, Angry, Stressed).
     - **romance**: Crushes, relationships.
@@ -116,28 +115,32 @@ async function analyzeAndSaveMemory(userId, history, activeMissions = []) {
       ],
       "newMissions": ["Find out why he fought with dad"],
       "completedMissions": [],
-      "noteToSelf": "Check on his mood next time."
+      "noteToSelf": "Check on his mood next time.",
+      "facts": {
+        "friend": "أنيس (صديق مقرب)", 
+        "dream": "مشروع EduApp ليصبح ملياردير",
+        "age": "17 سنة"
+      },  If no *new* solid facts appear, return "facts": {}.
     }
     `;
 
-    const res = await generateWithFailoverRef('analysis', prompt, { label: 'MemoryExtractor' });
+    const res = await generateWithFailoverRef('analysis', prompt, { label: 'DeepMemoryExtractor' });
     const raw = await extractTextFromResult(res);
     const data = await ensureJsonOrRepair(raw, 'analysis');
 
-    if (data) {
+   if (data) {
       const updates = {};
-      const now = new Date().toISOString();
       let hasUpdates = false;
 
-      // 1. حفظ الحقائق مع الزمن
-      if (data.newFacts && Array.isArray(data.newFacts) && data.newFacts.length > 0) {
-        data.newFacts.forEach(fact => {
-          if (fact.category && fact.text) {
-            const memoryObject = { value: fact.text, timestamp: now };
-            updates[`memory.${fact.category}`] = admin.firestore.FieldValue.arrayUnion(memoryObject);
-            logger.info(`[Memory] Learned (${fact.category}): "${fact.text}"`);
-            hasUpdates = true;
-          }
+      // 🔥 هنا السحر: تخزين الحقائق كـ Map في Firestore
+      if (data.facts && Object.keys(data.facts).length > 0) {
+        // نستخدم Notation النقطة لتحديث حقول محددة دون مسح القديم
+        Object.keys(data.facts).forEach(key => {
+            updates[`userProfileData.facts.${key}`] = data.facts[key];
+        });
+        logger.success(`[Memory] 🧠 Extracted Facts: ${JSON.stringify(data.facts)}`);
+        hasUpdates = true;
+      }
         });
       }
 
@@ -157,14 +160,18 @@ async function analyzeAndSaveMemory(userId, history, activeMissions = []) {
         hasUpdates = true;
       }
 
-      if (hasUpdates) {
-        await db.collection('users').doc(userId).set(updates, { merge: true });
+         if (hasUpdates) {
+        await db.collection('users').doc(userId).update(updates).catch(async e => {
+            // في حالة كان الملف غير موجود او الحقل غير موجود، نستخدم set مع merge
+            await db.collection('users').doc(userId).set(updates, { merge: true });
+        });
       }
     }
   } catch (error) {
     logger.error(`[Memory] Analysis failed: ${error.message}`);
   }
 }
+
 
 // ============================================================================
 // 3. سياق الخروج (The Gap/Contradiction Detector)
