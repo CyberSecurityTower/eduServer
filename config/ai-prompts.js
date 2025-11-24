@@ -76,12 +76,14 @@ The system has identified these needs based on data. Integreate them naturally i
           const codePart = parts[0]; // "review_weakness:lesson_id"
           const titlePart = parts[1] || 'Unknown Lesson'; // "Intro to Econ"
 
-          if (codePart.includes('review_weakness')) {
+         if (codePart.includes('review_weakness')) {
              strategicContext += `- **URGENT:** Student failed lesson "${titlePart}". Gently suggest a retry or quiz.\n`;
           } else if (codePart.includes('spaced_review')) {
              strategicContext += `- **MEMORY REFRESH:** Student might be forgetting lesson "${titlePart}". Ask if they remember it.\n`;
-          } else if (codePart === 'suggest_new_topic') {
-             strategicContext += `- **PROGRESS:** Student is ready for new topics.\n`;
+          
+          // 🔥 التحديث هنا: تعامل محدد مع الدرس الجديد
+          } else if (codePart.includes('suggest_new_topic')) {
+             strategicContext += `- **NEXT STEP:** The student has finished previous tasks. Suggest starting the NEW lesson: "${titlePart}".\n`;
           }
           
           // تعليم الـ AI أن يرسل الكود الكامل عند الإنجاز
