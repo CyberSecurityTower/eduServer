@@ -173,7 +173,98 @@ async function processSessionAnalytics(userId, sessionId) {
     logger.error(`[Analytics] Error processing session for user ${userId}:`, error);
   }
 }
+/**
+ * 🧠 العقل المدبر الليلي: يولد مهام المراجعة والدروس الجديدة
+ * يتأكد من عدم تكرار المهام الموجودة حالياً في dailyTasks أو missions
+ */
+async function generateSmartStudyStrategy(userId) {
+  const db = getFirestoreInstance();
+  
+  // 1. جلب كل البيانات المطلوبة دفعة واحدة
+  const [progressDoc, userDoc] = await Promise.all([
+    db.collection('userProgress').doc(userId).get(),
+    db.collection('users').doc(userId).get()
+  ]);
 
+  if (!progressDoc.exists || !userDoc.exists) return null;
+
+  const progress = progressDoc.data();
+  const userData = userDoc.data();
+
+  // استخراج المهام الحالية لتجنب التكرار
+  const currentDailyTasksIds = new Set((progress.dailyTasks?.tasks || []).map(t => t.relatedLessonId).filter(Boolean));
+  const currentMissions = new Set(userData.aiDiscoveryMissions || []); // المهام السرية الحالية
+
+  const candidates = [];
+  const now = Date.now();
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  let hasWeaknesses = false;
+
+  // 2. فحص المراجعة المتباعدة (Spaced Repetition)
+  const pathProgress = progress.pathProgress || {};
+  
+  // سنبحث عن آخر درس تم الوصول إليه لنعرف أين نحن في المنهج
+  let lastActiveLesson = null;
+
+  Object.keys(pathProgress).forEach(pathId => {
+    const subjects = pathProgress[pathId].subjects || {};
+    Object.keys(subjects).forEach(subjId => {
+      const lessons = subjects[subjId].lessons || {};
+      Object.keys(lessons).forEach(lessonId => {
+        const lesson = lessons[lessonId];
+        
+        if (lesson.status === 'completed' || lesson.status === 'current') {
+           // تحديد آخر درس نشط
+           if (!lastActiveLesson || new Date(lesson.lastAttempt) > new Date(lastActiveLesson.lastAttempt)) {
+             lastActiveLesson = { ...lesson, id: lessonId, subjectId: subjId };
+           }
+
+           // --- منطق التكرار المتباعد ---
+           if (lesson.masteryScore !== undefined) {
+             const lastAttemptTime = lesson.lastAttempt ? new Date(lesson.lastAttempt).getTime() : 0;
+             const daysSince = (now - lastAttemptTime) / DAY_MS;
+             const score = lesson.masteryScore;
+             
+             let missionText = '';
+
+             // أ) حالة الخطر (ضعف)
+             if (score < 60) {
+                missionText = `review_weakness:${lessonId}`; // صيغة مشفرة يفهمها الـ AI
+                hasWeaknesses = true;
+             } 
+             // ب) حالة التثبيت (علامة جيدة لكن مر وقت)
+             else if (score >= 60 && score < 85 && daysSince > 4) {
+                missionText = `spaced_review_medium:${lessonId}`;
+             }
+             // ج) حالة الصيانة (علامة ممتازة لكن مر زمن طويل - مثلا 10 أيام)
+             else if (score >= 85 && daysSince > 10) {
+                missionText = `spaced_review_mastery:${lessonId}`; // "راجع بطل، راك نسيت هذي"
+             }
+
+             // 🔥 الفلتر الذكي: هل هذه المهمة موجودة بالفعل؟
+             if (missionText && !currentMissions.has(missionText) && !currentDailyTasksIds.has(lessonId)) {
+               candidates.push(missionText);
+             }
+           }
+        }
+      });
+    });
+  });
+
+  // 3. قرار فتح درس جديد (Pacing Decision)
+  // إذا لم يكن هناك "نقاط ضعف" كثيرة، والمهام قليلة، نقترح درساً جديداً
+  if (!hasWeaknesses && candidates.length < 2) {
+      // هنا منطق بسيط: إذا أكمل الدرس X، نقترح X+1 (يحتاج لمنطق المنهج الدراسي EducationalPath)
+      // سنضيف مهمة عامة والـ AI سيعرف الدرس التالي من سياق المنهج
+      const newLessonMission = "suggest_new_topic";
+      if (!currentMissions.has(newLessonMission)) {
+        candidates.push(newLessonMission);
+      }
+  }
+
+  return candidates; // مصفوفة من السلاسل النصية: ["review_weakness:lesson1", "suggest_new_topic"]
+}
 async function getProgress(userId) {
   try {
     const cached = await cacheGet('progress', userId);
@@ -587,5 +678,6 @@ module.exports = {
   getCachedEducationalPathById,
   sendUserNotification,
   cacheDel, 
-  calculateSafeProgress
+  calculateSafeProgress,
+  generateSmartStudyStrategy
 };
