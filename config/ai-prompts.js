@@ -56,7 +56,7 @@ Message: "${escapeForPrompt(safeSnippet(message, 300))}"`,
       const safeWeaknesses = escapeForPrompt(safeSnippet(Array.isArray(weaknesses) ? weaknesses.join(', ') : '', 300));
       const safeHistory = history || '(no history)';
       const gapContext = gapContextParam || '(no gap context)';
-      / Resolve knowns (نركز على جلب الحقائق من البروفايل)
+      // Resolve knowns (نركز على جلب الحقائق من البروفايل)
       // userProfileData.facts هو المكان الجديد الذي أنشأناه
       const knowns = userProfileData?.userProfileData?.facts || {};
       
