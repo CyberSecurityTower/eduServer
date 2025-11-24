@@ -70,49 +70,72 @@ async function runNightlyAnalysis(req, res) {
 // --- 2. THE WORKER FUNCTION ---
 
 async function runNightlyAnalysisForUser(userId) {
-  try {
-    const dbInstance = getFirestoreInstance();
+  const db = getFirestoreInstance();
 
-    // أ) التخطيط الاستراتيجي (للجميع: نشط أو خامل قليلاً)
-    // هذا يضيف مهام سرية لليوم التالي
+  try {
+    // 1. التخطيط الاستراتيجي (كما هو - ممتاز)
     const newMissions = await generateSmartStudyStrategy(userId);
     if (newMissions && newMissions.length > 0) {
-       await dbInstance.collection('users').doc(userId).update({
+       await db.collection('users').doc(userId).update({
          aiDiscoveryMissions: admin.firestore.FieldValue.arrayUnion(...newMissions)
        });
-       logger.success(`[Nightly] Added missions for ${userId}`);
     }
 
-    // ب) إشعار إعادة التفاعل (Re-engagement)
-    // نتأكد أننا لا نزعج المستخدم الذي دخل اليوم، فقط من غاب يومين
-    const userDoc = await dbInstance.collection('userProgress').doc(userId).get();
+    // 2. 🔥 نظام الإنقاذ والتصعيد (The Rescue Mission) 🔥
+    const userDoc = await db.collection('userProgress').doc(userId).get();
+    
     if (userDoc.exists) {
         const userData = userDoc.data();
-        if (userData.lastLogin) {
-            const lastLogin = new Date(userData.lastLogin);
-            const hoursInactive = (Date.now() - lastLogin.getTime()) / (1000 * 60 * 60);
+        if (!userData.lastLogin) return;
 
-            // 🔥 الشرط: نرسل إشعار فقط إذا غاب أكثر من 48 ساعة
-            if (hoursInactive > 48) {
-                const reEngagementMessage = await runReEngagementManager(userId);
-                if (reEngagementMessage) {
-                    
-                    // جدولة الإشعار للغد مساءً (مثلاً 8:30)
-                    const scheduleTime = new Date();
-                    scheduleTime.setHours(20, 30, 0, 0);
-                    if (scheduleTime < new Date()) scheduleTime.setDate(scheduleTime.getDate() + 1);
+        const lastLogin = new Date(userData.lastLogin);
+        const daysInactive = (Date.now() - lastLogin.getTime()) / (1000 * 60 * 60 * 24);
 
-                    await enqueueJob({
-                        type: 'scheduled_notification',
-                        userId: userId,
-                        payload: {
-                            title: 'اشتقنا لوجودك!',
-                            message: reEngagementMessage,
-                        },
-                        sendAt: admin.firestore.Timestamp.fromDate(scheduleTime)
-                    });
-                    logger.info(`[Nightly] Scheduled re-engagement for ${userId}`);
-                }
+        // لن نرسل إشعاراً كل يوم، بل في محطات محددة (Checkpoints)
+        let intensity = null;
+        
+        // المحطة 1: غياب يومين (تذكير لطيف)
+        if (daysInactive >= 2 && daysInactive < 3) {
+            intensity = 'gentle'; 
+        } 
+        // المحطة 2: غياب 5 أيام (تحذير فقدان الستريك/التقدم)
+        else if (daysInactive >= 5 && daysInactive < 6) {
+            intensity = 'motivational';
+        }
+        // المحطة 3: غياب 10 أيام (محاولة أخيرة قوية)
+        else if (daysInactive >= 10 && daysInactive < 11) {
+            intensity = 'urgent';
+        }
+
+        // إذا وصلنا لإحدى المحطات، نجهز الإشعار
+        if (intensity) {
+            // أ) حساب الوقت المثالي (Personalized Timing)
+            const primeHour = await calculateUserPrimeTime(userId);
+            
+            // ب) توليد الرسالة حسب الحدة (Intensity)
+            // سنحتاج لتمرير intensity لمدير الإشعارات (سنعدله بالأسفل)
+            const message = await runReEngagementManager(userId, intensity); 
+            
+            if (message) {
+                // ج) جدولة الإشعار
+                const scheduleTime = new Date();
+                scheduleTime.setHours(primeHour, 0, 0, 0); // في دقيقته المفضلة
+                
+                // إذا الوقت فات اليوم، نرسله غداً
+                if (scheduleTime < new Date()) scheduleTime.setDate(scheduleTime.getDate() + 1);
+
+                await enqueueJob({
+                    type: 'scheduled_notification',
+                    userId: userId,
+                    payload: {
+                        title: intensity === 'urgent' ? 'وين راك؟ 😢' : 'تذكير للدراسة',
+                        message: message,
+                        intensity: intensity // للمتابعة التحليلية لاحقاً
+                    },
+                    sendAt: admin.firestore.Timestamp.fromDate(scheduleTime)
+                });
+                
+                logger.info(`[Rescue] Scheduled '${intensity}' msg for ${userId} at ${primeHour}:00`);
             }
         }
     }
