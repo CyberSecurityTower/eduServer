@@ -35,13 +35,15 @@ async function runSuggestionManager(userId) {
 
     if (!generateWithFailoverRef) return getDefaultSuggestions();
 
-    // نستخدم موديل 'suggestion' (يفضل أن يكون Flash للسرعة)
-    const res = await generateWithFailoverRef('suggestion', prompt, { label: 'SuggestionManager', timeoutMs: 8000 });
+    const res = await generateWithFailoverRef('suggestion', prompt, { label: 'SuggestionManager', timeoutMs: 25000 }); 
     const raw = await extractTextFromResult(res);
     const parsed = await ensureJsonOrRepair(raw, 'suggestion');
 
     if (parsed && Array.isArray(parsed.suggestions) && parsed.suggestions.length > 0) {
-      return parsed.suggestions.slice(0, 4);
+      // فلتر أمان إضافي للتأكد من الطول
+      return parsed.suggestions
+        .filter(s => s.split(' ').length <= 7) // نتأكد أنها ليست جريدة
+        .slice(0, 4);
     }
   } catch (error) {
     logger.error(`SuggestionManager failed for ${userId}:`, error.message);
@@ -51,7 +53,13 @@ async function runSuggestionManager(userId) {
 }
 
 function getDefaultSuggestions() {
-  return ["لخص لي هذا الدرس", "أعطني كويز سريع", "اشرح لي المفهوم الأساسي", "ما هي خطوتي التالية؟"];
+  // اقتراحات افتراضية جذابة وقصيرة (بالدارجة)
+  return [
+    "واش هو الدرس الجاي؟",
+    "نديرو كويز خفيف؟ 🔥",
+    "فكرني وين حبسنا",
+    "لخصلي أهم النقاط"
+  ];
 }
 
 module.exports = {
