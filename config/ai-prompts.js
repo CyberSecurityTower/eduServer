@@ -57,9 +57,7 @@ Message: "${escapeForPrompt(safeSnippet(message, 300))}"`,
       const safeHistory = history || '(no history)';
       const gapContext = gapContextParam || '(no gap context)';
       // Resolve knowns (نركز على جلب الحقائق من البروفايل)
-      // userProfileData.facts هو المكان الجديد الذي أنشأناه
-      const knowns = userProfileData?.userProfileData?.facts || {};
-      
+      // userProfileData.facts هو المكان الجديد الذي أنشأناه      
       // تحويل الحقائق لنص مقروء
       const factsList = Object.entries(knowns).map(([k, v]) => `- ${k}: ${v}`).join('\n');
       const factsContext = factsList ? `\n**🧠 USER FACTS (PERMANENT MEMORY):**\n${factsList}` : '';
