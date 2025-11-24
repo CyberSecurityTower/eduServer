@@ -215,8 +215,11 @@ async function chatInteractive(req, res) {
       direction: parsedResponse.direction || textDirection
     };
 
+    // حفظ الجلسة في قاعدة البيانات العادية (للعرض في التطبيق)
     saveChatSession(sessionId, userId, chatTitle, [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }], context.type, context);
-    saveMemoryChunk(userId, message);
+    
+    // 🔥 التغيير هنا: نرسل رسالة المستخدم + رد الذكاء الاصطناعي ليتم حفظهما ككتلة واحدة في الذاكرة المتجهة
+    saveMemoryChunk(userId, message, parsedResponse.reply);
 
     res.status(200).json(responsePayload);
 
