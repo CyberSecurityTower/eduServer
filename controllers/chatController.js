@@ -198,13 +198,16 @@ async function chatInteractive(req, res) {
       textDirection   // ✅ New
     );
 
-    // 8. Call AI
-    if (!generateWithFailoverRef) throw new Error('AI Service not ready');
-    
-    const modelResp = await generateWithFailoverRef('chat', finalPrompt, {
-      label: 'GenUI-Chat',
-      timeoutMs: CONFIG.TIMEOUTS.chat
+    // 6. Call AI
+    // ✅ التعديل: استخدام مهلة أطول إذا كان السياق "تحليل" أو كويز، وإلا استخدام مهلة الشات
+    const isAnalysisContext = context.isSystemInstruction || message.includes('[SYSTEM REPORT');
+    const timeoutSetting = isAnalysisContext ? CONFIG.TIMEOUTS.analysis : CONFIG.TIMEOUTS.chat;
+
+    const modelResp = await generateWithFailoverRef('chat', finalPrompt, { 
+      label: 'GenUI-Chat', 
+      timeoutMs: timeoutSetting // ✅ استخدام المهلة الديناميكية (60 ثانية للتحليل)
     });
+
 
     const rawText = await extractTextFromResult(modelResp);
     let parsedResponse = await ensureJsonOrRepair(rawText, 'analysis');
