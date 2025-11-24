@@ -3,29 +3,29 @@
 'use strict';
 
 const { getFirestoreInstance, admin } = require('./firestore');
-const LRUCache = require('./cache'); // Assuming cache.js is in the same folder
+const LRUCache = require('./cache'); // Ensure this file exists
 const CONFIG = require('../../config');
-const { safeSnippet } = require('../../utils');
+const { safeSnippet, extractTextFromResult, ensureJsonOrRepair } = require('../../utils');
 const logger = require('../../utils/logger');
 
-// Dependencies that need to be injected
+// Dependencies Injection
 let embeddingServiceRef;
 let generateWithFailoverRef;
 
 function initDataHelpers(dependencies) {
   if (!dependencies.embeddingService || !dependencies.generateWithFailover) {
-    throw new Error('Data Helpers requires embeddingService and generateWithFailover for initialization.');
+    throw new Error('Data Helpers requires embeddingService and generateWithFailover.');
   }
   embeddingServiceRef = dependencies.embeddingService;
   generateWithFailoverRef = dependencies.generateWithFailover;
-  logger.info('Data Helpers initialized with dependencies.');
+  logger.info('Data Helpers initialized.');
 }
 
 const db = getFirestoreInstance();
 
 // ---------- Cache instances ----------
 const DEFAULT_TTL = CONFIG.CACHE_TTL_MS || 1000 * 60 * 60;
-const educationalPathCache = new LRUCache(50, DEFAULT_TTL); // 50 items, 1 hour TTL
+const educationalPathCache = new LRUCache(50, DEFAULT_TTL);
 const localCache = {
   profile: new LRUCache(200, DEFAULT_TTL),
   progress: new LRUCache(200, DEFAULT_TTL),
@@ -35,7 +35,10 @@ async function cacheGet(scope, key) { return localCache[scope]?.get(key) ?? null
 async function cacheSet(scope, key, value) { return localCache[scope]?.set(key, value); }
 async function cacheDel(scope, key) { return localCache[scope]?.del(key); }
 
-// ---------------- DATA HELPERS ----------------
+// ============================================================================
+// 1. User Profile & Basic Info
+// ============================================================================
+
 async function getUserDisplayName(userId) {
   try {
     const userDoc = await db.collection('users').doc(userId).get();
@@ -48,6 +51,59 @@ async function getUserDisplayName(userId) {
     logger.error(`Error fetching user display name for ${userId}:`, err.message);
     return null;
   }
+}
+
+async function getProfile(userId) {
+  try {
+    const cached = await cacheGet('profile', userId);
+    if (cached) return cached;
+
+    const doc = await db.collection('aiMemoryProfiles').doc(userId).get();
+    if (doc.exists) {
+      const val = doc.data();
+      await cacheSet('profile', userId, val);
+      return val;
+    } else {
+      const defaultProfile = {
+        profileSummary: 'New user, no analysis yet.',
+        lastUpdatedAt: new Date().toISOString(),
+      };
+      await db.collection('aiMemoryProfiles').doc(userId).set(defaultProfile);
+      await cacheSet('profile', userId, defaultProfile);
+      return defaultProfile;
+    }
+  } catch (err) {
+    logger.error('getProfile error:', err.message);
+    return { profileSummary: 'No available memory.' };
+  }
+}
+
+// ============================================================================
+// 2. Progress & Curriculum Logic
+// ============================================================================
+
+async function getProgress(userId) {
+  try {
+    const cached = await cacheGet('progress', userId);
+    if (cached) return cached;
+    const doc = await db.collection('userProgress').doc(userId).get();
+    if (doc.exists) {
+      const val = doc.data() || {};
+      await cacheSet('progress', userId, val);
+      return val;
+    }
+  } catch (err) {
+    logger.error('getProgress error:', err.message);
+  }
+  return { stats: { points: 0 }, streakCount: 0, pathProgress: {} };
+}
+
+function calculateSafeProgress(completed, total) {
+  const safeCompleted = Number(completed) || 0;
+  const safeTotal = Number(total) || 0;
+  if (safeTotal <= 0) return 0;
+  const percentage = (safeCompleted / safeTotal) * 100;
+  return Math.min(100, Math.max(0, Math.round(percentage)));
 }
 
 async function formatProgressForAI(userId) {
@@ -83,201 +139,23 @@ async function formatProgressForAI(userId) {
   }
 }
 
-async function getProfile(userId) {
-  try {
-    const cached = await cacheGet('profile', userId);
-    if (cached) return cached;
+async function getCachedEducationalPathById(pathId) {
+  if (!pathId) return null;
+  const cached = educationalPathCache.get(pathId);
+  if (cached) return cached;
 
-    const doc = await db.collection('aiMemoryProfiles').doc(userId).get();
-    if (doc.exists) {
-      const val = doc.data();
-      await cacheSet('profile', userId, val);
-      return val;
-    } else {
-      const defaultProfile = {
-        profileSummary: 'مستخدم جديد، لم يتم تحليل أي بيانات بعد.',
-        lastUpdatedAt: new Date().toISOString(),
-      };
-      await db.collection('aiMemoryProfiles').doc(userId).set(defaultProfile);
-      await cacheSet('profile', userId, defaultProfile);
-      return defaultProfile;
-    }
-  } catch (err) {
-    logger.error('getProfile error:', err.message);
-    return { profileSummary: 'No available memory.' };
+  const doc = await db.collection('educationalPaths').doc(pathId).get();
+  if (doc.exists) {
+    const data = doc.data();
+    educationalPathCache.set(pathId, data);
+    return data;
   }
+  return null;
 }
 
-// --- NEW: Safe Progress Calculation ---
-/**
- * يحسب النسبة المئوية بأمان لتجنب القسمة على صفر أو القيم غير المنطقية.
- * @param {number} completed - العدد المنجز.
- * @param {number} total - العدد الكلي.
- * @returns {number} - نسبة مئوية صحيحة بين 0 و 100.
- */
-function calculateSafeProgress(completed, total) {
-  // 1. التعامل مع القيم غير المعرفة أو null
-  const safeCompleted = Number(completed) || 0;
-  const safeTotal = Number(total) || 0;
-
-  // 2. منع القسمة على صفر
-  if (safeTotal <= 0) return 0;
-
-  // 3. الحساب
-  const percentage = (safeCompleted / safeTotal) * 100;
-
-  // 4. التقريب وضمان الحدود (Clamping)
-  return Math.min(100, Math.max(0, Math.round(percentage)));
-}
-async function processSessionAnalytics(userId, sessionId) {
-  try {
-    logger.log(`[Analytics] Processing session ${sessionId} for user ${userId}`);
-
-    const sessionsSnapshot = await db.collection('userBehaviorAnalytics').doc(userId).collection('sessions')
-      .orderBy('startTime', 'desc').limit(5).get();
-
-    if (sessionsSnapshot.empty) {
-      logger.log('[Analytics] No sessions found to process.');
-      return;
-    }
-
-    const recentSessions = sessionsSnapshot.docs.map(doc => doc.data());
-
-    let totalDuration = 0;
-    let totalQuickCloses = 0;
-    let totalLessonsViewed = 0;
-
-    recentSessions.forEach(session => {
-      totalDuration += session.durationSeconds || 0;
-      totalQuickCloses += session.quickCloseCount || 0;
-      totalLessonsViewed += session.lessonsViewedCount || 0;
-    });
-
-    const avgDuration = totalDuration / recentSessions.length;
-
-    const procrastinationScore = totalLessonsViewed > 0 ? (totalQuickCloses / totalLessonsViewed) : 0;
-    const engagementLevel = Math.min(1, avgDuration / 1800);
-
-    const memoryProfileRef = db.collection('aiMemoryProfiles').doc(userId);
-    await memoryProfileRef.set({
-      lastAnalyzedAt: new Date().toISOString(),
-      behavioralInsights: {
-        engagementLevel: parseFloat(engagementLevel.toFixed(2)),
-        procrastinationScore: parseFloat(procrastinationScore.toFixed(2)),
-      }
-    }, { merge: true });
-
-    logger.log(`[Analytics] Successfully updated memory profile for user ${userId}`);
-
-  } catch (error) {
-    logger.error(`[Analytics] Error processing session for user ${userId}:`, error);
-  }
-}
-/**
- * 🧠 العقل المدبر الليلي: يولد مهام المراجعة والدروس الجديدة
- * يتأكد من عدم تكرار المهام الموجودة حالياً في dailyTasks أو missions
- */
-async function generateSmartStudyStrategy(userId) {
-  const db = getFirestoreInstance();
-  
-  // 1. جلب كل البيانات المطلوبة دفعة واحدة
-  const [progressDoc, userDoc] = await Promise.all([
-    db.collection('userProgress').doc(userId).get(),
-    db.collection('users').doc(userId).get()
-  ]);
-
-  if (!progressDoc.exists || !userDoc.exists) return null;
-
-  const progress = progressDoc.data();
-  const userData = userDoc.data();
-
-  // استخراج المهام الحالية لتجنب التكرار
-  const currentDailyTasksIds = new Set((progress.dailyTasks?.tasks || []).map(t => t.relatedLessonId).filter(Boolean));
-  const currentMissions = new Set(userData.aiDiscoveryMissions || []); // المهام السرية الحالية
-
-  const candidates = [];
-  const now = Date.now();
-  const DAY_MS = 24 * 60 * 60 * 1000;
-
-  let hasWeaknesses = false;
-
-  // 2. فحص المراجعة المتباعدة (Spaced Repetition)
-  const pathProgress = progress.pathProgress || {};
-  
-  // سنبحث عن آخر درس تم الوصول إليه لنعرف أين نحن في المنهج
-  let lastActiveLesson = null;
-
-  Object.keys(pathProgress).forEach(pathId => {
-    const subjects = pathProgress[pathId].subjects || {};
-    Object.keys(subjects).forEach(subjId => {
-      const lessons = subjects[subjId].lessons || {};
-      Object.keys(lessons).forEach(lessonId => {
-        const lesson = lessons[lessonId];
-        
-        if (lesson.status === 'completed' || lesson.status === 'current') {
-           // تحديد آخر درس نشط
-           if (!lastActiveLesson || new Date(lesson.lastAttempt) > new Date(lastActiveLesson.lastAttempt)) {
-             lastActiveLesson = { ...lesson, id: lessonId, subjectId: subjId };
-           }
-
-           // --- منطق التكرار المتباعد ---
-           if (lesson.masteryScore !== undefined) {
-             const lastAttemptTime = lesson.lastAttempt ? new Date(lesson.lastAttempt).getTime() : 0;
-             const daysSince = (now - lastAttemptTime) / DAY_MS;
-             const score = lesson.masteryScore;
-             
-             let missionText = '';
-
-             const lessonTitle = lesson.title || "درس غير معنون"; 
-
-             // أ) حالة الخطر (ضعف)
-             if (score < 70) {
-                // 🔥 التغيير هنا: نستخدم الفاصل "|" لفصل الكود عن العنوان
-                missionText = `review_weakness:${lessonId}|${lessonTitle}`; 
-                hasWeaknesses = true;
-             } 
-             // ب) حالة التثبيت
-             else if (score >= 70 && score < 85 && daysSince > 4) {
-                missionText = `spaced_review_medium:${lessonId}|${lessonTitle}`;
-             }
-             // ج) حالة الصيانة
-             else if (score >= 85 && daysSince > 10) {
-                missionText = `spaced_review_mastery:${lessonId}|${lessonTitle}`;
-             }
-           }
-        }
-      });
-    });
-  });
-
-  // 3. قرار فتح درس جديد (Pacing Decision)
-  // إذا لم يكن هناك "نقاط ضعف" كثيرة، والمهام قليلة، نقترح درساً جديداً
-  if (!hasWeaknesses && candidates.length < 2) {
-      // هنا منطق بسيط: إذا أكمل الدرس X، نقترح X+1 (يحتاج لمنطق المنهج الدراسي EducationalPath)
-      // سنضيف مهمة عامة والـ AI سيعرف الدرس التالي من سياق المنهج
-      const newLessonMission = "suggest_new_topic";
-      if (!currentMissions.has(newLessonMission)) {
-        candidates.push(newLessonMission);
-      }
-  }
-
-  return candidates; // مصفوفة من السلاسل النصية: ["review_weakness:lesson1", "suggest_new_topic"]
-}
-async function getProgress(userId) {
-  try {
-    const cached = await cacheGet('progress', userId);
-    if (cached) return cached;
-    const doc = await db.collection('userProgress').doc(userId).get();
-    if (doc.exists) {
-      const val = doc.data() || {};
-      await cacheSet('progress', userId, val);
-      return val;
-    }
-  } catch (err) {
-    logger.error('getProgress error:', err.message);
-  }
-  return { stats: { points: 0 }, streakCount: 0, pathProgress: {} };
-}
+// ============================================================================
+// 3. Strategy & Analysis (Smart Logic)
+// ============================================================================
 
 async function fetchUserWeaknesses(userId) {
   try {
@@ -319,58 +197,206 @@ async function fetchUserWeaknesses(userId) {
   }
 }
 
+// ✅ (جديد) خوارزمية المراجعة المتباعدة
+async function getSpacedRepetitionCandidates(userId) {
+  try {
+    const progressDoc = await db.collection('userProgress').doc(userId).get();
+    if (!progressDoc.exists) return [];
+    
+    const data = progressDoc.data();
+    const pathProgress = data.pathProgress || {};
+    let candidates = [];
+    const now = Date.now();
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    Object.keys(pathProgress).forEach(pathId => {
+      const subjects = pathProgress[pathId].subjects || {};
+      Object.keys(subjects).forEach(subjId => {
+        const lessons = subjects[subjId].lessons || {};
+        Object.keys(lessons).forEach(lessonId => {
+          const lesson = lessons[lessonId];
+          if (lesson.status === 'completed' && lesson.masteryScore !== undefined) {
+             const lastAttemptTime = lesson.lastAttempt ? new Date(lesson.lastAttempt).getTime() : 0;
+             const daysSince = (now - lastAttemptTime) / DAY_MS;
+             const score = lesson.masteryScore;
+             
+             let needsReview = false;
+             let reason = '';
+
+             if (score < 50) { needsReview = true; reason = 'urgent_low_score'; } 
+             else if (score >= 50 && score < 80 && daysSince > 3) { needsReview = true; reason = 'spaced_repetition_medium'; }
+             else if (score >= 80 && daysSince > 7) { needsReview = true; reason = 'spaced_repetition_maintenance'; }
+
+             if (needsReview) {
+               candidates.push({
+                 lessonId,
+                 title: lesson.title || lessonId,
+                 score,
+                 daysSince: Math.round(daysSince),
+                 reason
+               });
+             }
+          }
+        });
+      });
+    });
+
+    candidates.sort((a, b) => a.score - b.score); 
+    return candidates.slice(0, 3);
+  } catch (error) {
+    logger.error('Error in Spaced Repetition:', error);
+    return [];
+  }
+}
+
+// ✅ (محدث) العقل المدبر الليلي + اقتراح الدرس التالي
+async function generateSmartStudyStrategy(userId) {
+  const [progressDoc, userDoc] = await Promise.all([
+    db.collection('userProgress').doc(userId).get(),
+    db.collection('users').doc(userId).get()
+  ]);
+
+  if (!progressDoc.exists || !userDoc.exists) return null;
+
+  const progress = progressDoc.data();
+  const userData = userDoc.data();
+  const pathId = userData.selectedPathId;
+
+  const currentDailyTasksIds = new Set((progress.dailyTasks?.tasks || []).map(t => t.relatedLessonId).filter(Boolean));
+  const currentMissions = new Set(userData.aiDiscoveryMissions || []);
+  const candidates = [];
+  let hasWeaknesses = false;
+
+  const now = Date.now();
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const pathProgress = progress.pathProgress || {};
+
+  // 1. Spaced Repetition Logic
+  Object.keys(pathProgress).forEach(pId => {
+    const subjects = pathProgress[pId].subjects || {};
+    Object.keys(subjects).forEach(subjId => {
+      const lessons = subjects[subjId].lessons || {};
+      Object.keys(lessons).forEach(lessonId => {
+        const lesson = lessons[lessonId];
+        if (lesson.status === 'completed' || lesson.status === 'current') {
+           if (lesson.masteryScore !== undefined) {
+             const lastAttemptTime = lesson.lastAttempt ? new Date(lesson.lastAttempt).getTime() : 0;
+             const daysSince = (now - lastAttemptTime) / DAY_MS;
+             const score = lesson.masteryScore;
+             const lessonTitle = lesson.title || "درس";
+             let missionText = '';
+
+             if (score < 65) {
+                missionText = `review_weakness:${lessonId}|${lessonTitle}`; 
+                hasWeaknesses = true;
+             } 
+             else if (score >= 65 && score < 85 && daysSince > 5) {
+                missionText = `spaced_review_medium:${lessonId}|${lessonTitle}`;
+             }
+             else if (score >= 85 && daysSince > 12) {
+                missionText = `spaced_review_mastery:${lessonId}|${lessonTitle}`;
+             }
+
+             if (missionText && !currentMissions.has(missionText) && !currentDailyTasksIds.has(lessonId)) {
+               candidates.push(missionText);
+             }
+           }
+        }
+      });
+    });
+  });
+
+  // 2. Next Lesson Suggestion Logic (Smart Pacing)
+  if (!hasWeaknesses && candidates.length < 2 && pathId) {
+      try {
+        const pathDoc = await db.collection('educationalPaths').doc(pathId).get();
+        if (pathDoc.exists) {
+            const pathData = pathDoc.data();
+            let nextLesson = null;
+            const subjects = pathData.subjects || [];
+            
+            // Loop sequentially to find the first incomplete lesson
+            outerLoop:
+            for (const subject of subjects) {
+                const lessons = subject.lessons || [];
+                for (const lesson of lessons) {
+                    const userLessonData = progress.pathProgress?.[pathId]?.subjects?.[subject.id]?.lessons?.[lesson.id];
+                    const isCompleted = userLessonData?.status === 'completed';
+                    if (!isCompleted) {
+                        nextLesson = { id: lesson.id, title: lesson.title };
+                        break outerLoop;
+                    }
+                }
+            }
+
+            if (nextLesson) {
+                const missionText = `suggest_new_topic:${nextLesson.id}|${nextLesson.title}`;
+                if (!currentMissions.has(missionText) && !currentDailyTasksIds.has(nextLesson.id)) {
+                    candidates.push(missionText);
+                }
+            }
+        }
+      } catch (err) {
+          logger.error('Error fetching path for strategy:', err);
+      }
+  }
+
+  return candidates;
+}
+
+// ============================================================================
+// 4. Chat History & Memory Management
+// ============================================================================
+
 async function fetchRecentComprehensiveChatHistory(userId) {
   try {
     const now = new Date();
     const startOfToday = new Date(new Date(now).setHours(0, 0, 0, 0));
 
+    // Get Today's Chat
     const todaySnapshot = await db.collection('chatSessions')
       .where('userId', '==', userId)
       .where('updatedAt', '>=', admin.firestore.Timestamp.fromDate(startOfToday))
       .get();
 
     let combinedMessages = [];
-    todaySnapshot.forEach(doc => {
-      combinedMessages.push(...(doc.data().messages || []));
-    });
+    todaySnapshot.forEach(doc => combinedMessages.push(...(doc.data().messages || [])));
 
-    const lastSessionBeforeTodaySnapshot = await db.collection('chatSessions')
-      .where('userId', '==', userId)
-      .where('updatedAt', '<', admin.firestore.Timestamp.fromDate(startOfToday))
-      .orderBy('updatedAt', 'desc')
-      .limit(1)
-      .get();
+    // Get Last Active Day if Today is empty or short
+    if (combinedMessages.length < 5) {
+        const lastSessionSnapshot = await db.collection('chatSessions')
+          .where('userId', '==', userId)
+          .where('updatedAt', '<', admin.firestore.Timestamp.fromDate(startOfToday))
+          .orderBy('updatedAt', 'desc')
+          .limit(1)
+          .get();
 
-    if (!lastSessionBeforeTodaySnapshot.empty) {
-      const lastActiveTimestamp = lastSessionBeforeTodaySnapshot.docs[0].data().updatedAt.toDate();
-      const startOfLastActiveDay = new Date(new Date(lastActiveTimestamp).setHours(0, 0, 0, 0));
-      const endOfLastActiveDay = new Date(new Date(lastActiveTimestamp).setHours(23, 59, 59, 999));
-
-      const lastDaySnapshot = await db.collection('chatSessions')
-        .where('userId', '==', userId)
-        .where('updatedAt', '>=', admin.firestore.Timestamp.fromDate(startOfLastActiveDay))
-        .where('updatedAt', '<=', admin.firestore.Timestamp.fromDate(endOfLastActiveDay))
-        .get();
-
-      lastDaySnapshot.forEach(doc => {
-        combinedMessages.push(...(doc.data().messages || []));
-      });
+        if (!lastSessionSnapshot.empty) {
+          const lastActiveTime = lastSessionSnapshot.docs[0].data().updatedAt.toDate();
+          const startLast = new Date(new Date(lastActiveTime).setHours(0, 0, 0, 0));
+          const endLast = new Date(new Date(lastActiveTime).setHours(23, 59, 59, 999));
+          
+          const lastDayDocs = await db.collection('chatSessions')
+            .where('userId', '==', userId)
+            .where('updatedAt', '>=', admin.firestore.Timestamp.fromDate(startLast))
+            .where('updatedAt', '<=', admin.firestore.Timestamp.fromDate(endLast))
+            .get();
+            
+          lastDayDocs.forEach(doc => combinedMessages.push(...(doc.data().messages || [])));
+        }
     }
 
-    if (combinedMessages.length === 0) {
-      return 'لا توجد محادثات حديثة.';
-    }
+    if (combinedMessages.length === 0) return 'لا توجد محادثات حديثة.';
 
     combinedMessages.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-    const recentTranscript = combinedMessages
+    
+    return combinedMessages
       .slice(-50)
       .map(m => `${m.author === 'bot' ? 'EduAI' : 'User'}: ${m.text}`)
       .join('\n');
 
-    return recentTranscript;
-
   } catch (error) {
-    logger.error(`Error fetching comprehensive chat history for ${userId}:`, error);
+    logger.error(`History fetch error for ${userId}:`, error.message);
     return 'لم يتمكن من استرجاع سجل المحادثات.';
   }
 }
@@ -396,15 +422,11 @@ async function saveChatSession(sessionId, userId, title, messages, type = 'main_
       type,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
-
-    if (context && context.lessonId) {
-      dataToSave.context = context;
-    }
+    if (context && context.lessonId) dataToSave.context = context;
 
     await sessionRef.set(dataToSave, { merge: true });
-
   } catch (error) {
-    logger.error(`Error saving chat session ${sessionId}:`, error);
+    logger.error(`Error saving session ${sessionId}:`, error);
   }
 }
 
@@ -413,28 +435,15 @@ async function analyzeAndSaveMemory(userId, newConversation) {
     const profileDoc = await getProfile(userId);
     const currentSummary = profileDoc.profileSummary || '';
 
-    const prompt = `You are a psychological and educational analyst AI. Your task is to update a student's long-term memory profile based on a new conversation.
+    const prompt = `You are a psychological and educational analyst AI. Update the student's profile.
+    **Current Profile:** "${safeSnippet(currentSummary, 1000)}"
+    **New Chat:**
+    ${newConversation.slice(-15).map(m => `${m.author === 'bot' ? 'AI' : 'User'}: ${safeSnippet(m.text, 200)}`).join('\n')}
+    **Instructions:** Update the summary with new insights (goals, struggles, personality). Merge strictly.
+    **Output:** JSON { "updatedSummary": "..." }`;
 
-    **Current Profile Summary:**
-    "${currentSummary}"
-
-    **New Conversation Transcript (User and EduAI):**
-    ${newConversation.map(m => `${m.author === 'bot' ? 'EduAI' : 'User'}: ${m.text}`).join('\n')}
-
-    **Instructions:**
-    1. Read the new conversation.
-    2. Identify ANY new personal information, goals, struggles, preferences, or significant events.
-    3. Integrate this new information into the existing profile summary to create an updated, concise, and coherent summary in english.
-    4. Do not repeat information already in the summary.
-    5. Respond ONLY with a valid JSON object: { "updatedSummary": "..." }`;
-
-    if (!generateWithFailoverRef) {
-      logger.error('analyzeAndSaveMemory: generateWithFailover is not set.');
-      return;
-    }
+    if (!generateWithFailoverRef) return;
     const res = await generateWithFailoverRef('analysis', prompt, { label: 'MemoryAnalyst' });
-    // This helper also needs to be injected or imported
-    const { extractTextFromResult, ensureJsonOrRepair } = require('../../utils'); // Assuming utils has these
     const raw = await extractTextFromResult(res);
     const parsed = await ensureJsonOrRepair(raw, 'analysis');
 
@@ -443,83 +452,81 @@ async function analyzeAndSaveMemory(userId, newConversation) {
         profileSummary: parsed.updatedSummary,
         lastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
-      cacheDel('profile', userId); // Invalidate cache
+      cacheDel('profile', userId);
     }
   } catch (err) {
-    logger.error(`Failed to analyze memory for user ${userId}:`, err);
+    logger.error(`Memory analysis failed for ${userId}:`, err.message);
   }
 }
 
-async function getCachedEducationalPathById(pathId) {
-  if (!pathId) return null;
-  const cached = educationalPathCache.get(pathId);
-  if (cached) return cached;
+// ============================================================================
+// 5. Notifications & Analytics
+// ============================================================================
 
-  const doc = await db.collection('educationalPaths').doc(pathId).get();
-  if (doc.exists) {
-    const data = doc.data();
-    educationalPathCache.set(pathId, data);
-    return data;
-  }
-  return null;
-}
-
-async function sendUserNotification(userId, payload = {}) {
-  if (!userId) return;
-  
-  const title = payload.title || 'تنبيه من EduAI';
-  const message = payload.message || '';
-  const type = payload.type || 'system';
-  const meta = payload.meta || {};
-
+async function processSessionAnalytics(userId, sessionId) {
   try {
-    // 1. الحفظ في قاعدة البيانات (ليظهر في قائمة الإشعارات داخل التطبيق)
-    // هذا الجزء كان موجوداً ويعمل
-    await db.collection('userNotifications').doc(userId).collection('inbox').add({
-      title: title,
-      message: message,
-      type: type,
-      meta: meta,
-      read: false,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    const sessionsSnapshot = await db.collection('userBehaviorAnalytics').doc(userId).collection('sessions')
+      .orderBy('startTime', 'desc').limit(5).get();
+
+    if (sessionsSnapshot.empty) return;
+
+    const recentSessions = sessionsSnapshot.docs.map(doc => doc.data());
+    let totalDuration = 0;
+    let totalLessonsViewed = 0;
+
+    recentSessions.forEach(session => {
+      totalDuration += session.durationSeconds || 0;
+      totalLessonsViewed += session.lessonsViewedCount || 0;
     });
-    
-    logger.log(`[Notification] Saved to DB for user ${userId}`);
 
-    // 2. الإرسال للهاتف (Push Notification via FCM) 🔥 هذا هو الجديد
-    const userDoc = await db.collection('users').doc(userId).get();
-    
-    if (userDoc.exists) {
-      const userData = userDoc.data();
-      const fcmToken = userData.fcmToken; // ⚠️ تأكد أن التطبيق يحفظ التوكن بهذا الاسم
+    const avgDuration = totalDuration / recentSessions.length;
+    const engagementLevel = Math.min(1, avgDuration / 1800);
 
-      if (fcmToken) {
-        await admin.messaging().send({
-          token: fcmToken,
-          notification: {
-            title: title,
-            body: message,
-          },
-          data: {
-            click_action: 'FLUTTER_NOTIFICATION_CLICK', // مهم لتطبيقات Flutter
-            type: type,
-            // يجب تحويل أي بيانات في meta إلى String لأن FCM لا يقبل JSON متداخل
-            ...Object.keys(meta).reduce((acc, key) => {
-              acc[key] = String(meta[key]); 
-              return acc;
-            }, {})
-          }
-        });
-        logger.success(`[Notification] 📲 Push sent to user ${userId}`);
-      } else {
-        logger.warn(`[Notification] User ${userId} has no fcmToken. Saved to DB only.`);
+    await db.collection('aiMemoryProfiles').doc(userId).set({
+      lastAnalyzedAt: new Date().toISOString(),
+      behavioralInsights: {
+        engagementLevel: parseFloat(engagementLevel.toFixed(2)),
       }
-    }
+    }, { merge: true });
 
-  } catch (err) {
-    logger.error(`sendUserNotification failed for ${userId}:`, err.message);
+  } catch (error) {
+    logger.error(`Analytics error for ${userId}:`, error.message);
   }
 }
+
+async function getOptimalStudyTime(userId) {
+  try {
+    const sessions = await db.collection('chatSessions')
+      .where('userId', '==', userId)
+      .orderBy('updatedAt', 'desc')
+      .limit(20)
+      .get();
+
+    let bestHour = 19; 
+    if (!sessions.empty) {
+      const hourCounts = {};
+      sessions.forEach(doc => {
+        const h = doc.data().updatedAt.toDate().getHours();
+        hourCounts[h] = (hourCounts[h] || 0) + 1;
+      });
+      bestHour = Object.keys(hourCounts).reduce((a, b) => hourCounts[a] > hourCounts[b] ? a : b);
+    }
+
+    const targetDate = new Date();
+    targetDate.setDate(targetDate.getDate() + 1);
+    targetDate.setHours(parseInt(bestHour), 0, 0, 0);
+
+    if (targetDate.getHours() >= 0 && targetDate.getHours() < 6) {
+        targetDate.setHours(20, 0, 0, 0);
+    }
+    return targetDate;
+  } catch (err) {
+    const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(19, 0, 0, 0);
+    return d;
+  }
+}
+
+// ✅ (مدمجة ومحسنة) دالة إرسال الإشعارات
 async function sendUserNotification(userId, payload = {}) {
   if (!userId) return;
 
@@ -529,139 +536,54 @@ async function sendUserNotification(userId, payload = {}) {
   const meta = payload.meta || {};
 
   try {
-    // 1. حفظ الإشعار في قاعدة البيانات (لأرشيف التطبيق)
+    // 1. Save to DB Inbox
     await db.collection('userNotifications').doc(userId).collection('inbox').add({
-      title: title,
-      message: message,
-      type: type,
-      meta: meta,
+      title, message, type, meta,
       read: false,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
-    
-    logger.log(`[Notification] Saved to DB for user ${userId}`);
 
-    // 2. جلب التوكن الخاص بالمستخدم
+    // 2. Get FCM Token
     const userDoc = await db.collection('users').doc(userId).get();
-    
-    if (!userDoc.exists) {
-      logger.warn(`[Notification] User ${userId} not found.`);
-      return;
-    }
+    if (!userDoc.exists) return;
 
     const userData = userDoc.data();
-    const fcmToken = userData.fcmToken; // ✅ هذا الاسم يطابق الكود الذي أرسلته لي
+    const fcmToken = userData.fcmToken;
 
-    if (!fcmToken) {
-      logger.log(`[Notification] No FCM Token for user ${userId} (User might be offline/logged out).`);
-      return;
-    }
+    if (!fcmToken) return;
 
-    // 3. تجهيز رسالة FCM
-    // تحويل الـ meta إلى String لأن FCM لا يقبل JSON متداخل في الـ data
+    // 3. Stringify Meta for FCM Data Payload
     const stringifiedMeta = Object.keys(meta).reduce((acc, key) => {
       acc[key] = String(meta[key]);
       return acc;
     }, {});
 
+    // 4. Send FCM
     const messagePayload = {
       token: fcmToken,
-      notification: {
-        title: title,
-        body: message,
-      },
-      // بيانات إضافية للتعامل معها برمجياً عند الضغط على الإشعار
+      notification: { title, body: message },
       data: {
         click_action: 'FLUTTER_NOTIFICATION_CLICK',
         type: type,
         userId: userId,
         ...stringifiedMeta
       },
-      // إعدادات أندرويد لضمان الوصول
-      android: {
-        priority: 'high',
-        notification: {
-          sound: 'default',
-          channelId: 'eduai_alerts', // تأكد من إنشاء هذه القناة في الفرونت إند
-        }
-      },
-      // إعدادات iOS
-      apns: {
-        payload: {
-          aps: {
-            sound: 'default',
-            badge: 1,
-          }
-        }
-      }
+      android: { priority: 'high', notification: { sound: 'default', channelId: 'eduai_alerts' } },
+      apns: { payload: { aps: { sound: 'default', badge: 1 } } }
     };
 
-    // 4. الإرسال الفعلي
     await admin.messaging().send(messagePayload);
-    logger.success(`[Notification] 📲 Push sent successfully to ${userId}`);
+    logger.success(`[Notification] Push sent to ${userId}`);
 
   } catch (err) {
-    // التعامل مع التوكنات منتهية الصلاحية
     if (err.code === 'messaging/registration-token-not-registered') {
-      logger.warn(`[Notification] Token invalid for user ${userId}. Removing from DB.`);
-      await db.collection('users').doc(userId).update({
-        fcmToken: admin.firestore.FieldValue.delete()
-      });
+      await db.collection('users').doc(userId).update({ fcmToken: admin.firestore.FieldValue.delete() });
     } else {
-      logger.error(`[Notification] Failed to send push: ${err.message}`);
+      logger.error(`[Notification] Failed: ${err.message}`);
     }
   }
 }
-/**
- * 🕰️ خوارزمية الوقت الذهبي
- * تبحث في تاريخ المستخدم لتجد الساعة المفضلة لديه للدراسة
- */
-async function getOptimalStudyTime(userId) {
-  try {
-    // 1. نفترض أن لديك كوليكشن analytics_logs (أو نستخدم أوقات الرسائل في chatSessions كبديل سريع)
-    // هنا سنستخدم chatSessions لأنها ممتلئة بالبيانات بالفعل
-    const sessions = await db.collection('chatSessions')
-      .where('userId', '==', userId)
-      .orderBy('updatedAt', 'desc')
-      .limit(20) // نحلل آخر 20 جلسة
-      .get();
 
-    let bestHour = 19; // الافتراضي: 7 مساءً
-
-    if (!sessions.empty) {
-      const hourCounts = {};
-      
-      sessions.forEach(doc => {
-        // نأخذ توقيت آخر رسالة
-        const date = doc.data().updatedAt.toDate();
-        // نأخذ الساعة (0-23)
-        const h = date.getHours();
-        hourCounts[h] = (hourCounts[h] || 0) + 1;
-      });
-
-      // إيجاد الساعة الأكثر تكراراً
-      bestHour = Object.keys(hourCounts).reduce((a, b) => hourCounts[a] > hourCounts[b] ? a : b);
-    }
-
-    // 2. تجهيز تاريخ الغد في هذه الساعة
-    const targetDate = new Date();
-    targetDate.setDate(targetDate.getDate() + 1); // غداً
-    targetDate.setHours(parseInt(bestHour), 0, 0, 0); // في الساعة المفضلة
-
-    // 3. (تحسين بسيط) إذا كانت الساعة المفضلة ميتة (مثل 3 صباحاً)، نجعلها 8 مساءً
-    if (targetDate.getHours() >= 0 && targetDate.getHours() < 6) {
-        targetDate.setHours(20, 0, 0, 0);
-    }
-
-    return targetDate;
-
-  } catch (err) {
-    logger.error('Error calculating optimal time:', err);
-    // Fallback
-    const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(19, 0, 0, 0);
-    return d;
-  }
-}
 module.exports = {
   initDataHelpers,
   getUserDisplayName,
@@ -675,7 +597,9 @@ module.exports = {
   analyzeAndSaveMemory,
   getCachedEducationalPathById,
   sendUserNotification,
-  cacheDel, 
+  cacheDel,
   calculateSafeProgress,
-  generateSmartStudyStrategy
+  getSpacedRepetitionCandidates,
+  generateSmartStudyStrategy,
+  getOptimalStudyTime
 };
