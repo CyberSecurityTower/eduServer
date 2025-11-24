@@ -50,24 +50,21 @@ function cosineSimilarity(vecA, vecB) {
  * ✅ النسخة المحسنة: البحث الدقيق
  * @param {number} minScore - أقل نسبة تشابه مقبولة (0.0 - 1.0)
  */
-async function findSimilarEmbeddings(queryEmbedding, collectionName, topN = 3, userId = null, minScore = 0.70) {
+
+/**
+ * ✅ النسخة المحسنة: البحث الدقيق والمرن
+ * تم تعديل minScore ليصبح 0.55 بدلاً من 0.70 لالتقاط المعاني الضمنية بشكل أفضل
+ */
+async function findSimilarEmbeddings(queryEmbedding, collectionName, topN = 5, userId = null, minScore = 0.55) {
   try {
     const dbInstance = getFirestoreInstance();
     let query = dbInstance.collection(collectionName);
     
-    // فلترة حسب المستخدم لتسريع البحث وتقليل التكلفة
     if (userId) {
-      query = query.where('userId', '==', userId);
-    }
-
-    // ⚠️ ملاحظة: في الإنتاج الضخم (10k+ docs) نستخدم Vector DB مثل Pinecone
-    // لكن مع Firestore والعدد المحدود، سنحدد السقف بـ 200 مستند أحدث
-    if (userId) {
-        // للذكريات الشخصية، نبحث في الأحدث
-        query = query.orderBy('timestamp', 'desc').limit(200); 
+      // نبحث في آخر 300 ذكرى (بدلاً من 200) لزيادة المدى
+      query = query.where('userId', '==', userId).orderBy('timestamp', 'desc').limit(300); 
     } else {
-        // للمنهج الدراسي، قد نحتاج لعدد أكبر أو تقسيم للكوليكشن
-        query = query.limit(500); 
+      query = query.limit(500); 
     }
 
     const snapshot = await query.get();
@@ -78,7 +75,8 @@ async function findSimilarEmbeddings(queryEmbedding, collectionName, topN = 3, u
       const data = doc.data();
       if (data.embedding) {
         const score = cosineSimilarity(queryEmbedding, data.embedding);
-        // ✅ الفلتر الذهبي: استبعاد المعلومات غير ذات الصلة
+        
+        // إذا وجدنا تطابقاً
         if (score >= minScore) {
             similarities.push({ ...data, score });
         }
@@ -88,7 +86,7 @@ async function findSimilarEmbeddings(queryEmbedding, collectionName, topN = 3, u
     // ترتيب تنازلي حسب الأفضل
     similarities.sort((a, b) => b.score - a.score);
     
-    // إرجاع أفضل N نتائج فقط
+    // إرجاع أفضل النتائج
     return similarities.slice(0, topN);
 
   } catch (error) {
