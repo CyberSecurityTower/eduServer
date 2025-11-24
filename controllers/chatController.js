@@ -330,7 +330,7 @@ if (lessonId && subjectId && pathId) {
         widgets: [],
         needsScheduling: false
       };
-    }
+    
 
     // 9. Triggers
     if (parsedResponse.needsScheduling === true) {
