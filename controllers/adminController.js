@@ -26,41 +26,6 @@ const db = getFirestoreInstance();
 
 // --- 1. THE NIGHTLY BRAIN (LOGIC) ---
 
-async function runNightlyAnalysisForUser(userId) {
-  try {
-    // A. 🧠 تشغيل الاستراتيجية الذكية (إضافة مهام سرية)
-    const newMissions = await generateSmartStudyStrategy(userId);
-
-    if (newMissions && newMissions.length > 0) {
-       await db.collection('users').doc(userId).update({
-         // إضافة المهام الجديدة للقائمة الحالية
-         aiDiscoveryMissions: admin.firestore.FieldValue.arrayUnion(...newMissions)
-       }).catch(err => {
-         // في حال كان الحقل غير موجود، ننشئه
-         return db.collection('users').doc(userId).set({
-            aiDiscoveryMissions: newMissions
-         }, { merge: true });
-       });
-       
-       logger.success(`[NightlyStrategy] 🎯 Added ${newMissions.length} strategic missions for user ${userId}`);
-    } else {
-        logger.info(`[NightlyStrategy] No new missions needed for user ${userId}`);
-    }
-
-    // B. 🔔 منطق إعادة التفاعل (للغائبين فقط)
-    // نتحقق من آخر ظهور لإرسال إشعار إذا لزم الأمر
-    const userDoc = await db.collection('users').doc(userId).get();
-    if (!userDoc.exists) return;
-    
-    // (يمكنك إضافة شروط هنا إذا أردت إرسال إشعار push notification)
-
-  } catch (error) {
-    logger.error(`Nightly analysis failed for user ${userId}:`, error);
-  }
-}
-
-// --- 2. THE CRON TRIGGER (ROUTE) ---
-
 async function runNightlyAnalysis(req, res) {
   try {
     const providedSecret = req.headers['x-job-secret'];
@@ -68,37 +33,91 @@ async function runNightlyAnalysis(req, res) {
       return res.status(401).json({ error: 'Unauthorized.' });
     }
 
-    // الرد الفوري للكرون
     res.status(202).json({ message: 'Nightly analysis job started.' });
+    logger.log(`[CRON] Starting nightly analysis (Strategic Planning)...`);
 
-    logger.log('🚀 [CRON START] Nightly analysis triggered manually...');
-
-    // 🔥 وضع الاختبار: تم تعطيل شرط الوقت ليعمل عليك الآن
-    // const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    // 🔥 التعديل الجوهري: نستهدف المستخدمين النشطين في آخر 7 أيام
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     
-    const usersSnapshot = await db.collection('userProgress')
-      // .where('lastLogin', '<', twoDaysAgo.toISOString()) // ❌ معطل للاختبار
-      .limit(10) // نحدد العدد للتجربة
+    // نستخدم getFirestoreInstance لضمان الاتصال
+    const dbInstance = getFirestoreInstance();
+    const activeUsersSnapshot = await dbInstance.collection('userProgress')
+      .where('lastLogin', '>=', sevenDaysAgo.toISOString()) 
+      .limit(100) // معالجة 100 مستخدم في كل دورة
       .get();
 
-    logger.log(`🔎 [CRON] Found ${usersSnapshot.size} users to analyze.`);
-
-    if (usersSnapshot.empty) {
-      logger.log('No users found. Job finished.');
+    if (activeUsersSnapshot.empty) {
+      logger.log('[CRON] No recently active users found.');
       return;
     }
 
+    logger.log(`[CRON] Planning strategies for ${activeUsersSnapshot.size} active users...`);
+
     const analysisPromises = [];
-    usersSnapshot.forEach(doc => {
-      logger.log(`⚡ [CRON] Processing user: ${doc.id}`);
+    activeUsersSnapshot.forEach(doc => {
+      // نمرر الـ ID لدالة التحليل
       analysisPromises.push(runNightlyAnalysisForUser(doc.id));
     });
 
     await Promise.all(analysisPromises);
-    logger.success(`✅ [CRON] Nightly analysis finished for ${usersSnapshot.size} users.`);
+    logger.success(`[CRON] Strategic planning finished.`);
 
   } catch (error) {
     logger.error('[/run-nightly-analysis] Critical error:', error);
+  }
+}
+
+// --- 2. THE WORKER FUNCTION ---
+
+async function runNightlyAnalysisForUser(userId) {
+  try {
+    const dbInstance = getFirestoreInstance();
+
+    // أ) التخطيط الاستراتيجي (للجميع: نشط أو خامل قليلاً)
+    // هذا يضيف مهام سرية لليوم التالي
+    const newMissions = await generateSmartStudyStrategy(userId);
+    if (newMissions && newMissions.length > 0) {
+       await dbInstance.collection('users').doc(userId).update({
+         aiDiscoveryMissions: admin.firestore.FieldValue.arrayUnion(...newMissions)
+       });
+       logger.success(`[Nightly] Added missions for ${userId}`);
+    }
+
+    // ب) إشعار إعادة التفاعل (Re-engagement)
+    // نتأكد أننا لا نزعج المستخدم الذي دخل اليوم، فقط من غاب يومين
+    const userDoc = await dbInstance.collection('userProgress').doc(userId).get();
+    if (userDoc.exists) {
+        const userData = userDoc.data();
+        if (userData.lastLogin) {
+            const lastLogin = new Date(userData.lastLogin);
+            const hoursInactive = (Date.now() - lastLogin.getTime()) / (1000 * 60 * 60);
+
+            // 🔥 الشرط: نرسل إشعار فقط إذا غاب أكثر من 48 ساعة
+            if (hoursInactive > 48) {
+                const reEngagementMessage = await runReEngagementManager(userId);
+                if (reEngagementMessage) {
+                    
+                    // جدولة الإشعار للغد مساءً (مثلاً 8:30)
+                    const scheduleTime = new Date();
+                    scheduleTime.setHours(20, 30, 0, 0);
+                    if (scheduleTime < new Date()) scheduleTime.setDate(scheduleTime.getDate() + 1);
+
+                    await enqueueJob({
+                        type: 'scheduled_notification',
+                        userId: userId,
+                        payload: {
+                            title: 'اشتقنا لوجودك!',
+                            message: reEngagementMessage,
+                        },
+                        sendAt: admin.firestore.Timestamp.fromDate(scheduleTime)
+                    });
+                    logger.info(`[Nightly] Scheduled re-engagement for ${userId}`);
+                }
+            }
+        }
+    }
+  } catch (error) {
+      logger.error(`Error analyzing user ${userId}:`, error.message);
   }
 }
 
