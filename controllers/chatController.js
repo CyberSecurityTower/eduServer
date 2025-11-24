@@ -19,7 +19,7 @@ const { extractTextFromResult, ensureJsonOrRepair } = require('../utils');
 const logger = require('../utils/logger');
 const PROMPTS = require('../config/ai-prompts');
 const CREATOR_PROFILE = require('../config/creator-profile');
-
+const { analyzeAndSaveMemory } = require('../services/ai/managers/memoryManager');
 let generateWithFailoverRef;
 
 // ✅ دالة الاقتراحات (كانت ناقصة في التحديث الأخير)
@@ -220,7 +220,7 @@ async function chatInteractive(req, res) {
     
     // 🔥 التغيير هنا: نرسل رسالة المستخدم + رد الذكاء الاصطناعي ليتم حفظهما ككتلة واحدة في الذاكرة المتجهة
     saveMemoryChunk(userId, message, parsedResponse.reply);
-
+    analyzeAndSaveMemory(userId, [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }]);
     res.status(200).json(responsePayload);
 
   } catch (err) {
