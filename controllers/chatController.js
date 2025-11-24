@@ -207,6 +207,7 @@ async function chatInteractive(req, res) {
     }
 
     // 7. Response
+    // 7. Response
     const responsePayload = {
       reply: parsedResponse.reply,
       widgets: parsedResponse.widgets || [],
@@ -215,24 +216,54 @@ async function chatInteractive(req, res) {
       direction: parsedResponse.direction || textDirection
     };
 
-    // حفظ الجلسة في قاعدة البيانات العادية (للعرض في التطبيق)
-    saveChatSession(sessionId, userId, chatTitle, [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }], context.type, context);
-    
-    // 🔥 التغيير هنا: نرسل رسالة المستخدم + رد الذكاء الاصطناعي ليتم حفظهما ككتلة واحدة في الذاكرة المتجهة
-    saveMemoryChunk(userId, message, parsedResponse.reply);
-    analyzeAndSaveMemory(userId, [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }]);
+    // ✅ الخطوة 1: أرسل الرد للمستخدم فوراً (لا تجعله ينتظر الحفظ)
     res.status(200).json(responsePayload);
 
-  } catch (err) {
-    // ✅ إرسال الخطأ الحقيقي للفرونت إند لنراه في الـ LOG
-    logger.error('🔥 Fatal Controller Error:', err.stack);
-    res.status(500).json({ 
-        error: `Server Error: ${err.message}`, // إرسال نص الخطأ للتتبع
-        reply: "حدث خطأ داخلي في الخادم.", 
-        widgets: [] 
+    // ✅ الخطوة 2: العمليات الخلفية (Background Tasks)
+    // نضعها داخل setImmediate أو لا نستخدم await حتى لا نوقف الـ Event Loop
+    
+    // (A) حفظ الجلسة للعرض
+    saveChatSession(sessionId, userId, chatTitle, [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }], context.type, context);
+
+    // (B) حفظ الذاكرة المتجهة (سريع نسبياً)
+    saveMemoryChunk(userId, message, parsedResponse.reply).catch(err => logger.warn('Background Memory Chunk Save Error:', err.message));
+
+    // (C) تحليل الذاكرة العميقة (ثقيل جداً - يأخذ وقته)
+    // لاحظ: لا يوجد await هنا
+    const { analyzeAndSaveMemory } = require('../services/ai/managers/memoryManager');
+    analyzeAndSaveMemory(userId, [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }])
+      .catch(err => logger.warn(`[Background Analysis Failed] User ${userId}: ${err.message}`));
+
+} catch (err) {
+  // ✅ نكتب الخطأ في اللوق الكامل (stack) للـ debugging
+  logger.error('🔥 Fatal Controller Error:', err.stack);
+
+  // لو تم إرسال الهيدر بالفعل، ما نقدر نغير الاستجابة: فقط نخرّج الخطأ
+  if (res.headersSent) {
+    // يمكننا فقط إنهاء الاتصال أو تمرير الخطأ למiddleware التالي إذا رغبت
+    return;
+  }
+
+  // في بيئة التطوير نُظهر رسالة مفصلة للمطوّر، أما في الإنتاج نُعطي رسالة عامة
+  if (process.env.NODE_ENV === 'development') {
+    return res.status(500).json({
+      error: `Server Error: ${err.message}`, // مفيد للتتبع أثناء التطوير
+      reply: "حدث خطأ داخلي في الخادم.",
+      widgets: []
     });
   }
+
+  // إنتاج: لا نكشف التفاصيل الحساسة — نرجع id للخطأ يمكن البحث عنه في السجلات
+  const errorId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  logger.error(`ErrorId=${errorId}`); // سجل الـ errorId للربط مع الـ stack
+
+  return res.status(500).json({
+    errorId, // معرف يمكنك استخدامه للبحث في اللوق
+    reply: "حدث خطأ داخلي في الخادم. الرجاء المحاولة لاحقاً.",
+    widgets: []
+  });
 }
+
 
 module.exports = {
   initChatController,
