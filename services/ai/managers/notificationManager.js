@@ -6,7 +6,7 @@ const CONFIG = require('../../../config');
 const { escapeForPrompt, extractTextFromResult } = require('../../../utils');
 const { sendUserNotification } = require('../../data/helpers'); // Re-use the helper
 const logger = require('../../../utils/logger');
-
+const { getFirestoreInstance } = require('../../data/firestore'); // تأكد من الاستيراد
 let generateWithFailoverRef; // Injected dependency
 let getProgressRef; // Injected dependency
 
@@ -61,37 +61,77 @@ async function runNotificationManager(type = 'ack', language = 'Arabic', data = 
   }
 }
 
-async function runReEngagementManager(userId) {
-  if (!getProgressRef) {
-    logger.error('runReEngagementManager: getProgress is not set.');
-    return null;
-  }
-  const progress = await getProgressRef(userId);
-  const lastIncompleteTask = progress?.dailyTasks?.tasks?.find(t => t.status === 'pending');
 
-  let context = "The user has been inactive for a couple of days.";
-  if (lastIncompleteTask) {
-    context += ` Their last incomplete task was "${lastIncompleteTask.title}".`;
-  } else {
-    context += " They don't have any specific pending tasks.";
-  }
-
-  const prompt = `You are a warm and caring study coach, not a robot.
-  ${context}
-  Write a short, friendly, and very gentle notification (1-2 sentences in Arabic) to re-engage them.
-  - The tone should be zero-pressure. More like "Hey, thinking of you!" than "You have work to do!".
-  - If they have an incomplete task, you can mention it in a very encouraging way.
-  - Example if task exists: "مساء الخير! أتمنى أن تكون بخير. مهمة '${lastIncompleteTask.title}' لا تزال بانتظارك عندما تكون مستعدًا للعودة. ما رأيك أن ننجزها معًا؟"
-  - Example if no task: "مساء الخير! كيف حالك؟ مر وقت لم نرك فيه. أتمنى أن كل شيء على ما يرام!"
-  Respond with ONLY the notification text.`;
-
+async function runReEngagementManager(userId, intensity = 'gentle') {
   try {
-    if (!generateWithFailoverRef) {
-      logger.error('runReEngagementManager: generateWithFailover is not set.');
-      return null;
+    const db = getFirestoreInstance();
+
+    // 1. جلب "كل شيء" عن المستخدم (وليس فقط البروجرس)
+    const [userDoc, aiProfileDoc, progressDoc] = await Promise.all([
+        db.collection('users').doc(userId).get(),
+        db.collection('aiMemoryProfiles').doc(userId).get(),
+        db.collection('userProgress').doc(userId).get()
+    ]);
+
+    if (!userDoc.exists) return null;
+
+    const userData = userDoc.data();
+    const aiData = aiProfileDoc.exists ? aiProfileDoc.data().behavioralInsights : {};
+    const progress = progressDoc.exists ? progressDoc.data() : {};
+    
+    // 2. استخراج الأسلحة الشخصية (Personal Hooks)
+    const userName = userData.firstName || 'صديقي';
+    const facts = userData.userProfileData?.facts || {};
+    
+    // نختار "خطاف" (Hook) واحد عشوائي لكي لا تكون الرسالة مزدحمة
+    const hooks = [];
+    if (facts.dream) hooks.push(`remember your dream to be a ${facts.dream}`);
+    if (facts.friend) hooks.push(`maybe study like ${facts.friend}`);
+    if (facts.motivation) hooks.push(`fuel your ${facts.motivation}`);
+    
+    const personalHook = hooks.length > 0 ? hooks[Math.floor(Math.random() * hooks.length)] : '';
+
+    // آخر درس توقف عنده
+    const lastIncompleteTask = progress?.dailyTasks?.tasks?.find(t => t.status === 'pending');
+    const taskContext = lastIncompleteTask ? `Last incomplete task: ${lastIncompleteTask.title}` : 'No specific tasks.';
+
+    // النبرة (Tone) حسب الشدة والبروفايل
+    const userStyle = aiData.style || 'Friendly';
+    let toneInstruction = "";
+    
+    if (intensity === 'gentle') {
+        toneInstruction = `Tone: Warm, ${userStyle}, zero pressure. Just checking in.`;
+    } else if (intensity === 'motivational') {
+        toneInstruction = `Tone: Encouraging, ${userStyle}. Remind them of their goals/streak.`;
+    } else if (intensity === 'urgent') {
+        toneInstruction = `Tone: Emotional and urgent. "We miss you". Use local Algerian slang heavily.`;
     }
+
+    // 3. البرومبت "العبقري"
+    const prompt = `
+    You are EduAI, a close study companion to ${userName}.
+    
+    **The Situation:** User hasn't opened the app for a while (${intensity} phase).
+    **User Persona:** Likes ${userStyle} interactions.
+    **Personal Hook:** ${personalHook}
+    **Study Context:** ${taskContext}
+    
+    **Task:** Write a very short, highly personalized Push Notification (Arabic/Algerian Derja).
+    - Max 15 words.
+    - Mention their name or a personal fact naturally if it fits.
+    - DO NOT sound like a robot. Sound like a concerned friend sending a WhatsApp message.
+    
+    **Example (if dream is Pilot):** "يا كابتن ${userName}، الطيارة راهي تستنى! ✈️ طوّلت الغيبة."
+    **Output:** ONLY the notification text.
+    `;
+
+    if (!generateWithFailoverRef) return null;
+    
     const res = await generateWithFailoverRef('notification', prompt, { label: 'ReEngagementManager' });
-    return await extractTextFromResult(res);
+    const text = await extractTextFromResult(res);
+    
+    return text ? text.replace(/"/g, '') : null;
+
   } catch (error) {
     logger.error(`ReEngagementManager failed for user ${userId}:`, error);
     return null;
