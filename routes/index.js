@@ -21,5 +21,7 @@ router.post('/generate-chat-suggestions', chatController.generateChatSuggestions
 // Analytics
 router.post('/log-event', analyticsController.logEvent);
 router.post('/process-session', analyticsController.processSession);
+//runNightlyAnalysis
+router.post('/run-nightly-analysis', adminController.runNightlyAnalysis);
 
 module.exports = router;
