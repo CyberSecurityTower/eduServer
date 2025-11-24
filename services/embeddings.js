@@ -62,7 +62,7 @@ async function findSimilarEmbeddings(queryEmbedding, collectionName, topN = 5, u
     
     if (userId) {
       // نبحث في آخر 300 ذكرى (بدلاً من 200) لزيادة المدى
-      query = query.where('userId', '==', userId).orderBy('timestamp', 'desc').limit(300); 
+      query = query.where('userId', '==', userId).orderBy('timestamp', 'desc').limit(400); 
     } else {
       query = query.limit(500); 
     }
