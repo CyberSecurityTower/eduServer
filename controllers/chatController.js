@@ -263,7 +263,7 @@ async function chatInteractive(req, res) {
     widgets: []
   });
 }
-
+}
 
 module.exports = {
   initChatController,
