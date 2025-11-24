@@ -8,7 +8,6 @@ const { enqueueJob } = require('../services/jobs/queue');
 const { runReEngagementManager } = require('../services/ai/managers/notificationManager');
 const { escapeForPrompt, safeSnippet, extractTextFromResult } = require('../utils');
 const logger = require('../utils/logger');
-// ✅ استيراد استراتيجية الدراسة الذكية
 const { generateSmartStudyStrategy } = require('../services/data/helpers'); 
 const embeddingService = require('../services/embeddings');
 
@@ -22,9 +21,43 @@ function initAdminController(dependencies) {
   logger.info('Admin Controller initialized.');
 }
 
-const db = getFirestoreInstance();
+// --- 1. Helper: حساب وقت الذروة للمستخدم ⏰ ---
+async function calculateUserPrimeTime(userId) {
+  try {
+    const db = getFirestoreInstance();
+    // نجلب آخر 50 مرة فتح فيها المستخدم التطبيق
+    const eventsSnapshot = await db.collection('userBehaviorAnalytics')
+      .doc(userId)
+      .collection('events')
+      .where('name', '==', 'app_open') // تأكد أنك تسجل هذا الحدث في الفرونت إند
+      .orderBy('timestamp', 'desc')
+      .limit(50)
+      .get();
 
-// --- 1. THE NIGHTLY BRAIN (LOGIC) ---
+    if (eventsSnapshot.empty) return 20; // الافتراضي: 8 مساءً
+
+    // حساب التكرار لكل ساعة
+    const hourCounts = {};
+    eventsSnapshot.forEach(doc => {
+      // timestamp في فايربيس هو كائن، نحوله لتاريخ
+      const date = doc.data().timestamp.toDate();
+      // getHours تعطينا الساعة (0-23) حسب توقيت السيرفر
+      // إذا كان السيرفر UTC والجزائر UTC+1، قد تحتاج لإضافة +1 هنا
+      const hour = date.getHours(); 
+      hourCounts[hour] = (hourCounts[hour] || 0) + 1;
+    });
+
+    // إيجاد الساعة الأكثر تكراراً
+    const primeHour = Object.keys(hourCounts).reduce((a, b) => hourCounts[a] > hourCounts[b] ? a : b);
+    
+    return parseInt(primeHour);
+  } catch (e) {
+    // في حال حدوث أي خطأ، نعود للتوقيت الآمن (8 مساءً)
+    return 20; 
+  }
+}
+
+// --- 2. THE NIGHTLY BRAIN ---
 
 async function runNightlyAnalysis(req, res) {
   try {
@@ -34,16 +67,13 @@ async function runNightlyAnalysis(req, res) {
     }
 
     res.status(202).json({ message: 'Nightly analysis job started.' });
-    logger.log(`[CRON] Starting nightly analysis (Strategic Planning)...`);
+    logger.log(`[CRON] Starting nightly analysis...`);
 
-    // 🔥 التعديل الجوهري: نستهدف المستخدمين النشطين في آخر 7 أيام
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    
-    // نستخدم getFirestoreInstance لضمان الاتصال
-    const dbInstance = getFirestoreInstance();
-    const activeUsersSnapshot = await dbInstance.collection('userProgress')
+    const db = getFirestoreInstance();
+    const activeUsersSnapshot = await db.collection('userProgress')
       .where('lastLogin', '>=', sevenDaysAgo.toISOString()) 
-      .limit(100) // معالجة 100 مستخدم في كل دورة
+      .limit(100) 
       .get();
 
     if (activeUsersSnapshot.empty) {
@@ -51,29 +81,26 @@ async function runNightlyAnalysis(req, res) {
       return;
     }
 
-    logger.log(`[CRON] Planning strategies for ${activeUsersSnapshot.size} active users...`);
-
     const analysisPromises = [];
     activeUsersSnapshot.forEach(doc => {
-      // نمرر الـ ID لدالة التحليل
       analysisPromises.push(runNightlyAnalysisForUser(doc.id));
     });
 
     await Promise.all(analysisPromises);
-    logger.success(`[CRON] Strategic planning finished.`);
+    logger.success(`[CRON] Finished analysis.`);
 
   } catch (error) {
     logger.error('[/run-nightly-analysis] Critical error:', error);
   }
 }
 
-// --- 2. THE WORKER FUNCTION ---
+// --- 3. THE WORKER ---
 
 async function runNightlyAnalysisForUser(userId) {
-  const db = getFirestoreInstance();
-
   try {
-    // 1. التخطيط الاستراتيجي (كما هو - ممتاز)
+    const db = getFirestoreInstance();
+
+    // أ) التخطيط الاستراتيجي
     const newMissions = await generateSmartStudyStrategy(userId);
     if (newMissions && newMissions.length > 0) {
        await db.collection('users').doc(userId).update({
@@ -81,61 +108,47 @@ async function runNightlyAnalysisForUser(userId) {
        });
     }
 
-    // 2. 🔥 نظام الإنقاذ والتصعيد (The Rescue Mission) 🔥
+    // ب) إشعار إعادة التفاعل الذكي
     const userDoc = await db.collection('userProgress').doc(userId).get();
-    
     if (userDoc.exists) {
         const userData = userDoc.data();
-        if (!userData.lastLogin) return;
+        if (userData.lastLogin) {
+            const lastLogin = new Date(userData.lastLogin);
+            const daysInactive = (Date.now() - lastLogin.getTime()) / (1000 * 60 * 60 * 24);
 
-        const lastLogin = new Date(userData.lastLogin);
-        const daysInactive = (Date.now() - lastLogin.getTime()) / (1000 * 60 * 60 * 24);
+            // تحديد الشدة حسب مدة الغياب
+            let intensity = null;
+            if (daysInactive >= 2 && daysInactive < 3) intensity = 'gentle';
+            else if (daysInactive >= 5 && daysInactive < 6) intensity = 'motivational';
+            else if (daysInactive >= 10 && daysInactive < 11) intensity = 'urgent';
 
-        // لن نرسل إشعاراً كل يوم، بل في محطات محددة (Checkpoints)
-        let intensity = null;
-        
-        // المحطة 1: غياب يومين (تذكير لطيف)
-        if (daysInactive >= 2 && daysInactive < 3) {
-            intensity = 'gentle'; 
-        } 
-        // المحطة 2: غياب 5 أيام (تحذير فقدان الستريك/التقدم)
-        else if (daysInactive >= 5 && daysInactive < 6) {
-            intensity = 'motivational';
-        }
-        // المحطة 3: غياب 10 أيام (محاولة أخيرة قوية)
-        else if (daysInactive >= 10 && daysInactive < 11) {
-            intensity = 'urgent';
-        }
-
-        // إذا وصلنا لإحدى المحطات، نجهز الإشعار
-        if (intensity) {
-            // أ) حساب الوقت المثالي (Personalized Timing)
-            const primeHour = await calculateUserPrimeTime(userId);
-            
-            // ب) توليد الرسالة حسب الحدة (Intensity)
-            // سنحتاج لتمرير intensity لمدير الإشعارات (سنعدله بالأسفل)
-            const message = await runReEngagementManager(userId, intensity); 
-            
-            if (message) {
-                // ج) جدولة الإشعار
-                const scheduleTime = new Date();
-                scheduleTime.setHours(primeHour, 0, 0, 0); // في دقيقته المفضلة
+            if (intensity) {
+                // 🔥 1. توليد الرسالة المخصصة (بالذكاء الاصطناعي)
+                const reEngagementMessage = await runReEngagementManager(userId, intensity);
                 
-                // إذا الوقت فات اليوم، نرسله غداً
-                if (scheduleTime < new Date()) scheduleTime.setDate(scheduleTime.getDate() + 1);
+                if (reEngagementMessage) {
+                    // 🔥 2. حساب الوقت المناسب لهذا المستخدم تحديداً
+                    const primeHour = await calculateUserPrimeTime(userId);
 
-                await enqueueJob({
-                    type: 'scheduled_notification',
-                    userId: userId,
-                    payload: {
-                        title: intensity === 'urgent' ? 'وين راك؟ 😢' : 'تذكير للدراسة',
-                        message: message,
-                        intensity: intensity // للمتابعة التحليلية لاحقاً
-                    },
-                    sendAt: admin.firestore.Timestamp.fromDate(scheduleTime)
-                });
-                
-                logger.info(`[Rescue] Scheduled '${intensity}' msg for ${userId} at ${primeHour}:00`);
+                    // إعداد وقت الإرسال
+                    const scheduleTime = new Date();
+                    scheduleTime.setHours(primeHour, 0, 0, 0); // الساعة المفضلة، الدقيقة 00
+                    
+                    // إذا الوقت فات اليوم، نرسله غداً في نفس التوقيت المفضل
+                    if (scheduleTime < new Date()) scheduleTime.setDate(scheduleTime.getDate() + 1);
+
+                    await enqueueJob({
+                        type: 'scheduled_notification',
+                        userId: userId,
+                        payload: {
+                            title: intensity === 'urgent' ? 'وين راك؟ 😢' : 'تذكير من EduAI',
+                            message: reEngagementMessage,
+                            intensity: intensity 
+                        },
+                        sendAt: admin.firestore.Timestamp.fromDate(scheduleTime)
+                    });
+                    logger.info(`[Nightly] Scheduled '${intensity}' msg for ${userId} at ${primeHour}:00`);
+                }
             }
         }
     }
