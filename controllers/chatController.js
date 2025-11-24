@@ -185,10 +185,17 @@ async function chatInteractive(req, res) {
     const progressUpdates = {};
 
     // 🔥 أ) Mission Complete Logic (حذف المهمة المنجزة) ✅
-    if (parsedResponse.completedMission) {
-       // إزالة النص المطابق تماماً (بما في ذلك العنوان)
-       updates['aiDiscoveryMissions'] = admin.firestore.FieldValue.arrayRemove(parsedResponse.completedMission);
-       logger.success(`[Mission] 🎯 Accomplished & Removed: ${parsedResponse.completedMission}`);
+     // نتأكد أولاً هل الحقل موجود وهل هو مصفوفة وفيها عناصر
+    if (parsedResponse.completedMissions && Array.isArray(parsedResponse.completedMissions) && parsedResponse.completedMissions.length > 0) {
+       
+       // نقوم بحذف كل العناصر الموجودة في القائمة دفعة واحدة
+       updates['aiDiscoveryMissions'] = admin.firestore.FieldValue.arrayRemove(...parsedResponse.completedMissions);
+       
+       logger.success(`[Mission] 🎯 Batch Accomplished & Removed: ${parsedResponse.completedMissions.join(', ')}`);
+    } 
+    // تحوطاً: في حال أرسل الـ AI نصاً مفرداً بالخطأ (Fallback)
+    else if (parsedResponse.completedMission) {
+        updates['aiDiscoveryMissions'] = admin.firestore.FieldValue.arrayRemove(parsedResponse.completedMission);
     }
 
     // 🔥 ب) Quiz Logic (تحديث العلامات)
