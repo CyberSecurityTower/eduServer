@@ -61,6 +61,33 @@ Message: "${escapeForPrompt(safeSnippet(message, 300))}"`,
       // تحويل الحقائق لنص مقروء
       const factsList = Object.entries(knowns).map(([k, v]) => `- ${k}: ${v}`).join('\n');
       const factsContext = factsList ? `\n**🧠 USER FACTS (PERMANENT MEMORY):**\n${factsList}` : '';
+       const missions = (userProfileData?.aiDiscoveryMissions || []).filter(m => typeof m === 'string');
+      
+      let strategicContext = "";
+      if (missions.length > 0) {
+        strategicContext = `
+🚀 **STRATEGIC GOALS (Hidden Instructions):**
+The system has identified these needs based on data. Integreate them naturally if context allows.
+`;
+        missions.forEach(m => {
+          // 🔥 هنا السحر: تفكيك النص
+          // المتوقع: "review_weakness:lesson_id|Lesson Title"
+          const parts = m.split('|');
+          const codePart = parts[0]; // "review_weakness:lesson_id"
+          const titlePart = parts[1] || 'Unknown Lesson'; // "Intro to Econ"
+
+          if (codePart.includes('review_weakness')) {
+             strategicContext += `- **URGENT:** Student failed lesson "${titlePart}". Gently suggest a retry or quiz.\n`;
+          } else if (codePart.includes('spaced_review')) {
+             strategicContext += `- **MEMORY REFRESH:** Student might be forgetting lesson "${titlePart}". Ask if they remember it.\n`;
+          } else if (codePart === 'suggest_new_topic') {
+             strategicContext += `- **PROGRESS:** Student is ready for new topics.\n`;
+          }
+          
+          // تعليم الـ AI أن يرسل الكود الكامل عند الإنجاز
+          strategicContext += `  *(If executed, return JSON: "completedMission": "${m}")*\n`;
+        });
+      }
       return `
 You are **EduAI**, an advanced, friendly, witty Algerian study companion (NOT a boring textbook).
 Your mission: make learning addictive, personalized, and supportive — act like a helpful older sibling.
