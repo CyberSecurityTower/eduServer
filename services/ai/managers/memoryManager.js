@@ -26,39 +26,56 @@ function initMemoryManager(initConfig) {
 // ============================================================================
 // 1. الذاكرة المتجهة (Vector Memory) - للبحث العام
 // ============================================================================
-async function saveMemoryChunk(userId, text) {
-  if (!userId || !text || text.trim().length < 10) return;
+
+/**
+ * نقوم الآن بحفظ "تبادل كامل" (User + AI) لضمان ترابط المعنى
+ */
+async function saveMemoryChunk(userId, userMessage, aiReply) {
+  // دمج السؤال والجواب يعطي الـ Embedding قوة أكبر في الربط المستقبلي
+  const combinedText = `User: ${userMessage}\nAI: ${aiReply}`;
+  
+  if (!userId || !combinedText || combinedText.length < 15) return;
+
   try {
     if (!embeddingServiceRef) return;
-    const embedding = await embeddingServiceRef.generateEmbedding(text);
+    
+    // توليد المتجه للنص المدمج
+    const embedding = await embeddingServiceRef.generateEmbedding(combinedText);
     if (!embedding.length) return;
 
     await db.collection(COLLECTION_NAME).add({
       userId,
-      originalText: text,
+      originalText: combinedText, // نحفظ النص الكامل
+      userQuery: userMessage,     // نحفظ السؤال للتصنيف (اختياري)
       embedding,
       timestamp: new Date().toISOString(),
+      type: 'conversation_history' 
     });
+    
+    logger.success(`[Memory] Saved Contextual Chunk for user ${userId}`);
   } catch (error) {
     logger.error(`[Memory] Vector Save failed: ${error.message}`);
   }
 }
 
-// استرجاع الذاكرة المتجهة
+// استرجاع الذاكرة (تم تحسين العرض في الـ Prompt)
 async function runMemoryAgent(userId, userMessage) {
   try {
     if (!embeddingServiceRef) return '';
     const queryEmbedding = await embeddingServiceRef.generateEmbedding(userMessage);
     if (!queryEmbedding.length) return '';
 
+    // نبحث عن أقوى 4 ذكريات مرتبطة
     const similar = await embeddingServiceRef.findSimilarEmbeddings(
-      queryEmbedding, COLLECTION_NAME, 3, userId
+      queryEmbedding, COLLECTION_NAME, 4, userId
     );
 
     if (!similar.length) return '';
 
-    return `Relevant Past Context:\n` +
-      similar.map(m => `- "${safeSnippet(m.originalText, 100)}"`).join('\n');
+    // تنسيق الذكريات ليفهمها الـ AI بوضوح
+    return `🧠 **RELEVANT MEMORIES FOUND:**\n` +
+      similar.map((m, i) => `[Memory ${i+1}]: ${safeSnippet(m.originalText, 300)}`).join('\n') + 
+      `\n(Use these memories to answer if the user asks about the past).`;
   } catch (error) {
     logger.error(`[Memory] Agent failed: ${error.message}`);
     return '';
