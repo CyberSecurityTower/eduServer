@@ -72,91 +72,47 @@ function initAdminController(dependencies) {
 
 const db = getFirestoreInstance();
 
-async function runNightlyAnalysisForUser(userId) {
-  const db = getFirestoreInstance();
 
+async function runNightlyAnalysis(req, res) {
   try {
-    // 1. تشغيل الاستراتيجية الذكية
-    const newMissions = await generateSmartStudyStrategy(userId);
-
-    if (newMissions && newMissions.length > 0) {
-      // 2. تحديث المهام في بروفايل المستخدم (نضيف فقط الجديد)
-      await db.collection('users').doc(userId).update({
-        aiDiscoveryMissions: admin.firestore.FieldValue.arrayUnion(...newMissions)
-      });
-
-      logger.success(`[NightlyStrategy] Added ${newMissions.length} strategic missions for ${userId}`);
+    const providedSecret = req.headers['x-job-secret'];
+    if (providedSecret !== CONFIG.NIGHTLY_JOB_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized.' });
     }
 
-    // ===== باقي المعالجة =====
-    const userDoc = await db.collection('users').doc(userId).get();
-    if (!userDoc.exists) return;
+    // الرد الفوري للكرون (هذا ما رأيته في الصورة 1)
+    res.status(202).json({ message: 'Nightly analysis job started.' });
 
-    // تحقّق من وجود createTime
-    const createTime = userDoc.createTime ? userDoc.createTime.toDate() : null;
-    if (!createTime) {
-      logger.warn(`[NightlyAnalysis] No createTime for user ${userId}, skipping join-age checks.`);
-      // نستمر أو نعيد، حسب رغبتك؛ هنا نُكمل التحليل
-    } else {
-      const daysSinceJoined = (Date.now() - createTime.getTime()) / (1000 * 60 * 60 * 24);
-      if (daysSinceJoined < 3) {
-        logger.info(`[NightlyAnalysis] User ${userId} joined ${daysSinceJoined.toFixed(1)} days ago — skipping re-engagement.`);
-        return;
-      }
-    }
+    // 🔥 أضفنا هذا اللوج لنرى البداية بوضوح
+    logger.log('🚀 [CRON START] Nightly analysis triggered manually...');
 
-    const eventsSnapshot = await db
-      .collection('userBehaviorAnalytics').doc(userId).collection('events')
-      .where('name', '==', 'app_open')
-      .orderBy('timestamp', 'desc')
-      .limit(10)
+    // --- التعديل للاختبار ---
+    // const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    
+    // سنلغي شرط الوقت مؤقتاً لكي يعمل عليك أنت!
+    const inactiveUsersSnapshot = await db.collection('userProgress')
+      // .where('lastLogin', '<', twoDaysAgo.toISOString()) // ❌ عطلنا هذا السطر
+      .limit(5) // نحدد العدد بـ 5 فقط للتجربة
       .get();
 
-    let primeTimeHour = 20;
-    if (!eventsSnapshot.empty) {
-      const hours = eventsSnapshot.docs
-        .map(doc => {
-          const ts = doc.data().timestamp;
-          return (ts && typeof ts.toDate === 'function') ? ts.toDate().getHours() : null;
-        })
-        .filter(h => h !== null);
+    logger.log(`🔎 [CRON] Found ${inactiveUsersSnapshot.size} potential users to analyze.`);
 
-      if (hours.length > 0) {
-        const hourCounts = hours.reduce((acc, hour) => {
-          acc[hour] = (acc[hour] || 0) + 1;
-          return acc;
-        }, {});
-        // اختر الساعة الأكثر تكراراً
-        const topHourKey = Object.keys(hourCounts).reduce((a, b) => hourCounts[a] >= hourCounts[b] ? a : b);
-        primeTimeHour = parseInt(topHourKey, 10);
-      }
-    }
-
-    const reEngagementMessage = await runReEngagementManager(userId);
-    if (!reEngagementMessage) {
-      logger.info(`[NightlyAnalysis] No re-engagement message for ${userId}`);
+    if (inactiveUsersSnapshot.empty) {
+      logger.log('No users found. Job finished.');
       return;
     }
 
-    // جهّز وقت الإرسال عند (primeTimeHour - 1):30 ولكن ضمن نطاق 0-23
-    const sendHour = ((primeTimeHour - 1) + 24) % 24;
-    const scheduleTime = new Date();
-    scheduleTime.setHours(sendHour, 30, 0, 0);
-
-    await enqueueJob({
-      type: 'scheduled_notification',
-      userId,
-      payload: {
-        title: 'اشتقنا لوجودك!',
-        message: reEngagementMessage,
-      },
-      sendAt: admin.firestore.Timestamp.fromDate(scheduleTime)
+    const analysisPromises = [];
+    inactiveUsersSnapshot.forEach(doc => {
+      logger.log(`⚡ [CRON] Processing user: ${doc.id}`); // لنعرف من يتم تحليله
+      analysisPromises.push(runNightlyAnalysisForUser(doc.id));
     });
 
-    logger.success(`[NightlyAnalysis] Scheduled re-engagement for ${userId} at ${scheduleTime.toISOString()}`);
+    await Promise.all(analysisPromises);
+    logger.success(`✅ [CRON] Nightly analysis finished for ${inactiveUsersSnapshot.size} users.`);
 
   } catch (error) {
-    logger.error(`Nightly analysis failed for user ${userId}:`, error);
+    logger.error('[/run-nightly-analysis] Critical error:', error);
   }
 }
 
