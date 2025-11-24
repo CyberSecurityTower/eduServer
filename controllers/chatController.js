@@ -114,7 +114,7 @@ async function chatInteractive(req, res) {
             }
             // Language Settings
             const pathData = await getCachedEducationalPathById(userData.selectedPathId);
-            const subject = pathData?.subjects?.find(s => s.id === context.subjectId);
+            const subject = pathData?.subjects?.find(s => s.id === context.subjectId) || {};
             if (subject) {
                 preferredLang = subject.defaultLang || "Arabic";
                 textDirection = subject.direction || "rtl";
@@ -136,7 +136,24 @@ async function chatInteractive(req, res) {
     const timeContext = `Server Time: ${new Date().toLocaleTimeString('en-US', { timeZone: 'Africa/Algiers' })}.`;
     const historyStr = (Array.isArray(history) ? history.slice(-5) : []).map(h => `${h.role}: ${h.text}`).join('\n');
     const formattedProgress = await formatProgressForAI(userId);
-
+    let reEngagementContext = "";
+    
+    // نفحص هل يوجد سياق معلق في بيانات المستخدم
+    if (userData.pendingReEngagement && userData.pendingReEngagement.active) {
+        const triggerMsg = userData.pendingReEngagement.triggerMessage;
+        
+        // نخبر الـ AI: المستخدم هنا لأنك قلت له كذا
+        reEngagementContext = `
+🚨 **CONTEXT ALERT:** The user just opened the app because you sent them this notification: "${triggerMsg}".
+**INSTRUCTION:** Start your reply by acknowledging this naturally. Don't repeat the notification like a robot, but act like a friend continuing the thought. 
+Example: "Ah, you saw my message! I really missed our sessions..."
+`;
+        
+        // 🧹 تنظيف: نحذف العلامة فوراً لكي لا تتكرر في الرسالة القادمة
+        await db.collection('users').doc(userId).update({
+            'pendingReEngagement': admin.firestore.FieldValue.delete()
+        });
+    }
     // ---------------------------------------------------------
     // 3. Construct Prompt & Call AI
     // ---------------------------------------------------------
