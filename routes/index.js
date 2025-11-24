@@ -8,7 +8,7 @@ const router = express.Router();
 const chatController = require('../controllers/chatController');
 const analyticsController = require('../controllers/analyticsController');
 const adminController = require('../controllers/adminController');
-
+const logSessionStart = require('../controllers/analyticsController');
 // Health Check
 router.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));
 
