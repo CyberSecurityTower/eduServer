@@ -136,13 +136,12 @@ async function analyzeAndSaveMemory(userId, history, activeMissions = []) {
       if (data.facts && Object.keys(data.facts).length > 0) {
         // نستخدم Notation النقطة لتحديث حقول محددة دون مسح القديم
         Object.keys(data.facts).forEach(key => {
-            updates[`userProfileData.facts.${key}`] = data.facts[key];
+          updates[`userProfileData.facts.${key}`] = data.facts[key];
         });
         logger.success(`[Memory] 🧠 Extracted Facts: ${JSON.stringify(data.facts)}`);
         hasUpdates = true;
       }
-        });
-      }
+
 
       // 2. إدارة المهام السرية (Missions)
       if (data.newMissions && data.newMissions.length > 0) {
