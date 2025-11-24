@@ -8,6 +8,7 @@ const { enqueueJob } = require('../services/jobs/queue');
 const { runReEngagementManager } = require('../services/ai/managers/notificationManager');
 const { escapeForPrompt, safeSnippet, extractTextFromResult } = require('../utils');
 const logger = require('../utils/logger');
+const { generateSmartStudyStrategy } = require('../services/data/helpers');
 
 let generateWithFailoverRef; // Injected dependency
 const embeddingService = require('../services/embeddings'); // تأكد من المسار
@@ -72,16 +73,40 @@ function initAdminController(dependencies) {
 const db = getFirestoreInstance();
 
 async function runNightlyAnalysisForUser(userId) {
+  const db = getFirestoreInstance();
+
   try {
-    const userDoc = await db.collection('users').doc(userId).get();
-    if (!userDoc.exists) return;
-    const userCreationDate = userDoc.createTime.toDate();
-    const daysSinceJoined = (new Date() - userCreationDate) / (1000 * 60 * 60 * 24);
-    if (daysSinceJoined < 3) {
-      return;
+    // 1. تشغيل الاستراتيجية الذكية
+    const newMissions = await generateSmartStudyStrategy(userId);
+
+    if (newMissions && newMissions.length > 0) {
+      // 2. تحديث المهام في بروفايل المستخدم (نضيف فقط الجديد)
+      await db.collection('users').doc(userId).update({
+        aiDiscoveryMissions: admin.firestore.FieldValue.arrayUnion(...newMissions)
+      });
+
+      logger.success(`[NightlyStrategy] Added ${newMissions.length} strategic missions for ${userId}`);
     }
 
-    const eventsSnapshot = await db.collection('userBehaviorAnalytics').doc(userId).collection('events')
+    // ===== باقي المعالجة =====
+    const userDoc = await db.collection('users').doc(userId).get();
+    if (!userDoc.exists) return;
+
+    // تحقّق من وجود createTime
+    const createTime = userDoc.createTime ? userDoc.createTime.toDate() : null;
+    if (!createTime) {
+      logger.warn(`[NightlyAnalysis] No createTime for user ${userId}, skipping join-age checks.`);
+      // نستمر أو نعيد، حسب رغبتك؛ هنا نُكمل التحليل
+    } else {
+      const daysSinceJoined = (Date.now() - createTime.getTime()) / (1000 * 60 * 60 * 24);
+      if (daysSinceJoined < 3) {
+        logger.info(`[NightlyAnalysis] User ${userId} joined ${daysSinceJoined.toFixed(1)} days ago — skipping re-engagement.`);
+        return;
+      }
+    }
+
+    const eventsSnapshot = await db
+      .collection('userBehaviorAnalytics').doc(userId).collection('events')
       .where('name', '==', 'app_open')
       .orderBy('timestamp', 'desc')
       .limit(10)
@@ -89,23 +114,38 @@ async function runNightlyAnalysisForUser(userId) {
 
     let primeTimeHour = 20;
     if (!eventsSnapshot.empty) {
-      const hours = eventsSnapshot.docs.map(doc => doc.data().timestamp.toDate().getHours());
-      const hourCounts = hours.reduce((acc, hour) => {
-        acc[hour] = (acc[hour] || 0) + 1;
-        return acc;
-      }, {});
-      primeTimeHour = parseInt(Object.keys(hourCounts).reduce((a, b) => hourCounts[a] > hourCounts[b] ? a : b));
+      const hours = eventsSnapshot.docs
+        .map(doc => {
+          const ts = doc.data().timestamp;
+          return (ts && typeof ts.toDate === 'function') ? ts.toDate().getHours() : null;
+        })
+        .filter(h => h !== null);
+
+      if (hours.length > 0) {
+        const hourCounts = hours.reduce((acc, hour) => {
+          acc[hour] = (acc[hour] || 0) + 1;
+          return acc;
+        }, {});
+        // اختر الساعة الأكثر تكراراً
+        const topHourKey = Object.keys(hourCounts).reduce((a, b) => hourCounts[a] >= hourCounts[b] ? a : b);
+        primeTimeHour = parseInt(topHourKey, 10);
+      }
     }
 
     const reEngagementMessage = await runReEngagementManager(userId);
-    if (!reEngagementMessage) return;
+    if (!reEngagementMessage) {
+      logger.info(`[NightlyAnalysis] No re-engagement message for ${userId}`);
+      return;
+    }
 
+    // جهّز وقت الإرسال عند (primeTimeHour - 1):30 ولكن ضمن نطاق 0-23
+    const sendHour = ((primeTimeHour - 1) + 24) % 24;
     const scheduleTime = new Date();
-    scheduleTime.setHours(primeTimeHour - 1, 30, 0, 0);
+    scheduleTime.setHours(sendHour, 30, 0, 0);
 
     await enqueueJob({
       type: 'scheduled_notification',
-      userId: userId,
+      userId,
       payload: {
         title: 'اشتقنا لوجودك!',
         message: reEngagementMessage,
@@ -113,10 +153,13 @@ async function runNightlyAnalysisForUser(userId) {
       sendAt: admin.firestore.Timestamp.fromDate(scheduleTime)
     });
 
+    logger.success(`[NightlyAnalysis] Scheduled re-engagement for ${userId} at ${scheduleTime.toISOString()}`);
+
   } catch (error) {
     logger.error(`Nightly analysis failed for user ${userId}:`, error);
   }
 }
+
 
 async function enqueueJobRoute(req, res) {
   try {
