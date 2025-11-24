@@ -193,6 +193,39 @@ async function generateTitleRoute(req, res) {
   }
 }
 
+async function calculateUserPrimeTime(userId) {
+  try {
+    const db = getFirestoreInstance();
+    // نجلب آخر 50 حدث "فتح تطبيق"
+    const eventsSnapshot = await db.collection('userBehaviorAnalytics')
+      .doc(userId)
+      .collection('events')
+      .where('name', '==', 'app_open') // أو session_start
+      .orderBy('timestamp', 'desc')
+      .limit(50)
+      .get();
+
+    if (eventsSnapshot.empty) return 20; // الافتراضي: 8 مساءً
+
+    // حساب الساعة الأكثر تكراراً
+    const hourCounts = {};
+    eventsSnapshot.forEach(doc => {
+      const date = doc.data().timestamp.toDate();
+      // نعدل التوقيت حسب المنطقة الزمنية للجزائر (UTC+1) تقريباً
+      // أو نعتمد على ساعة السيرفر إذا كانت مضبوطة
+      const hour = date.getHours(); 
+      hourCounts[hour] = (hourCounts[hour] || 0) + 1;
+    });
+
+    // إيجاد الساعة ذات أعلى تكرار
+    const primeHour = Object.keys(hourCounts).reduce((a, b) => hourCounts[a] > hourCounts[b] ? a : b);
+    
+    return parseInt(primeHour);
+  } catch (e) {
+    return 20; // Fallback
+  }
+}
+
 module.exports = {
   initAdminController,
   indexSpecificLesson,
