@@ -228,23 +228,21 @@ async function generateSmartStudyStrategy(userId) {
              
              let missionText = '';
 
+             const lessonTitle = lesson.title || "درس غير معنون"; 
+
              // أ) حالة الخطر (ضعف)
-             if (score < 60) {
-                missionText = `review_weakness:${lessonId}`; // صيغة مشفرة يفهمها الـ AI
+             if (score < 70) {
+                // 🔥 التغيير هنا: نستخدم الفاصل "|" لفصل الكود عن العنوان
+                missionText = `review_weakness:${lessonId}|${lessonTitle}`; 
                 hasWeaknesses = true;
              } 
-             // ب) حالة التثبيت (علامة جيدة لكن مر وقت)
-             else if (score >= 60 && score < 85 && daysSince > 4) {
-                missionText = `spaced_review_medium:${lessonId}`;
+             // ب) حالة التثبيت
+             else if (score >= 70 && score < 85 && daysSince > 4) {
+                missionText = `spaced_review_medium:${lessonId}|${lessonTitle}`;
              }
-             // ج) حالة الصيانة (علامة ممتازة لكن مر زمن طويل - مثلا 10 أيام)
+             // ج) حالة الصيانة
              else if (score >= 85 && daysSince > 10) {
-                missionText = `spaced_review_mastery:${lessonId}`; // "راجع بطل، راك نسيت هذي"
-             }
-
-             // 🔥 الفلتر الذكي: هل هذه المهمة موجودة بالفعل؟
-             if (missionText && !currentMissions.has(missionText) && !currentDailyTasksIds.has(lessonId)) {
-               candidates.push(missionText);
+                missionText = `spaced_review_mastery:${lessonId}|${lessonTitle}`;
              }
            }
         }
