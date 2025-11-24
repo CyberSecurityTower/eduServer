@@ -22,6 +22,36 @@ const CREATOR_PROFILE = require('../config/creator-profile');
 
 let generateWithFailoverRef;
 
+// ✅ دالة الاقتراحات (كانت ناقصة في التحديث الأخير)
+async function generateChatSuggestions(req, res) {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId is required.' });
+
+    // نستخدم المدير المخصص أو دالة بسيطة
+    const suggestions = await runSuggestionManager(userId);
+    res.status(200).json({ suggestions });
+  } catch (error) {
+    logger.error('/generate-chat-suggestions error:', error.stack);
+    // Fallback suggestions
+    res.status(200).json({ suggestions: ["لخص لي الدرس", "أعطني كويز سريع", "اشرح لي المفهوم الأساسي"] });
+  }
+}
+
+// ✅ دالة الأسئلة العامة (للخلفية)
+async function handleGeneralQuestion(message, language, history = [], userProfile, userProgress, weaknesses, formattedProgress, studentName) {
+    // ... (منطق بسيط للرد في الخلفية)
+    const prompt = `You are EduAI.
+    User: ${studentName || 'Student'}
+    Context: ${formattedProgress}
+    Question: "${message}"
+    Reply in ${language}. Keep it short and helpful.`;
+
+    if (!generateWithFailoverRef) return "Service unavailable.";
+    
+    const modelResp = await generateWithFailoverRef('chat', prompt, { label: 'GeneralQuestion', timeoutMs: 20000 });
+    return await extractTextFromResult(modelResp);
+}
 function initChatController(dependencies) {
   if (!dependencies.generateWithFailover) {
     throw new Error('Chat Controller requires generateWithFailover.');
@@ -204,5 +234,6 @@ async function chatInteractive(req, res) {
 module.exports = {
   initChatController,
   chatInteractive,
+  generateChatSuggestions,
   handleGeneralQuestion: async () => "Service Unavailable" // Placeholder needed for exports consistency
 };
