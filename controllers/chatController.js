@@ -6,7 +6,7 @@ const CONFIG = require('../config');
 const { getFirestoreInstance, admin } = require('../services/data/firestore');
 const {
   getProfile, getProgress, fetchUserWeaknesses, formatProgressForAI, getUserDisplayName,
-  saveChatSession
+  saveChatSession, getCachedEducationalPathById 
 } = require('../services/data/helpers');
 
 // Managers
@@ -87,34 +87,28 @@ async function chatInteractive(req, res) {
       curriculumReport,
       conversationReport,
       userDocSnapshot,
-      formattedProgress,
+      progressDocSnapshot, // ✅ جلبنا التقدم هنا لنستخدمه لاحقاً
       weaknesses
     ] = await Promise.all([
       runMemoryAgent(userId, message).catch(() => ''),
       runCurriculumAgent(userId, message).catch(() => ''),
       runConversationAgent(userId, message).catch(() => ''),
       db.collection('users').doc(userId).get(),
-      formatProgressForAI(userId).catch(() => ''),
+      db.collection('userProgress').doc(userId).get(),
       fetchUserWeaknesses(userId).catch(() => [])
     ]);
 
     const userData = userDocSnapshot.exists ? userDocSnapshot.data() : {};
+    const progressData = progressDocSnapshot.exists ? progressDocSnapshot.data() : {};
     const memory = userData.memory || {};
 
-    // 3. ✅ حساب التوقيت (يجب أن يكون هنا داخل الدالة!)
+    // 3. ✅ حساب التوقيت
     const now = new Date();
-    const options = { 
-      timeZone: 'Africa/Algiers', 
-      hour: '2-digit', minute: '2-digit', weekday: 'long', hour12: false 
-    };
-    const timeString = new Intl.DateTimeFormat('en-US', options).format(now);
     const algiersHour = parseInt(new Intl.DateTimeFormat('en-US', { timeZone: 'Africa/Algiers', hour: 'numeric', hour12: false }).format(now));
     
     const timeContext = `
-    - **Current Algiers Time:** ${timeString}.
-    - **Hour:** ${algiersHour}.
+    - **Current Algiers Hour:** ${algiersHour}.
     - **Phase:** ${algiersHour < 5 ? "Late Night (Sleep/Fajr)" : algiersHour < 12 ? "Morning" : "Evening"}.
-    - **USER ASKED TIME?** If user asks "what time is it?", reply exactly: "${timeString}".
     `;
 
     // 4. Context Preparation
@@ -133,42 +127,16 @@ async function chatInteractive(req, res) {
     const noteToSelf = userData.aiNoteToSelf || '';
     const systemContext = Object.entries(EDU_SYSTEM || {}).map(([k, v]) => `- ${k}: ${v}`).join('\n');
 
-    // 5. Gap Analysis (Contextual Continuity)
+    // 5. Gap Analysis
     const lastExit = userData.lastExitContext || null;
     let gapContext = "";
 
     if (lastExit) {
         const lastTime = new Date(lastExit.timestamp);
-        // نحسب الفرق بناءً على الوقت الحالي المحسوب بالأعلى
         const diffMinutes = (now - lastTime) / (1000 * 60); 
         
-        if (diffMinutes < 1440) { // أقل من 24 ساعة
-             gapContext = `
-             **PREVIOUS EXIT CONTEXT:**
-             - User said: "${lastExit.state}"
-             - Time passed: ${Math.floor(diffMinutes)} minutes.
-             - Rule: If time passed contradicts state (e.g. "Sleep" but 10m passed), TEASE them.
-             `;
-        }
-      if (lastExit.state === 'sleeping' && diffMinutes < 180) { // أقل من 3 ساعات
-             gapContext = `
-             🚨 **CONTRADICTION ALERT!**
-             - User said: "I am going to sleep".
-             - But they came back after ONLY ${Math.floor(diffMinutes)} minutes!
-             - ACTION: Tease them! (e.g., "Hada win r9adt?", "Tar enna3ss?", "Phone addiction?").
-             `;
-        } 
-        else if (lastExit.state === 'in_exam' && diffMinutes < 30) {
-             gapContext = `
-             🚨 **SUSPICIOUS!**
-             - User said they have an EXAM.
-             - Back in ${Math.floor(diffMinutes)} mins?
-             - ACTION: Ask if they finished early or are cheating/using phone! 😂
-             `;
-        }
-        else {
-             // عودة طبيعية
-             gapContext = `User is back from "${lastExit.state}" after ${Math.floor(diffMinutes)} mins. Welcome them back normally.`;
+        if (diffMinutes < 1440) {
+             gapContext = `**PREVIOUS EXIT:** User said "${lastExit.state}" ${Math.floor(diffMinutes)} mins ago.`;
         }
         // تنظيف السياق القديم
         db.collection('users').doc(userId).update({ 
@@ -176,47 +144,45 @@ async function chatInteractive(req, res) {
         }).catch(() => {});
     }
 
-    // 6. Prepare History
-    const lastFive = (Array.isArray(history) ? history.slice(-5) : [])
+    // 6. 🔥 Prepare Mastery & Direction (ذاكرة المؤسس + اللغة)
+    let masteryContext = "New Topic (No prior data observed).";
+    let preferredLang = "Arabic";
+    let textDirection = "rtl";
+
+    if (userData.selectedPathId && context.subjectId) {
+        // أ. استخراج المعدل والفرق (Delta)
+        const lessonData = progressData.pathProgress?.[userData.selectedPathId]?.subjects?.[context.subjectId]?.lessons?.[context.lessonId];
+        if (lessonData && lessonData.masteryScore !== undefined) {
+            const score = lessonData.masteryScore;
+            const lastDelta = lessonData.lastScoreChange || 0;
+            let trend = "stable";
+            if (lastDelta > 0) trend = `IMPROVED by +${lastDelta}%`;
+            else if (lastDelta < 0) trend = `DROPPED by ${lastDelta}%`;
+            masteryContext = `Current Mastery: ${score}% (${trend} since last quiz).`;
+        }
+
+        // ب. استخراج اتجاه النص ولغة المادة
+        const pathData = await getCachedEducationalPathById(userData.selectedPathId);
+        const subject = pathData?.subjects?.find(s => s.id === context.subjectId);
+        if (subject) {
+            if (subject.defaultLang) preferredLang = subject.defaultLang;
+            if (subject.direction) textDirection = subject.direction;
+        }
+    }
+
+    // 7. Prepare History & Prompt
+    const historyStr = (Array.isArray(history) ? history.slice(-5) : [])
       .map(h => `${h.role === 'model' ? 'EduAI' : 'User'}: ${safeSnippet(h.text || '', 500)}`)
       .join('\n');
     
-// 1. استخراج بيانات الاتقان والتغير
-let masteryContext = "New Topic (No previous data).";
-let scoreTrend = "neutral"; // stable, improving, declining
+    const formattedProgress = await formatProgressForAI(userId);
 
-if (context.lessonId && context.subjectId) {
-    const lessonData = userData.userProgress?.pathProgress?.[userData.selectedPathId]?.subjects?.[context.subjectId]?.lessons?.[context.lessonId] || {};
-    const score = lessonData.masteryScore;
-    const delta = lessonData.lastScoreChange || 0;
-
-    if (score !== undefined) {
-        masteryContext = `Current Mastery: ${score}%`;
-        
-        if (delta > 0) {
-            masteryContext += ` (📈 IMPROVED by ${delta}% since last time). Praise this!`;
-            scoreTrend = "improving";
-        } else if (delta < 0) {
-            masteryContext += ` (📉 DROPPED by ${Math.abs(delta)}% since last time). Be encouraging but firm.`;
-            scoreTrend = "declining";
-        } else {
-            masteryContext += ` (Stable).`;
-        }
-    }
-}
-    // 2. تحديد اتجاه النص ولغة المادة (من الكاش أو الداتابيز)
-// نفترض أننا جلبنا بيانات المسار (pathDetails)
-const subjectInfo = pathDetails?.subjects?.find(s => s.id === context.subjectId);
-const preferredDirection = subjectInfo?.direction || 'rtl'; // الافتراضي RTL للعربية
-const preferredLanguage = subjectInfo?.defaultLang || 'Arabic';
-    // 7. Construct Prompt (✅ تم إضافة timeContext)
-    // ملاحظة: تأكد أن ترتيب المتغيرات هنا يطابق الترتيب في ai-prompts.js
     const finalPrompt = PROMPTS.chat.interactiveChat(
       message,            
       memoryReport,       
       curriculumReport,   
       conversationReport, 
-      lastFive,           
+      historyStr,           
       formattedProgress,  
       weaknesses,         
       emotionalContext,   
@@ -225,11 +191,11 @@ const preferredLanguage = subjectInfo?.defaultLang || 'Arabic';
       CREATOR_PROFILE,    
       userData,           
       systemContext,
-      timeContext, // ✅ أضفنا الوقت
-      gapContext,   // ✅ أضفنا الفجوة الزمنية
-      masteryContext, // ✅ نمرر سياق الاتقان الجديد
-      preferredDirection, // ✅ نمرر الاتجاه
-      preferredLanguage // ✅ نمرر اللغة
+      timeContext, 
+      gapContext,
+      masteryContext, // ✅ New
+      preferredLang,  // ✅ New
+      textDirection   // ✅ New
     );
 
     // 8. Call AI
@@ -242,109 +208,111 @@ const preferredLanguage = subjectInfo?.defaultLang || 'Arabic';
 
     const rawText = await extractTextFromResult(modelResp);
     let parsedResponse = await ensureJsonOrRepair(rawText, 'analysis');
-    // 🔥 SMART REVIEW SCHEDULER LOGIC
-   
-const analysis = parsedResponse.quizAnalysis;
-const lessonId = context.lessonId;
-const subjectId = context.subjectId;
-const pathId = userData.selectedPathId; // نحصل عليه من بيانات المستخدم
 
-if (lessonId && subjectId && pathId) {
-    const progressRef = db.collection('userProgress').doc(userId);
-    
-    // 1. جلب البيانات الحالية (نحتاج قراءة المعدل القديم)
-    const docSnap = await progressRef.get();
-    const currentData = docSnap.exists ? docSnap.data() : {};
-    
-    // الوصول لمسار الدرس بدقة
-    const lessonPath = `pathProgress.${pathId}.subjects.${subjectId}.lessons.${lessonId}`;
-    // (ملاحظة: في الكود الحقيقي نستخدم lodash.get أو منطق آمن للوصول للبيانات المتداخلة)
-    const oldLessonData = currentData.pathProgress?.[pathId]?.subjects?.[subjectId]?.lessons?.[lessonId] || {};
-    
-    const oldScore = oldLessonData.masteryScore || 0; 
-    const quizScore = analysis.scorePercentage || 0;
+    // 9. 🔥 ANALYSIS Logic: Algorithm + Scheduler
+    if (parsedResponse.quizAnalysis && parsedResponse.quizAnalysis.processed) {
+        const analysis = parsedResponse.quizAnalysis;
+        const lessonId = context.lessonId;
+        const subjectId = context.subjectId;
+        const pathId = userData.selectedPathId;
 
-    // 2. 🧮 تطبيق المعادلة (المتوسط المرجح)
-    let newMasteryScore = quizScore; // لو كان أول مرة
-    if (oldLessonData.masteryScore !== undefined) {
-        // المعادلة: 70% للقديم + 30% للجديد
-        newMasteryScore = Math.round((oldScore * 0.7) + (quizScore * 0.3));
-    }
+        // أ. تحديث الدرجات (الخوارزمية الرياضية)
+        if (lessonId && subjectId && pathId) {
+            const lessonPath = `pathProgress.${pathId}.subjects.${subjectId}.lessons.${lessonId}`;
+            const oldLessonData = progressData.pathProgress?.[pathId]?.subjects?.[subjectId]?.lessons?.[lessonId] || {};
+            const oldScore = oldLessonData.masteryScore || 0;
+            const quizScore = analysis.scorePercentage || 0;
 
-    // حساب التغير (ليعرف الـ AI هل تحسن الطالب أم تراجع)
-    const scoreDelta = newMasteryScore - oldScore; // مثلاً: +5 أو -3
+            // 🧮 المعادلة: (القديم * 0.7) + (الجديد * 0.3)
+            let newMasteryScore = quizScore;
+            if ((oldLessonData.attempts || 0) > 0) {
+                newMasteryScore = Math.round((oldScore * 0.7) + (quizScore * 0.3));
+            }
 
-    // 3. التحديث في Firestore
-    const updates = {
-        [`${lessonPath}.masteryScore`]: newMasteryScore,
-        [`${lessonPath}.lastScoreChange`]: scoreDelta, // ✅ نحفظ التغير هنا
-        [`${lessonPath}.status`]: 'completed',
-        [`${lessonPath}.lastAttempt`]: new Date().toISOString()
-    };
+            const scoreDelta = newMasteryScore - oldScore;
 
-    // تحديث نقاط الضعف إذا رسب
-    if (!analysis.passed) {
-        updates['weaknesses'] = admin.firestore.FieldValue.arrayUnion(lessonId);
-    } else {
-        updates['weaknesses'] = admin.firestore.FieldValue.arrayRemove(lessonId);
-    }
+            const updates = {
+                [`${lessonPath}.masteryScore`]: newMasteryScore,
+                [`${lessonPath}.lastScoreChange`]: scoreDelta,
+                [`${lessonPath}.status`]: 'completed',
+                [`${lessonPath}.lastAttempt`]: new Date().toISOString(),
+                [`${lessonPath}.attempts`]: admin.firestore.FieldValue.increment(1)
+            };
 
-    await progressRef.update(updates);
-    
-    logger.info(`[Score Update] ${lessonId}: ${oldScore} -> ${newMasteryScore} (Delta: ${scoreDelta})`);
-}
+            if (!analysis.passed) {
+                updates['weaknesses'] = admin.firestore.FieldValue.arrayUnion(lessonId);
+            } else {
+                updates['weaknesses'] = admin.firestore.FieldValue.arrayRemove(lessonId);
+            }
 
+            // حفظ التحديثات
+            await db.collection('userProgress').doc(userId).update(updates).catch(() => {
+                 db.collection('userProgress').doc(userId).set(updates, { merge: true });
+            });
+            logger.info(`[Algorithm] ${lessonId}: New=${newMasteryScore}, Delta=${scoreDelta}`);
+        }
+
+        // ب. الجدولة الذكية (Smart Scheduler)
+        // ✅ هذا الجزء كان ناقصاً في كودك
+        const tasksRef = db.collection('scheduledActions');
+        const pendingReviews = await tasksRef
+            .where('userId', '==', userId)
+            .where('type', '==', 'smart_review')
+            .where('context.lessonId', '==', lessonId)
+            .where('status', '==', 'pending')
+            .get();
+
+        if (analysis.passed) {
+            // نجح: إلغاء العقاب
             if (!pendingReviews.empty) {
-                // موجودة؟ نحدثها فقط (نؤجلها للغد + نزيد عداد المحاولات)
-                // هذا يمنع الـ Spam (تكرار الإشعارات)
-                const doc = pendingReviews.docs[0];
-                await doc.ref.update({
+                const batch = db.batch();
+                pendingReviews.forEach(doc => batch.delete(doc.ref));
+                await batch.commit();
+            }
+        } else {
+            // رسب: جدولة مراجعة
+            const optimalTime = await getOptimalStudyTime(userId);
+            if (!pendingReviews.empty) {
+                await pendingReviews.docs[0].ref.update({
                     executeAt: admin.firestore.Timestamp.fromDate(optimalTime),
                     "context.retryCount": admin.firestore.FieldValue.increment(1)
                 });
-                logger.info(`[Scheduler] Rescheduled review for ${lessonId} (Retry)`);
             } else {
-                // جديدة؟ ننشئها
                 await tasksRef.add({
                     userId,
-                    type: 'smart_review', // نوع جديد يعالجه الـ Worker
+                    type: 'smart_review',
                     title: 'مراجعة ذكية 🧠',
-                    // نترك الرسالة فارغة، الـ Worker سيولدها غداً حسب السياق
                     executeAt: admin.firestore.Timestamp.fromDate(optimalTime),
                     status: 'pending',
                     context: {
-                        lessonId: lessonId,
+                        lessonId: lessonId || 'general',
                         lessonTitle: context.lessonTitle || 'الدرس',
                         retryCount: 1
                     },
                     createdAt: admin.firestore.FieldValue.serverTimestamp()
                 });
-                logger.info(`[Scheduler] Created new Smart Review for ${lessonId} at ${optimalTime}`);
             }
         }
     }
+
+    // Fallback Response
     if (!parsedResponse || !parsedResponse.reply) {
-      logger.warn('Failed to parse GenUI JSON, falling back.');
       parsedResponse = {
         reply: rawText || "عذراً، حدث خطأ تقني بسيط. هل يمكنك إعادة السؤال؟",
         widgets: [],
         needsScheduling: false
       };
-    
+    }
 
-    // 9. Triggers
+    // 10. Triggers & Saving
     if (parsedResponse.needsScheduling === true) {
-       logger.info(`[Scheduler] Triggered for user ${userId}`);
        const fullHistory = [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }];
-       analyzeSessionForEvents(userId, fullHistory).catch(e => logger.error('Scheduler trigger failed', e));
+       analyzeSessionForEvents(userId, fullHistory).catch(() => {});
     }
 
     if (parsedResponse.userExitState) {
         await db.collection('users').doc(userId).update({
-            lastExitContext: {
-                state: parsedResponse.userExitState,
-                timestamp: new Date().toISOString()
-            }
+            lastExitContext: { state: parsedResponse.userExitState, timestamp: new Date().toISOString() }
         });
     }
 
@@ -352,32 +320,26 @@ if (lessonId && subjectId && pathId) {
         const { category, value } = parsedResponse.newFact;
         if (category && value) {
             const updates = {};
-            const factObj = { value, timestamp: new Date().toISOString() };
-            updates[`memory.${category}`] = admin.firestore.FieldValue.arrayUnion(factObj);
+            updates[`memory.${category}`] = admin.firestore.FieldValue.arrayUnion({ value, timestamp: new Date().toISOString() });
             db.collection('users').doc(userId).set(updates, { merge: true }).catch(() => {});
         }
     }
 
-    // 10. Save & Respond
     const botReplyText = parsedResponse.reply;
     const widgets = parsedResponse.widgets || [];
 
-    const updatedHistory = [
-      ...history,
-      { role: 'user', text: message },
-      { role: 'model', text: botReplyText, widgets: widgets }
-    ];
-
-    saveChatSession(sessionId, userId, chatTitle, updatedHistory, context.type || 'main_chat', context)
+    saveChatSession(sessionId, userId, chatTitle, [...history, { role: 'user', text: message }, { role: 'model', text: botReplyText, widgets: widgets }], context.type || 'main_chat', context)
       .catch(e => logger.error('saveChatSession failed:', e));
     
     saveMemoryChunk(userId, message).catch(() => {});
 
+    // ✅ الرد النهائي (مع الاتجاه)
     res.status(200).json({
       reply: botReplyText,
       widgets: widgets,
       sessionId,
       chatTitle,
+      direction: parsedResponse.direction || textDirection // ✅ تمرير الاتجاه
     });
 
   } catch (err) {
@@ -389,9 +351,8 @@ if (lessonId && subjectId && pathId) {
   }
 }
 
-// --- Helper: General Question (For Worker/Notifications) ---
+// --- Helper: General Question ---
 async function handleGeneralQuestion(message, language, history = [], userProfile = 'No profile.', userProgress = {}, weaknesses = [], formattedProgress = '', studentName = null) {
-  // Simple prompt for background tasks
   const prompt = `You are EduAI.
 User: ${studentName || 'Student'}
 Context: ${formattedProgress}
@@ -399,7 +360,6 @@ Question: "${escapeForPrompt(safeSnippet(message, 2000))}"
 Reply in ${language}. Keep it short and helpful.`;
 
   if (!generateWithFailoverRef) return "Service unavailable.";
-  
   const modelResp = await generateWithFailoverRef('chat', prompt, { label: 'GeneralQuestion', timeoutMs: CONFIG.TIMEOUTS.chat });
   return await extractTextFromResult(modelResp);
 }
@@ -409,11 +369,9 @@ async function generateChatSuggestions(req, res) {
   try {
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId is required.' });
-
     const suggestions = await runSuggestionManager(userId);
     res.status(200).json({ suggestions });
   } catch (error) {
-    logger.error('/generate-chat-suggestions error:', error.stack);
     res.status(500).json({ suggestions: ["ما هي مهامي؟", "لخص لي الدرس", "نكتة", "نصيحة"] });
   }
 }
