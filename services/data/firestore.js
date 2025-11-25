@@ -24,20 +24,26 @@ const TABLE_MAP = {
   'userMemoryEmbeddings': 'memory_embeddings'
 };
 
-// Helper to convert keys from camelCase to snake_case for DB writing
+// دالة مساعدة لتحويل مفاتيح البيانات إلى snake_case عند الكتابة
 function toSnakeCase(data) {
   const newData = {};
   for (const key in data) {
-    // Mapping specific fields known to cause issues
-    if (key === 'userId') newData['user_id'] = data[key];
-    else if (key === 'sendAt') newData['send_at'] = data[key];
-    else if (key === 'startedAt') newData['started_at'] = data[key];
-    else if (key === 'finishedAt') newData['finished_at'] = data[key];
-    else if (key === 'lastError') newData['last_error'] = data[key];
-    else if (key === 'createdAt') newData['created_at'] = data[key];
-    else if (key === 'updatedAt') newData['updated_at'] = data[key];
-    else if (key === 'executeAt') newData['execute_at'] = data[key];
-    else newData[key] = data[key];
+    let newKey = key;
+    if (key === 'userId') newKey = 'user_id';
+    else if (key === 'sendAt') newKey = 'send_at';
+    else if (key === 'startedAt') newKey = 'started_at';
+    else if (key === 'finishedAt') newKey = 'finished_at';
+    else if (key === 'lastError') newKey = 'last_error';
+    else if (key === 'createdAt') newKey = 'created_at';
+    else if (key === 'updatedAt') newKey = 'updated_at';
+    else if (key === 'executeAt') newKey = 'execute_at';
+    
+    // ✅ إصلاح إضافي: إذا كانت القيمة كائن Timestamp، حولها لنص
+    let val = data[key];
+    if (val && typeof val === 'object' && typeof val.toISOString === 'function') {
+        val = val.toISOString();
+    }
+    newData[newKey] = val;
   }
   return newData;
 }
@@ -54,9 +60,18 @@ const adminMock = {
     Timestamp: {
       now: () => {
         const d = new Date();
-        return { toDate: () => d, toMillis: () => d.getTime(), toISOString: () => d.toISOString() };
+        return { 
+          toDate: () => d, 
+          toMillis: () => d.getTime(), 
+          // ✅ هذا ما يبحث عنه الكود: دالة toISOString
+          toISOString: () => d.toISOString() 
+        };
       },
-      fromDate: (date) => ({ toDate: () => date, toMillis: () => date.getTime() })
+      fromDate: (date) => ({ 
+        toDate: () => date, 
+        toMillis: () => date.getTime(),
+        toISOString: () => date.toISOString()
+      })
     }
   },
   messaging: () => ({ send: async (p) => console.log("[Mock FCM]", p.notification?.title) })
@@ -77,24 +92,33 @@ class QueryBuilder {
     return this;
   }
 
-  // ✅ التعديل الجوهري هنا: ترجمة الحقول أثناء البحث
   where(field, op, value) {
     let finalField = field;
-    // ترجمة أسماء الأعمدة الشائعة
     if (field === 'userId') finalField = 'user_id';
-    if (field === 'sendAt') finalField = 'send_at'; // 👈 الحل لمشكلتك
+    if (field === 'sendAt') finalField = 'send_at';
     if (field === 'status') finalField = 'status';
     if (field === 'executeAt') finalField = 'execute_at';
 
+    // ✅✅✅ الإصلاح الجذري لمشكلة [object Object] ✅✅✅
+    // إذا كانت القيمة كائناً (مثل Timestamp الخاص بـ adminMock)، نستخرج التاريخ كنص
+    let finalValue = value;
+    if (value && typeof value === 'object') {
+        if (typeof value.toISOString === 'function') {
+            finalValue = value.toISOString();
+        } else if (typeof value.toDate === 'function') {
+            finalValue = value.toDate().toISOString();
+        }
+    }
+
     switch (op) {
-      case '==': this.query = this.query.eq(finalField, value); break;
-      case '>': this.query = this.query.gt(finalField, value); break;
-      case '>=': this.query = this.query.gte(finalField, value); break;
-      case '<': this.query = this.query.lt(finalField, value); break;
-      case '<=': this.query = this.query.lte(finalField, value); break;
-      case 'in': this.query = this.query.in(finalField, value); break;
-      case 'array-contains': this.query = this.query.contains(finalField, [value]); break;
-      default: this.query = this.query.eq(finalField, value);
+      case '==': this.query = this.query.eq(finalField, finalValue); break;
+      case '>': this.query = this.query.gt(finalField, finalValue); break;
+      case '>=': this.query = this.query.gte(finalField, finalValue); break;
+      case '<': this.query = this.query.lt(finalField, finalValue); break;
+      case '<=': this.query = this.query.lte(finalField, finalValue); break; // هنا كان يحدث الخطأ
+      case 'in': this.query = this.query.in(finalField, finalValue); break;
+      case 'array-contains': this.query = this.query.contains(finalField, [finalValue]); break;
+      default: this.query = this.query.eq(finalField, finalValue);
     }
     return this;
   }
@@ -103,7 +127,8 @@ class QueryBuilder {
     let finalField = field;
     if (field === 'createdAt') finalField = 'created_at';
     if (field === 'updatedAt') finalField = 'updated_at';
-    if (field === 'sendAt') finalField = 'send_at'; // 👈 وتصحيح الترتيب أيضاً
+    if (field === 'sendAt') finalField = 'send_at';
+    if (field === 'executeAt') finalField = 'execute_at';
     
     this.query = this.query.order(finalField, { ascending: dir === 'asc' });
     return this;
@@ -127,7 +152,7 @@ class QueryBuilder {
 
     const { data, error } = await this.query;
     if (error) {
-        // لا نريد إغراق اللوجز بأخطاء إذا كان الجدول فارغاً أو غير موجود بعد
+        // تجاهل أخطاء الجداول الفارغة مؤقتاً لتقليل الضجيج
         if (!error.message.includes('does not exist')) {
             console.warn(`[Supabase Read] Table: ${this.tableName}, Error:`, error.message);
         }
@@ -154,7 +179,7 @@ class QueryBuilder {
   }
 
   async add(data) {
-    const payload = toSnakeCase(data); // ✅ تحويل البيانات قبل الإرسال
+    const payload = toSnakeCase(data);
     const { data: res, error } = await supabase.from(this.tableName).insert(payload).select();
     if (error) console.error(`[Supabase Add] ${this.tableName}:`, error.message);
     return { id: res && res[0] ? res[0].id : null };
@@ -186,7 +211,6 @@ class FirestoreAdapter {
       const mappedName = TABLE_MAP[parts[0]] || parts[0];
       return new QueryBuilder(mappedName);
     } 
-    // Subcollections Handling
     if (parts[0] === 'userNotifications' && parts[2] === 'inbox') {
       return new QueryBuilder('user_notifications').where('user_id', '==', parts[1]).where('box_type', '==', 'inbox');
     }
