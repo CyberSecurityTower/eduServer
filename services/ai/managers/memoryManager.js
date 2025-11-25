@@ -4,6 +4,8 @@
 
 const { getFirestoreInstance, admin } = require('../../data/firestore');
 const { safeSnippet, extractTextFromResult, ensureJsonOrRepair } = require('../../../utils');
+const supabase = require('../../data/supabase'); 
+const { toSnakeCase, nowISO } = require('../../data/dbUtils');
 const logger = require('../../../utils/logger');
 
 let db;
@@ -31,28 +33,22 @@ function initMemoryManager(initConfig) {
  * نقوم الآن بحفظ "تبادل كامل" (User + AI) لضمان ترابط المعنى
  */
 // ✅ 1. تحديث وظيفة حفظ الذاكرة المتجهة (لتخزين المحادثة كاملة)
+
 async function saveMemoryChunk(userId, userMessage, aiReply) {
-  // ندمج السؤال والجواب لنضمن السياق
   const combinedText = `User: ${userMessage}\nAI: ${aiReply}`;
-  
-  if (!userId || !combinedText || combinedText.length < 10) return;
+  const embedding = await embeddingServiceRef.generateEmbedding(combinedText);
+  if (!embedding.length) return;
 
-  try {
-    if (!embeddingServiceRef) return;
-    const embedding = await embeddingServiceRef.generateEmbedding(combinedText);
-    if (!embedding.length) return;
-
-    await db.collection(COLLECTION_NAME).add({
-      userId,
-      originalText: combinedText, // نحفظ النص المدمج
-      embedding,
-      timestamp: new Date().toISOString(),
-      type: 'conversation_exchange' // نوع جديد لتمييزه
-    });
-  } catch (error) {
-    logger.error(`[Memory] Vector Save failed: ${error.message}`);
-  }
+  // ✅ Native Supabase Insert
+  await supabase.from('user_memory_embeddings').insert({
+      user_id: userId,
+      original_text: combinedText,
+      embedding: embedding, // pgvector يفهم المصفوفة مباشرة
+      timestamp: nowISO(),
+      type: 'conversation_exchange'
+  });
 }
+
 // استرجاع الذاكرة (تم تحسين العرض في الـ Prompt)
 async function runMemoryAgent(userId, userMessage) {
   try {
@@ -137,39 +133,35 @@ async function analyzeAndSaveMemory(userId, history, activeMissions = []) {
     const data = await ensureJsonOrRepair(raw, 'analysis');
 
     if (data) {
-      const updates = {};
-      let hasUpdates = false;
+     // ✅ هنا التغيير الكبير: التعامل مع التحديثات
+     
+     // 1. جلب البيانات الحالية أولاً
+     const { data: userRecord } = await supabase.from('users').select('user_profile_data, ai_discovery_missions').eq('id', userId).single();
+     
+     let currentProfile = userRecord?.user_profile_data || { facts: {} };
+     let currentMissions = userRecord?.ai_discovery_missions || [];
 
-      // 1. حفظ الحقائق (Save Info)
-      if (data.facts && Object.keys(data.facts).length > 0) {
-        Object.keys(data.facts).forEach(key => {
-            updates[`userProfileData.facts.${key}`] = data.facts[key];
+     // 2. تحديث الحقائق (Merge Logic)
+     if (data.facts) {
+        currentProfile.facts = { ...currentProfile.facts, ...data.facts };
+     }
+
+     // 3. تحديث المهام (Filter & Push)
+     if (data.completedMissions) {
+        currentMissions = currentMissions.filter(m => !data.completedMissions.includes(m));
+     }
+     if (data.newMissions) {
+        data.newMissions.forEach(m => {
+            if (!currentMissions.includes(m)) currentMissions.push(m);
         });
-        hasUpdates = true;
-      }
+     }
 
-      // 2. حذف المهام المنجزة (Delete Mission)
-      if (data.completedMissions && data.completedMissions.length > 0) {
-        // نستخدم arrayRemove لحذف المهمة لأنها أنجزت
-        updates['aiDiscoveryMissions'] = admin.firestore.FieldValue.arrayRemove(...data.completedMissions);
-        hasUpdates = true;
-        logger.success(`[Memory] ✅ Mystery Solved & Removed: ${data.completedMissions}`);
-      }
-
-      // 3. إضافة مهام جديدة (Add New Mystery)
-      if (data.newMissions && data.newMissions.length > 0) {
-        updates['aiDiscoveryMissions'] = admin.firestore.FieldValue.arrayUnion(...data.newMissions);
-        hasUpdates = true;
-      }
-
-      if (hasUpdates) {
-        // نستخدم set مع merge لضمان إنشاء الوثيقة إذا لم تكن موجودة وتحديث الحقول
-        await db.collection('users').doc(userId).set(updates, { merge: true });
-      }
-    }
-  } catch (error) {
-    logger.error(`[Memory] Analysis failed: ${error.message}`);
-  }
+     // 4. حفظ التغييرات دفعة واحدة
+     await supabase.from('users').update({
+        user_profile_data: currentProfile,
+        ai_discovery_missions: currentMissions
+     }).eq('id', userId);
+   }
 }
 
 // ============================================================================
