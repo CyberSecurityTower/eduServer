@@ -110,6 +110,5 @@ async function checkScheduledActions() {
 module.exports = {
   initJobWorker,
   jobWorkerLoop,
-  stopWorker,
   checkScheduledActions
 };
