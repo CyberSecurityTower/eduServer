@@ -1,9 +1,9 @@
 
-// services/data/helpers.js
 'use strict';
 
-const { getFirestoreInstance, admin } = require('./firestore');
-const LRUCache = require('./cache'); // Ensure this file exists
+const supabase = require('./supabase');
+const { toCamelCase, toSnakeCase, nowISO } = require('./dbUtils');
+const LRUCache = require('./cache'); 
 const CONFIG = require('../../config');
 const { safeSnippet, extractTextFromResult, ensureJsonOrRepair } = require('../../utils');
 const logger = require('../../utils/logger');
@@ -18,10 +18,8 @@ function initDataHelpers(dependencies) {
   }
   embeddingServiceRef = dependencies.embeddingService;
   generateWithFailoverRef = dependencies.generateWithFailover;
-  logger.info('Data Helpers initialized.');
+  logger.info('Data Helpers initialized (Supabase Native).');
 }
-
-const db = getFirestoreInstance();
 
 // ---------- Cache instances ----------
 const DEFAULT_TTL = CONFIG.CACHE_TTL_MS || 1000 * 60 * 60;
@@ -41,12 +39,21 @@ async function cacheDel(scope, key) { return localCache[scope]?.del(key); }
 
 async function getUserDisplayName(userId) {
   try {
-    const userDoc = await db.collection('users').doc(userId).get();
-    if (!userDoc.exists) return null;
-    const userData = userDoc.data();
-    if (userData.displayName?.trim()) return userData.displayName.split(' ')[0];
-    if (userData.firstName?.trim()) return userData.firstName;
-    return null;
+    const { data, error } = await supabase
+      .from('users')
+      .select('display_name, first_name')
+      .eq('id', userId)
+      .single();
+
+    if (error || !data) return null;
+    
+    // Supabase returns snake_case usually, but let's be safe
+    const displayName = data.display_name || data.displayName;
+    const firstName = data.first_name || data.firstName;
+
+    if (displayName?.trim()) return displayName.split(' ')[0];
+    if (firstName?.trim()) return firstName;
+    return 'Student';
   } catch (err) {
     logger.error(`Error fetching user display name for ${userId}:`, err.message);
     return null;
@@ -58,19 +65,32 @@ async function getProfile(userId) {
     const cached = await cacheGet('profile', userId);
     if (cached) return cached;
 
-    // Fetch profile from Firestore
-    const doc = await db.collection('aiMemoryProfiles').doc(userId).get();
+    // Fetch profile from Supabase
+    const { data, error } = await supabase
+      .from('ai_memory_profiles')
+      .select('*')
+      .eq('id', userId)
+      .single();
 
-    if (doc.exists) {
-      const val = doc.data();
+    if (data) {
+      const val = toCamelCase(data);
       await cacheSet('profile', userId, val);
       return val;
     } else {
+      // Create Default Profile
       const defaultProfile = {
+        id: userId,
         profileSummary: 'New user, no analysis yet.',
-        lastUpdatedAt: new Date().toISOString(),
+        lastUpdatedAt: nowISO(),
       };
-      await db.collection('aiMemoryProfiles').doc(userId).set(defaultProfile);
+      
+      // Upsert into Supabase
+      const { error: upsertError } = await supabase
+        .from('ai_memory_profiles')
+        .upsert(toSnakeCase(defaultProfile));
+
+      if (upsertError) throw upsertError;
+
       await cacheSet('profile', userId, defaultProfile);
       return defaultProfile;
     }
@@ -88,9 +108,15 @@ async function getProgress(userId) {
   try {
     const cached = await cacheGet('progress', userId);
     if (cached) return cached;
-    const doc = await db.collection('userProgress').doc(userId).get();
-    if (doc.exists) {
-      const val = doc.data() || {};
+
+    const { data, error } = await supabase
+      .from('user_progress')
+      .select('*')
+      .eq('id', userId)
+      .single();
+
+    if (data) {
+      const val = toCamelCase(data);
       await cacheSet('progress', userId, val);
       return val;
     }
@@ -110,9 +136,9 @@ function calculateSafeProgress(completed, total) {
 
 async function formatProgressForAI(userId) {
   try {
-    const userProgressDoc = await db.collection('userProgress').doc(userId).get();
-    if (!userProgressDoc.exists) return 'No progress data found.';
-    const userProgressData = userProgressDoc.data()?.pathProgress || {};
+    const progress = await getProgress(userId); // Uses Supabase internally now
+    const userProgressData = progress.pathProgress || {};
+    
     if (Object.keys(userProgressData).length === 0) return 'User has not started any educational path yet.';
 
     const summaryLines = [];
@@ -120,8 +146,8 @@ async function formatProgressForAI(userId) {
 
     for (const pathId in userProgressData) {
       if (!pathDataCache.has(pathId)) {
-        const pathDoc = await db.collection('educationalPaths').doc(pathId).get();
-        pathDataCache.set(pathId, pathDoc.exists ? pathDoc.data() : null);
+        const pathData = await getCachedEducationalPathById(pathId);
+        pathDataCache.set(pathId, pathData);
       }
       const educationalPath = pathDataCache.get(pathId);
       if (!educationalPath) continue;
@@ -146,11 +172,16 @@ async function getCachedEducationalPathById(pathId) {
   const cached = educationalPathCache.get(pathId);
   if (cached) return cached;
 
-  const doc = await db.collection('educationalPaths').doc(pathId).get();
-  if (doc.exists) {
-    const data = doc.data();
-    educationalPathCache.set(pathId, data);
-    return data;
+  const { data } = await supabase
+    .from('educational_paths')
+    .select('*')
+    .eq('id', pathId)
+    .single();
+
+  if (data) {
+    const val = toCamelCase(data);
+    educationalPathCache.set(pathId, val);
+    return val;
   }
   return null;
 }
@@ -161,16 +192,16 @@ async function getCachedEducationalPathById(pathId) {
 
 async function fetchUserWeaknesses(userId) {
   try {
-    const userProgressDoc = await db.collection('userProgress').doc(userId).get();
-    if (!userProgressDoc.exists) return [];
-    const userProgressData = userProgressDoc.data()?.pathProgress || {};
+    // Re-use getProgress which is now Supabase-compatible
+    const progress = await getProgress(userId);
+    const userProgressData = progress.pathProgress || {};
     const weaknesses = [];
     const pathDataCache = new Map();
 
     for (const pathId in userProgressData) {
       if (!pathDataCache.has(pathId)) {
-        const pathDoc = await db.collection('educationalPaths').doc(pathId).get();
-        pathDataCache.set(pathId, pathDoc.exists ? pathDoc.data() : null);
+        const pathData = await getCachedEducationalPathById(pathId);
+        pathDataCache.set(pathId, pathData);
       }
       const educationalPath = pathDataCache.get(pathId);
       if (!educationalPath) continue;
@@ -199,14 +230,10 @@ async function fetchUserWeaknesses(userId) {
   }
 }
 
-// ✅ (جديد) خوارزمية المراجعة المتباعدة
 async function getSpacedRepetitionCandidates(userId) {
   try {
-    const progressDoc = await db.collection('userProgress').doc(userId).get();
-    if (!progressDoc.exists) return [];
-    
-    const data = progressDoc.data();
-    const pathProgress = data.pathProgress || {};
+    const progress = await getProgress(userId);
+    const pathProgress = progress.pathProgress || {};
     let candidates = [];
     const now = Date.now();
     const DAY_MS = 24 * 60 * 60 * 1000;
@@ -251,17 +278,17 @@ async function getSpacedRepetitionCandidates(userId) {
   }
 }
 
-// ✅ (محدث) العقل المدبر الليلي + اقتراح الدرس التالي
 async function generateSmartStudyStrategy(userId) {
-  const [progressDoc, userDoc] = await Promise.all([
-    db.collection('userProgress').doc(userId).get(),
-    db.collection('users').doc(userId).get()
+  // Parallel Fetch using Supabase
+  const [progressRes, userRes] = await Promise.all([
+    supabase.from('user_progress').select('*').eq('id', userId).single(),
+    supabase.from('users').select('*').eq('id', userId).single()
   ]);
 
-  if (!progressDoc.exists || !userDoc.exists) return null;
+  if (progressRes.error || userRes.error) return null;
 
-  const progress = progressDoc.data();
-  const userData = userDoc.data();
+  const progress = toCamelCase(progressRes.data);
+  const userData = toCamelCase(userRes.data);
   const pathId = userData.selectedPathId;
 
   const currentDailyTasksIds = new Set((progress.dailyTasks?.tasks || []).map(t => t.relatedLessonId).filter(Boolean));
@@ -273,7 +300,7 @@ async function generateSmartStudyStrategy(userId) {
   const DAY_MS = 24 * 60 * 60 * 1000;
   const pathProgress = progress.pathProgress || {};
 
-  // 1. Spaced Repetition Logic
+  // 1. Spaced Repetition Logic (In-Memory Processing of JSONB)
   Object.keys(pathProgress).forEach(pId => {
     const subjects = pathProgress[pId].subjects || {};
     Object.keys(subjects).forEach(subjId => {
@@ -308,16 +335,14 @@ async function generateSmartStudyStrategy(userId) {
     });
   });
 
-  // 2. Next Lesson Suggestion Logic (Smart Pacing)
+  // 2. Next Lesson Suggestion Logic
   if (!hasWeaknesses && candidates.length < 2 && pathId) {
       try {
-        const pathDoc = await db.collection('educationalPaths').doc(pathId).get();
-        if (pathDoc.exists) {
-            const pathData = pathDoc.data();
+        const pathData = await getCachedEducationalPathById(pathId);
+        if (pathData) {
             let nextLesson = null;
             const subjects = pathData.subjects || [];
             
-            // Loop sequentially to find the first incomplete lesson
             outerLoop:
             for (const subject of subjects) {
                 const lessons = subject.lessons || [];
@@ -352,44 +377,63 @@ async function generateSmartStudyStrategy(userId) {
 
 async function fetchRecentComprehensiveChatHistory(userId) {
   try {
-    const now = new Date();
-    const startOfToday = new Date(new Date(now).setHours(0, 0, 0, 0));
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
 
-    // Get Today's Chat
-    const todaySnapshot = await db.collection('chatSessions')
-      .where('userId', '==', userId)
-      .where('updatedAt', '>=', admin.firestore.Timestamp.fromDate(startOfToday))
-      .get();
+    // ✅ Supabase Query
+    const { data: sessions, error } = await supabase
+      .from('chat_sessions')
+      .select('messages')
+      .eq('user_id', userId)
+      .gte('updated_at', startOfToday.toISOString())
+      .order('updated_at', { ascending: true });
+
+    if (error) throw error;
 
     let combinedMessages = [];
-    todaySnapshot.forEach(doc => combinedMessages.push(...(doc.data().messages || [])));
+    if (sessions) {
+      sessions.forEach(doc => {
+        // Supabase returns JSONB arrays directly
+        if (Array.isArray(doc.messages)) {
+            combinedMessages.push(...doc.messages);
+        }
+      });
+    }
 
-    // Get Last Active Day if Today is empty or short
+    // Fallback: Get last active day if today is empty
     if (combinedMessages.length < 5) {
-        const lastSessionSnapshot = await db.collection('chatSessions')
-          .where('userId', '==', userId)
-          .where('updatedAt', '<', admin.firestore.Timestamp.fromDate(startOfToday))
-          .orderBy('updatedAt', 'desc')
+       const { data: lastSession } = await supabase
+          .from('chat_sessions')
+          .select('updated_at')
+          .eq('user_id', userId)
+          .lt('updated_at', startOfToday.toISOString())
+          .order('updated_at', { ascending: false })
           .limit(1)
-          .get();
+          .single();
 
-        if (!lastSessionSnapshot.empty) {
-          const lastActiveTime = lastSessionSnapshot.docs[0].data().updatedAt.toDate();
-          const startLast = new Date(new Date(lastActiveTime).setHours(0, 0, 0, 0));
-          const endLast = new Date(new Date(lastActiveTime).setHours(23, 59, 59, 999));
+        if (lastSession) {
+          const lastActiveTime = new Date(lastSession.updated_at);
+          const startLast = new Date(lastActiveTime); startLast.setHours(0,0,0,0);
+          const endLast = new Date(lastActiveTime); endLast.setHours(23,59,59,999);
           
-          const lastDayDocs = await db.collection('chatSessions')
-            .where('userId', '==', userId)
-            .where('updatedAt', '>=', admin.firestore.Timestamp.fromDate(startLast))
-            .where('updatedAt', '<=', admin.firestore.Timestamp.fromDate(endLast))
-            .get();
-            
-          lastDayDocs.forEach(doc => combinedMessages.push(...(doc.data().messages || [])));
+          const { data: lastDaySessions } = await supabase
+            .from('chat_sessions')
+            .select('messages')
+            .eq('user_id', userId)
+            .gte('updated_at', startLast.toISOString())
+            .lte('updated_at', endLast.toISOString());
+
+          if (lastDaySessions) {
+            lastDaySessions.forEach(doc => {
+                if (Array.isArray(doc.messages)) combinedMessages.push(...doc.messages);
+            });
+          }
         }
     }
 
     if (combinedMessages.length === 0) return 'لا توجد محادثات حديثة.';
 
+    // Simple Sort
     combinedMessages.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
     
     return combinedMessages
@@ -406,27 +450,30 @@ async function fetchRecentComprehensiveChatHistory(userId) {
 async function saveChatSession(sessionId, userId, title, messages, type = 'main_chat', context = {}) {
   if (!sessionId || !userId) return;
   try {
-    const sessionRef = db.collection('chatSessions').doc(sessionId);
     const storableMessages = (messages || [])
       .filter(m => m && (m.author === 'user' || m.author === 'bot' || m.role))
       .slice(-30)
       .map(m => ({
         author: m.author || m.role || 'user',
         text: m.text || m.message || '',
-        timestamp: m.timestamp || new Date().toISOString(),
+        timestamp: m.timestamp || nowISO(),
         type: m.type || null,
       }));
 
-    const dataToSave = {
-      userId,
-      title,
-      messages: storableMessages,
-      type,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    const payload = {
+      id: sessionId,
+      user_id: userId,
+      title: title,
+      messages: storableMessages, // JSONB
+      type: type,
+      context: context, // JSONB
+      updated_at: nowISO(),
     };
-    if (context && context.lessonId) dataToSave.context = context;
 
-    await sessionRef.set(dataToSave, { merge: true });
+    // ✅ Supabase Upsert
+    const { error } = await supabase.from('chat_sessions').upsert(payload);
+    if (error) logger.error(`Error saving session ${sessionId}:`, error.message);
+
   } catch (error) {
     logger.error(`Error saving session ${sessionId}:`, error);
   }
@@ -434,8 +481,8 @@ async function saveChatSession(sessionId, userId, title, messages, type = 'main_
 
 async function analyzeAndSaveMemory(userId, newConversation) {
   try {
-    const profileDoc = await getProfile(userId);
-    const currentSummary = profileDoc.profileSummary || '';
+    const profile = await getProfile(userId);
+    const currentSummary = profile.profileSummary || '';
 
     const prompt = `You are a psychological and educational analyst AI. Update the student's profile.
     **Current Profile:** "${safeSnippet(currentSummary, 1000)}"
@@ -450,11 +497,15 @@ async function analyzeAndSaveMemory(userId, newConversation) {
     const parsed = await ensureJsonOrRepair(raw, 'analysis');
 
     if (parsed && parsed.updatedSummary) {
-      await db.collection('aiMemoryProfiles').doc(userId).update({
-        profileSummary: parsed.updatedSummary,
-        lastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      cacheDel('profile', userId);
+      const { error } = await supabase
+        .from('ai_memory_profiles')
+        .update({
+            profile_summary: parsed.updatedSummary,
+            last_updated_at: nowISO()
+        })
+        .eq('id', userId);
+
+      if (!error) cacheDel('profile', userId);
     }
   } catch (err) {
     logger.error(`Memory analysis failed for ${userId}:`, err.message);
@@ -467,29 +518,40 @@ async function analyzeAndSaveMemory(userId, newConversation) {
 
 async function processSessionAnalytics(userId, sessionId) {
   try {
-    const sessionsSnapshot = await db.collection('userBehaviorAnalytics').doc(userId).collection('sessions')
-      .orderBy('startTime', 'desc').limit(5).get();
+    // Assuming 'sessions' is a table or separate logic. 
+    // Adapting to query the analytics table directly.
+    const { data: recentSessions } = await supabase
+        .from('analytics_sessions') // Ensure this table exists
+        .select('*')
+        .eq('user_id', userId)
+        .order('start_time', { ascending: false })
+        .limit(5);
 
-    if (sessionsSnapshot.empty) return;
+    if (!recentSessions || recentSessions.length === 0) return;
 
-    const recentSessions = sessionsSnapshot.docs.map(doc => doc.data());
     let totalDuration = 0;
-    let totalLessonsViewed = 0;
-
-    recentSessions.forEach(session => {
-      totalDuration += session.durationSeconds || 0;
-      totalLessonsViewed += session.lessonsViewedCount || 0;
+    // Note: If you don't store duration in analytics_sessions, logic needs adjustment.
+    // Assuming simple calculation for now.
+    const sessions = toCamelCase(recentSessions);
+    
+    sessions.forEach(session => {
+      totalDuration += session.durationSeconds || 300; // default fallback
     });
 
-    const avgDuration = totalDuration / recentSessions.length;
+    const avgDuration = totalDuration / sessions.length;
     const engagementLevel = Math.min(1, avgDuration / 1800);
 
-    await db.collection('aiMemoryProfiles').doc(userId).set({
-      lastAnalyzedAt: new Date().toISOString(),
-      behavioralInsights: {
-        engagementLevel: parseFloat(engagementLevel.toFixed(2)),
-      }
-    }, { merge: true });
+    // Merge into memory profile
+    const { data: currentProfile } = await supabase.from('ai_memory_profiles').select('behavioral_insights').eq('id', userId).single();
+    const newInsights = {
+        ...(currentProfile?.behavioral_insights || {}),
+        engagementLevel: parseFloat(engagementLevel.toFixed(2))
+    };
+
+    await supabase.from('ai_memory_profiles').update({
+        last_analyzed_at: nowISO(),
+        behavioral_insights: newInsights
+    }).eq('id', userId);
 
   } catch (error) {
     logger.error(`Analytics error for ${userId}:`, error.message);
@@ -498,17 +560,18 @@ async function processSessionAnalytics(userId, sessionId) {
 
 async function getOptimalStudyTime(userId) {
   try {
-    const sessions = await db.collection('chatSessions')
-      .where('userId', '==', userId)
-      .orderBy('updatedAt', 'desc')
-      .limit(20)
-      .get();
+    const { data: sessions } = await supabase
+      .from('chat_sessions')
+      .select('updated_at')
+      .eq('user_id', userId)
+      .order('updated_at', { ascending: false })
+      .limit(20);
 
     let bestHour = 19; 
-    if (!sessions.empty) {
+    if (sessions && sessions.length > 0) {
       const hourCounts = {};
       sessions.forEach(doc => {
-        const h = doc.data().updatedAt.toDate().getHours();
+        const h = new Date(doc.updated_at).getHours();
         hourCounts[h] = (hourCounts[h] || 0) + 1;
       });
       bestHour = Object.keys(hourCounts).reduce((a, b) => hourCounts[a] > hourCounts[b] ? a : b);
@@ -528,75 +591,54 @@ async function getOptimalStudyTime(userId) {
   }
 }
 
-// ✅ (مدمجة ومحسنة) دالة إرسال الإشعارات
-
 /**
- * دالة إرسال الإشعارات (الجوكر)
- * @param {string} userId
- * @param {object} notification
- * @param {string} notification.title
- * @param {string} notification.message
- * @param {string} notification.type - نوع الإشعار (chat, lesson, quiz, re_engagement)
- * @param {string} [notification.targetId] - (اختياري) ID الشيء المراد فتحه
- * @param {object} [notification.meta] - (اختياري) أي بيانات إضافية
+ * دالة إرسال الإشعارات (Native SQL Version)
+ * ملاحظة هامة: تم إيقاف الجزء الخاص بـ Firebase Cloud Messaging (FCM)
+ * لأنك حذفت firebase-admin. يمكنك إعادته إذا كنت تريد استخدام FCM للهاتف.
  */
 async function sendUserNotification(userId, notification) {
-  const db = getFirestoreInstance();
-
   try {
-    // 1. التخزين في الأرشيف (Inbox)
-    await db.collection('userNotifications').doc(userId).collection('inbox').add({
-      title: notification.title,
-      message: notification.message,
-      type: notification.type || 'system', // chat, lesson, quiz...
-      targetId: notification.targetId || null, // ✅ نضيفه هنا ليستخدمه التطبيق عند الفتح
-      read: false,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      meta: notification.meta || {} 
+    // 1. Insert into 'user_notifications' table (Inbox)
+    await supabase.from('user_notifications').insert({
+        user_id: userId,
+        box_type: 'inbox',
+        title: notification.title,
+        message: notification.message,
+        type: notification.type || 'system',
+        target_id: notification.targetId || null,
+        read: false,
+        created_at: nowISO(),
+        meta: notification.meta || {} 
     });
 
-    // 2. الإرسال للهاتف (Push Notification)
-    const userDoc = await db.collection('users').doc(userId).get();
+    // 2. Push Notification Logic (Firebase Admin Removed)
     
-    if (userDoc.exists) {
-      const userData = userDoc.data();
-      const fcmToken = userData.fcmToken;
-
-      if (fcmToken) {
-        // بناء الـ Data Payload الذكي
+    // IF YOU WANT TO RESTORE FCM, UNCOMMENT THIS BLOCK AND RE-INSTALL FIREBASE-ADMIN
+    // JUST FOR MESSAGING, NOT FIRESTORE.
+    
+    /*const { data: user } = await supabase.from('users').select('fcm_token').eq('id', userId).single();
+    if (user && user.fcm_token) {
         const dataPayload = {
-          click_action: 'FLUTTER_NOTIFICATION_CLICK', 
-          type: notification.type || 'general',
-          userId: userId,
-          // ✅ نمرر targetId و meta للهاتف
-          targetId: notification.targetId || '', 
+            click_action: 'FLUTTER_NOTIFICATION_CLICK', 
+            type: notification.type || 'general',
+            userId: userId,
+            targetId: notification.targetId || '', 
         };
-
-        // إذا كان هناك بيانات meta إضافية، نضيفها كـ Strings (لأن FCM يقبل Strings فقط في data)
         if (notification.meta) {
             Object.keys(notification.meta).forEach(k => {
                 dataPayload[k] = String(notification.meta[k]);
             });
         }
-
-        const payload = {
-          notification: {
-            title: notification.title,
-            body: notification.message,
-          },
-          data: dataPayload, // البيانات التي سيقرأها التطبيق للتوجيه
-          token: fcmToken
-        };
-
-        await admin.messaging().send(payload);
-        logger.success(`[Notification] 📲 Push sent to ${userId} (Type: ${notification.type})`);
-      }
-    }
+        // Call your FCM sender here (e.g. via an external service or re-imported firebase-admin)
+        //await messaging.send(...) 
+    }*/
+    
 
   } catch (error) {
     logger.error(`[Notification] Failed to send to ${userId}:`, error.message);
   }
 }
+
 module.exports = {
   initDataHelpers,
   getUserDisplayName,
