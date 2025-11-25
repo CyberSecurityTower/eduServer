@@ -1,16 +1,15 @@
 
 'use strict';
 
-require('dotenv').config();
 const { createClient } = require('@supabase/supabase-js');
 
-// تأكد من وجود هذه المتغيرات في ملف .env
+// في Render، المتغيرات تكون موجودة تلقائياً في process.env
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY; // نستخدم Service Role حصراً في الباك إند
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
-  console.error('❌ Supabase URL or Key is missing!');
-  process.exit(1);
+  // هذا التنبيه سيظهر في Logs الخاصة بـ Render إذا نسيت إضافة المتغيرات في لوحة التحكم
+  console.error('❌ Supabase URL or Key is missing! Check Render Environment Variables.');
 }
 
 const supabase = createClient(supabaseUrl, supabaseKey, {
