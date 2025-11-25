@@ -3,7 +3,7 @@
 'use strict';
 
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { getFirestoreInstance } = require('./data/firestore');
+const supabase = require('./data/supabase');
 const logger = require('../utils/logger');
 
 let db;
@@ -57,40 +57,23 @@ function cosineSimilarity(vecA, vecB) {
  */
 async function findSimilarEmbeddings(queryEmbedding, collectionName, topN = 5, userId = null, minScore = 0.55) {
   try {
-    const dbInstance = getFirestoreInstance();
-    let query = dbInstance.collection(collectionName);
-    
-    if (userId) {
-      // نبحث في آخر 300 ذكرى (بدلاً من 200) لزيادة المدى
-      query = query.where('userId', '==', userId).orderBy('timestamp', 'desc').limit(400); 
-    } else {
-      query = query.limit(500); 
-    }
-
-    const snapshot = await query.get();
-    if (snapshot.empty) return [];
-
-    const similarities = [];
-    snapshot.forEach(doc => {
-      const data = doc.data();
-      if (data.embedding) {
-        const score = cosineSimilarity(queryEmbedding, data.embedding);
-        
-        // إذا وجدنا تطابقاً
-        if (score >= minScore) {
-            similarities.push({ ...data, score });
-        }
-      }
+    // استدعاء الدالة التي أنشأناها في SQL
+    const { data: documents, error } = await supabase.rpc('match_memory', {
+      query_embedding: queryEmbedding,
+      match_threshold: minScore,
+      match_count: topN,
+      filter_user_id: userId
     });
 
-    // ترتيب تنازلي حسب الأفضل
-    similarities.sort((a, b) => b.score - a.score);
-    
-    // إرجاع أفضل النتائج
-    return similarities.slice(0, topN);
+    if (error) throw error;
+
+    return documents.map(doc => ({
+      originalText: doc.content,
+      score: doc.similarity
+    }));
 
   } catch (error) {
-    logger.error(`Similarity search failed in ${collectionName}:`, error.message);
+    console.error('Supabase Vector Search Error:', error);
     return [];
   }
 }
