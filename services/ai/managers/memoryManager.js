@@ -163,7 +163,7 @@ async function analyzeAndSaveMemory(userId, history, activeMissions = []) {
      }).eq('id', userId);
    }
 }
-
+}
 // ============================================================================
 // 3. سياق الخروج (The Gap/Contradiction Detector)
 // ============================================================================
