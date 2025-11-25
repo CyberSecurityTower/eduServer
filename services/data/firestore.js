@@ -1,14 +1,17 @@
+
 // services/data/firestore.js
 'use strict';
 
 const { createClient } = require('@supabase/supabase-js');
 const crypto = require('crypto');
 
+// استخدام متغيرات البيئة أفضل
 const supabase = createClient(
   process.env.SUPABASE_URL, 
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+// خريطة لربط أسماء المجموعات القديمة بأسماء الجداول الجديدة
 const TABLE_MAP = {
   'users': 'users',
   'jobs': 'jobs',
@@ -21,24 +24,24 @@ const TABLE_MAP = {
   'aiMemoryProfiles': 'ai_memory_profiles',
   'userBehaviorAnalytics': 'user_behavior_analytics',
   'curriculumEmbeddings': 'curriculum_embeddings',
-  'userMemoryEmbeddings': 'memory_embeddings'
+  'userMemoryEmbeddings': 'user_memory_embeddings' // تأكد من الاسم في Supabase
 };
 
-// دالة مساعدة لتحويل مفاتيح البيانات إلى snake_case عند الكتابة
+// دالة لتحويل البيانات من JS (camelCase) إلى DB (snake_case)
 function toSnakeCase(data) {
   const newData = {};
   for (const key in data) {
     let newKey = key;
+    // تحويلات شائعة
     if (key === 'userId') newKey = 'user_id';
-    else if (key === 'sendAt') newKey = 'send_at';
-    else if (key === 'startedAt') newKey = 'started_at';
-    else if (key === 'finishedAt') newKey = 'finished_at';
-    else if (key === 'lastError') newKey = 'last_error';
+    else if (key === 'pathId') newKey = 'path_id';
+    else if (key === 'subjectId') newKey = 'subject_id';
     else if (key === 'createdAt') newKey = 'created_at';
     else if (key === 'updatedAt') newKey = 'updated_at';
-    else if (key === 'executeAt') newKey = 'execute_at';
+    else if (key === 'fcmToken') newKey = 'fcm_token';
+    // ... أضف المزيد حسب الحاجة
     
-    // ✅ إصلاح إضافي: إذا كانت القيمة كائن Timestamp، حولها لنص
+    // معالجة التواريخ
     let val = data[key];
     if (val && typeof val === 'object' && typeof val.toISOString === 'function') {
         val = val.toISOString();
@@ -48,11 +51,12 @@ function toSnakeCase(data) {
   return newData;
 }
 
+// محاكاة كائن Admin الخاص بفايربيز للحفاظ على توافق الكود القديم
 const adminMock = {
   firestore: {
     FieldValue: {
       serverTimestamp: () => new Date().toISOString(),
-      arrayUnion: (val) => val,
+      arrayUnion: (val) => val, // Supabase لا يدعم هذا مباشرة في التحديث البسيط، يتطلب منطقاً خاصاً
       arrayRemove: (val) => val,
       increment: (val) => val,
       delete: () => null
@@ -63,7 +67,6 @@ const adminMock = {
         return { 
           toDate: () => d, 
           toMillis: () => d.getTime(), 
-          // ✅ هذا ما يبحث عنه الكود: دالة toISOString
           toISOString: () => d.toISOString() 
         };
       },
@@ -74,7 +77,10 @@ const adminMock = {
       })
     }
   },
-  messaging: () => ({ send: async (p) => console.log("[Mock FCM]", p.notification?.title) })
+  messaging: () => ({ 
+      send: async (p) => console.log("[Mock FCM] Sending notification:", p.notification?.title) 
+      // ملاحظة: ستحتاج لربط Firebase Admin الحقيقي هنا إذا كنت تريد إرسال إشعارات فعلية
+  })
 };
 
 class QueryBuilder {
@@ -88,20 +94,19 @@ class QueryBuilder {
   doc(id) {
     this.docId = id || crypto.randomUUID();
     this.isSingleDoc = true;
+    // عند تحديد doc، نحصر البحث بهذا الـ ID
     this.query = supabase.from(this.tableName).select('*').eq('id', this.docId);
     return this;
   }
 
   where(field, op, value) {
+    // تحويل أسماء الحقول
     let finalField = field;
     if (field === 'userId') finalField = 'user_id';
-    if (field === 'sendAt') finalField = 'send_at';
-    if (field === 'status') finalField = 'status';
-    if (field === 'executeAt') finalField = 'execute_at';
+    if (field === 'status') finalField = 'status'; // عادة تبقى كما هي
 
-    // ✅✅✅ الإصلاح الجذري لمشكلة [object Object] ✅✅✅
-    // إذا كانت القيمة كائناً (مثل Timestamp الخاص بـ adminMock)، نستخرج التاريخ كنص
     let finalValue = value;
+    // معالجة كائنات التاريخ القادمة من الكود القديم
     if (value && typeof value === 'object') {
         if (typeof value.toISOString === 'function') {
             finalValue = value.toISOString();
@@ -115,9 +120,10 @@ class QueryBuilder {
       case '>': this.query = this.query.gt(finalField, finalValue); break;
       case '>=': this.query = this.query.gte(finalField, finalValue); break;
       case '<': this.query = this.query.lt(finalField, finalValue); break;
-      case '<=': this.query = this.query.lte(finalField, finalValue); break; // هنا كان يحدث الخطأ
+      case '<=': this.query = this.query.lte(finalField, finalValue); break;
       case 'in': this.query = this.query.in(finalField, finalValue); break;
-      case 'array-contains': this.query = this.query.contains(finalField, [finalValue]); break;
+      // array-contains في Postgres JSONB يحتاج operator خاص، cs (contains)
+      case 'array-contains': this.query = this.query.contains(finalField, [finalValue]); break; 
       default: this.query = this.query.eq(finalField, finalValue);
     }
     return this;
@@ -126,9 +132,6 @@ class QueryBuilder {
   orderBy(field, dir = 'asc') {
     let finalField = field;
     if (field === 'createdAt') finalField = 'created_at';
-    if (field === 'updatedAt') finalField = 'updated_at';
-    if (field === 'sendAt') finalField = 'send_at';
-    if (field === 'executeAt') finalField = 'execute_at';
     
     this.query = this.query.order(finalField, { ascending: dir === 'asc' });
     return this;
@@ -139,24 +142,28 @@ class QueryBuilder {
     return this;
   }
 
+  // تنفيذ الاستعلام (Read)
   async get() {
     if (this.isSingleDoc) {
       const { data, error } = await this.query.maybeSingle();
+      
+      // محاكاة Snapshot الخاص بفايربيز
       return {
         exists: !!data,
         id: this.docId,
         data: () => data || {},
-        ref: { update: (d) => this.update(d), set: (d, o) => this.set(d, o) }
+        // نضيف ref هنا لتمكين doc.ref.update(...)
+        ref: { 
+            update: (d) => this.update(d), 
+            set: (d, o) => this.set(d, o) 
+        }
       };
     }
 
     const { data, error } = await this.query;
     if (error) {
-        // تجاهل أخطاء الجداول الفارغة مؤقتاً لتقليل الضجيج
-        if (!error.message.includes('does not exist')) {
-            console.warn(`[Supabase Read] Table: ${this.tableName}, Error:`, error.message);
-        }
-        return { empty: true, docs: [], forEach: () => {} };
+        console.warn(`[Supabase Read Error] ${this.tableName}:`, error.message);
+        return { empty: true, docs: [], forEach: () => {}, size: 0 };
     }
 
     const docs = (data || []).map(item => ({
@@ -178,24 +185,40 @@ class QueryBuilder {
     };
   }
 
+  // إضافة وثيقة جديدة (Create)
   async add(data) {
     const payload = toSnakeCase(data);
+    // Supabase يرجع البيانات المضافة إذا طلبنا .select()
     const { data: res, error } = await supabase.from(this.tableName).insert(payload).select();
-    if (error) console.error(`[Supabase Add] ${this.tableName}:`, error.message);
+    
+    if (error) {
+        console.error(`[Supabase Add Error] ${this.tableName}:`, error.message);
+        throw error;
+    }
     return { id: res && res[0] ? res[0].id : null };
   }
 
+  // تعيين وثيقة (Create or Replace)
   async set(data, options = {}) {
     const payload = { id: this.docId, ...toSnakeCase(data) };
+    
+    // إذا كان هناك merge: true، يجب أن نتعامل معه (Upsert في Supabase يقوم بذلك افتراضياً تقريباً)
     const { error } = await supabase.from(this.tableName).upsert(payload);
-    if (error) console.error(`[Supabase Set] ${this.tableName}:`, error.message);
+    
+    if (error) console.error(`[Supabase Set Error] ${this.tableName}:`, error.message);
   }
 
+  // تحديث وثيقة (Update)
   async update(data) {
-    if (!this.docId) return;
+    if (!this.docId) throw new Error("Cannot update without docId");
+    
+    // معالجة خاصة لـ ArrayUnion و ArrayRemove لأنها غير مدعومة مباشرة في Update بسيط
+    // هنا نفترض تحديثاً بسيطاً، للعمليات المعقدة يجب جلب البيانات وتعديلها ثم حفظها
+    // أو استخدام RPC functions في Supabase
     const payload = toSnakeCase(data);
+    
     const { error } = await supabase.from(this.tableName).update(payload).eq('id', this.docId);
-    if (error) console.error(`[Supabase Update] ${this.tableName}:`, error.message);
+    if (error) console.error(`[Supabase Update Error] ${this.tableName}:`, error.message);
   }
 
   async delete() {
@@ -207,20 +230,34 @@ class QueryBuilder {
 class FirestoreAdapter {
   collection(path) {
     const parts = path.split('/');
+    
+    // حالة: collection('users')
     if (parts.length === 1) {
       const mappedName = TABLE_MAP[parts[0]] || parts[0];
       return new QueryBuilder(mappedName);
     } 
+    
+    // حالة: collection('users').doc(uid).collection('inbox') -> Subcollection
+    // Supabase لا يدعم Subcollections، لذا قمنا بتسويتها في جداول مسطحة
+    // مثال: userNotifications مع عمود user_id
+    
     if (parts[0] === 'userNotifications' && parts[2] === 'inbox') {
-      return new QueryBuilder('user_notifications').where('user_id', '==', parts[1]).where('box_type', '==', 'inbox');
+      // نعيد QueryBuilder للجدول المسطح مع فلتر user_id
+      const q = new QueryBuilder('user_notifications');
+      return q.where('user_id', '==', parts[1]).where('box_type', '==', 'inbox');
     }
-    if (parts[0] === 'userBehaviorAnalytics') {
-        return new QueryBuilder('user_behavior_analytics').where('user_id', '==', parts[1]);
+    
+    if (parts[0] === 'userBehaviorAnalytics' && parts[2] === 'events') {
+        const q = new QueryBuilder('user_behavior_analytics'); // افترضنا جدولاً واحداً للأحداث
+        return q.where('user_id', '==', parts[1]);
     }
-    return new QueryBuilder(parts[parts.length - 1]); 
+
+    // fallback لأي مسار آخر، نحاول تخمين اسم الجدول من آخر جزء
+    return new QueryBuilder(TABLE_MAP[parts[parts.length - 1]] || parts[parts.length - 1]); 
   }
 
   batch() {
+    // محاكاة بسيطة للـ batch (تنفيذ تسلسلي، ليس Transaction حقيقي)
     return {
       set: (ref, data) => ref.set(data),
       update: (ref, data) => ref.update(data),
