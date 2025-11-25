@@ -58,8 +58,13 @@ async function getProfile(userId) {
     const cached = await cacheGet('profile', userId);
     if (cached) return cached;
 
-    const doc = await db.collection('aiMemoryProfiles').doc(userId).get();
-    if (doc.exists) {
+const { data, error } = await supabase
+  .from('user_progress')
+  .select('data')
+  .eq('user_id', userId)
+  .single();
+
+return data ? data.data : null; // لأننا خزننا كل شيء داخل عمود 'data'    if (doc.exists) {
       const val = doc.data();
       await cacheSet('profile', userId, val);
       return val;
