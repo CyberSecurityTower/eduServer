@@ -1,20 +1,22 @@
 
+const supabase = require('../data/supabase');
 
 async function checkScheduledActions() {
-  try {
-    const now = admin.firestore.Timestamp.now();
-    
-    // استعلام ذكي وسريع: هات المهام التي حان وقتها (executeAt <= now)
-    const snapshot = await db.collection('scheduledActions')
-      .where('status', '==', 'pending')
-      .where('executeAt', '<=', now)
-      .limit(50) // دفعة معقولة
-      .get();
+  const now = new Date().toISOString();
 
-    if (snapshot.empty) return;
+  // ✅ Supabase Query
+  const { data: actions, error } = await supabase
+    .from('scheduled_actions')
+    .select('*')
+    .eq('status', 'pending')
+    .lte('execute_at', now) // Less than or equal
+    .order('execute_at', { ascending: true })
+    .limit(50);
 
-    logger.log(`[Ticker] Found ${snapshot.size} actions to execute.`);
-    
+  if (!actions || actions.length === 0) return;
+
+  logger.log(`[Ticker] Processing ${actions.length} actions.`);
+  const updates = [];
     const batch = db.batch();
     const promises = [];
 
