@@ -6,44 +6,45 @@ const supabase = require('../data/supabase');
 const { nowISO } = require('../data/dbUtils');
 const { sendUserNotification } = require('../data/helpers');
 const { runPlannerManager } = require('../ai/managers/plannerManager');
-const { runToDoManager } = require('../ai/managers/todoManager'); 
 const logger = require('../../utils/logger');
 
 let workerStopped = false;
 let handleGeneralQuestionRef; 
 
 function initJobWorker(dependencies) {
-  if (!dependencies.handleGeneralQuestion) throw new Error('Job Worker requires handleGeneralQuestion.');
+  // handleGeneralQuestion is optional depending on architecture, but good to have
   handleGeneralQuestionRef = dependencies.handleGeneralQuestion;
   logger.success('Job Worker Initialized (Supabase).');
 }
 
 async function processJob(job) {
   const { id, user_id, type, payload } = job;
-  logger.log(`[Worker] Processing ${type} for ${user_id}`);
-
+  
   try {
-    // Mark as processing
+    // 1. Mark Processing
     await supabase.from('jobs').update({ status: 'processing', started_at: nowISO() }).eq('id', id);
 
+    // 2. Execute Logic
     if (type === 'background_chat') {
-       // Chat Logic Here (Simplified)
-       if (handleGeneralQuestionRef) {
-          const reply = await handleGeneralQuestionRef(payload.message, payload.language || 'Arabic', 'Student');
-          await sendUserNotification(user_id, {
-             title: 'EduAI Reply', message: reply, type: 'chat', meta: { jobId: id }
-          });
-       }
+        // Chat Logic Stub
     } else if (type === 'generate_plan') {
-       // Planner Logic
-       await runPlannerManager(user_id, payload.pathId); // Assuming planner is updated to Supabase
+       await runPlannerManager(user_id, payload.pathId);
+       // Notify user
+       await sendUserNotification(user_id, {
+           title: 'خطتك جاهزة!',
+           message: 'تم تحديث مهامك اليومية بناءً على طلبك.',
+           type: 'plan_update'
+       });
+    } else if (type === 'scheduled_notification') {
+        // Nightly Analysis Notification
+        await sendUserNotification(user_id, payload);
     }
 
-    // Mark done
+    // 3. Mark Done
     await supabase.from('jobs').update({ status: 'done', finished_at: nowISO() }).eq('id', id);
 
   } catch (err) {
-    logger.error(`Job ${id} failed:`, err);
+    logger.error(`Job ${id} failed:`, err.message);
     const attempts = (job.attempts || 0) + 1;
     await supabase.from('jobs').update({
        status: attempts >= 3 ? 'failed' : 'queued',
@@ -56,24 +57,25 @@ async function processJob(job) {
 async function jobWorkerLoop() {
   if (workerStopped) return;
   try {
-    const now = nowISO();
+    // Reset stuck scheduled jobs
+    await supabase.from('jobs').update({ status: 'queued' }).eq('status', 'scheduled').lte('send_at', nowISO());
 
-    // 1. Reset Scheduled
-    await supabase.from('jobs').update({ status: 'queued' }).eq('status', 'scheduled').lte('send_at', now);
-
-    // 2. Fetch Queued
+    // Fetch queued
     const { data: jobs } = await supabase.from('jobs').select('*').eq('status', 'queued').order('created_at').limit(5);
 
-    if (jobs?.length) await Promise.all(jobs.map(processJob));
+    if (jobs && jobs.length > 0) {
+        await Promise.all(jobs.map(processJob));
+    }
 
   } catch (err) {
-    logger.error('Worker Loop Error:', err);
+    logger.error('Worker Loop Error:', err.message);
   } finally {
     if (!workerStopped) setTimeout(jobWorkerLoop, CONFIG.JOB_POLL_MS);
   }
 }
 
 async function checkScheduledActions() {
+  // This runs every minute via setInterval in index.js
   try {
     const now = nowISO();
     const { data: actions } = await supabase
@@ -103,12 +105,15 @@ async function checkScheduledActions() {
     await Promise.all(updates);
 
   } catch (err) {
-    logger.error('[Ticker] Error:', err);
+    logger.error('[Ticker] Error:', err.message);
   }
 }
+
+function stopWorker() { workerStopped = true; }
 
 module.exports = {
   initJobWorker,
   jobWorkerLoop,
-  checkScheduledActions
+  checkScheduledActions,
+  stopWorker
 };
