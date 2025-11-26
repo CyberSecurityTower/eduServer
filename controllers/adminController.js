@@ -60,26 +60,24 @@ async function runNightlyAnalysis(req, res) {
 
 // --- 3. THE WORKER (FIXED) ---
 
+
 async function runNightlyAnalysisForUser(userId) {
   try {
     const db = getFirestoreInstance();
 
-    // أ) التخطيط الاستراتيجي
+    // A) Smart Strategy
     const newMissions = await generateSmartStudyStrategy(userId);
     if (newMissions && newMissions.length > 0) {
-       // 🔥 FIX: Manual Array Union for Supabase/Postgres
-       // 1. Get current user data
+       // 🔥 MANUAL ARRAY MERGE FOR SUPABASE
        const userDoc = await db.collection('users').doc(userId).get();
        if (userDoc.exists) {
            const userData = userDoc.data();
-           let currentMissions = userData.aiDiscoveryMissions || [];
+           const currentMissions = userData.aiDiscoveryMissions || [];
+           // Merge unique
+           const updated = [...new Set([...currentMissions, ...newMissions])];
            
-           // 2. Merge and de-duplicate
-           const updatedMissions = [...new Set([...currentMissions, ...newMissions])];
-           
-           // 3. Update entire array
            await db.collection('users').doc(userId).update({
-             aiDiscoveryMissions: updatedMissions
+             aiDiscoveryMissions: updated
            });
        }
     }
