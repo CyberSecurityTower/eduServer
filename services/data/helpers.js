@@ -33,7 +33,6 @@ const localCache = {
 async function cacheGet(scope, key) { return localCache[scope]?.get(key) ?? null; }
 async function cacheSet(scope, key, value) { return localCache[scope]?.set(key, value); }
 async function cacheDel(scope, key) { return localCache[scope]?.del(key); }
-
 // ============================================================================
 // 1. User Profile & Basic Info
 // ============================================================================
@@ -375,9 +374,18 @@ async function saveChatSession(sessionId, userId, title, messages, type = 'main_
 // 5. Notifications (Inbox Only)
 // ============================================================================
 
+
+// الجزء المهم: 5. Notifications (Supabase Inbox + Expo Push API)
+// ============================================================================
+
+/**
+ * دالة هجينة: تحفظ الإشعار في قاعدة البيانات (Inbox) وترسله للهاتف (Push) عبر Expo
+ */
 async function sendUserNotification(userId, notification) {
   try {
-    await supabase.from('user_notifications').insert({
+    // 1. التخزين في قاعدة البيانات (Inbox System)
+    // هذا يضمن أن يجد المستخدم الإشعار داخل التطبيق حتى لو مسح الـ Push
+    const { error: dbError } = await supabase.from('user_notifications').insert({
         user_id: userId,
         box_type: 'inbox',
         title: notification.title,
@@ -388,11 +396,76 @@ async function sendUserNotification(userId, notification) {
         created_at: nowISO(),
         meta: notification.meta || {} 
     });
+
+    if (dbError) {
+      logger.error(`[Notification DB] Failed to save for ${userId}:`, dbError.message);
+      // نكمل العملية ولا نتوقف، لأن الـ Push قد يكون أهم
+    }
+
+    // 2. إرسال Push Notification عبر Expo API
+    
+    // أ) جلب التوكن من جدول المستخدمين
+    // ملاحظة: نستخدم fcm_token لتخزين Expo Token لأنه نفس الحقل القديم
+    const { data: user, error: userError } = await supabase
+        .from('users')
+        .select('fcm_token') // يحتوي الآن على ExponentPushToken[...]
+        .eq('id', userId)
+        .single();
+
+    if (userError || !user || !user.fcm_token) {
+        // المستخدم ليس لديه توكن، نكتفي بالتخزين في قاعدة البيانات
+        return; 
+    }
+
+    const pushToken = user.fcm_token;
+
+    // ب) التحقق من صحة التوكن (Expo Format)
+    if (!pushToken.startsWith('ExponentPushToken')) {
+        // logger.warn(`[Notification] Invalid Expo token for ${userId}: ${pushToken}`);
+        return;
+    }
+
+    // ج) تجهيز الرسالة
+    const message = {
+      to: pushToken,
+      sound: 'default',
+      title: notification.title,
+      body: notification.message,
+      priority: 'high',
+      channelId: 'default', // للأندرويد
+      data: {
+        // هيكلة البيانات لتناسب الفرونت إند كما طلبت
+        source: notification.type || 'system', 
+        type: notification.type, // مثال: 'task_reminder'
+        notificationId: notification.meta?.actionId || crypto.randomUUID(),
+        ...notification.meta // دمج أي بيانات إضافية
+      }
+    };
+
+    // د) الإرسال الفعلي (HTTP Request)
+    // نستخدم fetch المدمج في Node 20
+    const response = await fetch('https://exp.host/--/api/v2/push/send', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Accept-encoding': 'gzip, deflate',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify([message]), // Expo يتوقع مصفوفة
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        logger.error(`[Expo Push] Failed: ${response.status} - ${errorText}`);
+    } 
+    else {
+       logger.info(`[Expo Push] Sent successfully to ${userId}`);
+     }
+
   } catch (error) {
-    logger.error(`[Notification] Failed to send to ${userId}:`, error.message);
+    logger.error(`[Notification System] Error for ${userId}:`, error.message);
   }
 }
-
 async function analyzeAndSaveMemory(userId, history) {
     // Empty stub or implement update logic
 }
