@@ -24,7 +24,7 @@ const PROMPTS = {
       3. Tasks must be short, punchy, and use Algerian Derja/Arabic mix.
       4. Assign a priority (High/Medium).
       5. Output JSON ONLY: { "tasks": [{ "title": "...", "type": "review/new/quiz", "priority": "high", "meta": { "lessonId": "..." } }] }
-    `,,
+    `,
     generateTitle: (message, language) => ``,
 
     // ✅ The Master Prompt
