@@ -5,12 +5,19 @@
 const { createClient } = require('@supabase/supabase-js');
 const crypto = require('crypto');
 
-const supabase = createClient(
-  process.env.SUPABASE_URL, 
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+// التأكد من وجود المتغيرات
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-// خريطة الجداول
+if (!supabaseUrl || !supabaseKey) {
+  console.error('CRITICAL: Supabase URL or Key is missing.');
+}
+
+const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: { autoRefreshToken: false, persistSession: false }
+});
+
+// خريطة الجداول بناءً على الصور المرفقة
 const TABLE_MAP = {
   'users': 'users',
   'jobs': 'jobs',
@@ -22,12 +29,11 @@ const TABLE_MAP = {
   'userNotifications': 'user_notifications',
   'aiMemoryProfiles': 'ai_memory_profiles',
   'userBehaviorAnalytics': 'user_behavior_analytics',
-  'curriculumEmbeddings': 'curriculum_embeddings',
+  'curriculumEmbeddings': 'curriculum_embeddings', // تأكد من إنشاء هذا الجدول إذا لم يكن موجوداً
   'userMemoryEmbeddings': 'user_memory_embeddings'
 };
 
-// ✅ دالة تحويل الأسماء (Mapping Helper)
-// هذه الدالة هي "الجندي المجهول" الذي سيحل مشكلة sendAt vs send_at
+// خريطة الحقول (CamelCase -> SnakeCase)
 function mapField(field) {
     const mapping = {
         'userId': 'user_id',
@@ -36,13 +42,20 @@ function mapField(field) {
         'lessonId': 'lesson_id',
         'createdAt': 'created_at',
         'updatedAt': 'updated_at',
-        'sendAt': 'send_at',       // 👈 الحل هنا
-        'executeAt': 'execute_at', // وهنا
+        'sendAt': 'send_at',
+        'executeAt': 'execute_at',
         'startedAt': 'started_at',
         'finishedAt': 'finished_at',
         'lastError': 'last_error',
         'fcmToken': 'fcm_token',
-        'targetId': 'target_id'
+        'targetId': 'target_id',
+        'selectedPathId': 'selected_path_id',
+        'profileStatus': 'profile_status',
+        'aiDiscoveryMissions': 'ai_discovery_missions',
+        'aiNoteToSelf': 'ai_note_to_self',
+        'firstName': 'first_name',
+        'lastName': 'last_name',
+        'boxType': 'box_type'
     };
     return mapping[field] || field;
 }
@@ -50,23 +63,31 @@ function mapField(field) {
 function toSnakeCase(data) {
   const newData = {};
   for (const key in data) {
-    const newKey = mapField(key); // نستخدم نفس دالة التحويل
-    
+    const newKey = mapField(key);
     let val = data[key];
+    
+    // التعامل مع التواريخ
     if (val && typeof val === 'object' && typeof val.toISOString === 'function') {
         val = val.toISOString();
     }
+    
+    // تجاهل القيم الخاصة بالمحاكاة (Mock) لأننا سنعالجها يدوياً
+    if (val === '___ARRAY_UNION___' || val === '___INCREMENT___') {
+        continue; 
+    }
+
     newData[newKey] = val;
   }
   return newData;
 }
 
-// Mock Admin Object
+// محاكاة كائن Admin الخاص بفايربيس
 const adminMock = {
   firestore: {
     FieldValue: {
       serverTimestamp: () => new Date().toISOString(),
-      arrayUnion: (val) => val,
+      // علامات خاصة سنعالجها في الـ Controller
+      arrayUnion: (val) => val, 
       arrayRemove: (val) => val,
       increment: (val) => val,
       delete: () => null
@@ -82,8 +103,7 @@ const adminMock = {
         toISOString: () => date.toISOString()
       })
     }
-  },
-  messaging: () => ({ send: async () => {} })
+  }
 };
 
 class QueryBuilder {
@@ -95,16 +115,15 @@ class QueryBuilder {
   }
 
   doc(id) {
+    // إذا لم يتم تمرير ID، ننشئ واحد جديد (لعمليات الإضافة)
     this.docId = id || crypto.randomUUID();
     this.isSingleDoc = true;
-    this.query = supabase.from(this.tableName).select('*').eq('id', this.docId);
+    // ملاحظة: لا نفلتر هنا بـ eq لأننا قد نكون بصدد إنشاء مستند جديد
     return this;
   }
 
-  // ✅ تم تحديث دالة where لتستخدم mapField
   where(field, op, value) {
-    const finalField = mapField(field); 
-
+    const finalField = mapField(field);
     let finalValue = value;
     if (value && typeof value === 'object') {
         if (typeof value.toISOString === 'function') finalValue = value.toISOString();
@@ -118,13 +137,15 @@ class QueryBuilder {
       case '<': this.query = this.query.lt(finalField, finalValue); break;
       case '<=': this.query = this.query.lte(finalField, finalValue); break;
       case 'in': this.query = this.query.in(finalField, finalValue); break;
-      case 'array-contains': this.query = this.query.contains(finalField, [finalValue]); break;
+      case 'array-contains': 
+        // Postgres uses @> for array containment
+        this.query = this.query.contains(finalField, [finalValue]); 
+        break;
       default: this.query = this.query.eq(finalField, finalValue);
     }
     return this;
   }
 
-  // ✅ تم تحديث دالة orderBy لتستخدم mapField
   orderBy(field, dir = 'asc') {
     const finalField = mapField(field);
     this.query = this.query.order(finalField, { ascending: dir === 'asc' });
@@ -138,7 +159,9 @@ class QueryBuilder {
 
   async get() {
     if (this.isSingleDoc) {
-      const { data, error } = await this.query.maybeSingle();
+      // جلب مستند واحد
+      const { data, error } = await supabase.from(this.tableName).select('*').eq('id', this.docId).maybeSingle();
+      
       return {
         exists: !!data,
         id: this.docId,
@@ -147,12 +170,11 @@ class QueryBuilder {
       };
     }
 
+    // جلب مجموعة
     const { data, error } = await this.query;
     if (error) {
-        // نتجاهل أخطاء الجداول الفارغة، لكن نظهر الأخطاء الأخرى مثل sendAt does not exist
-        if (!error.message.includes('JSON object requested')) {
-             console.warn(`[Supabase Read Error] ${this.tableName}:`, error.message);
-        }
+        // تجاهل أخطاء "الجدول غير موجود" أو "البيانات فارغة"
+        console.warn(`[Supabase Read] Table: ${this.tableName}, Error: ${error.message}`);
         return { empty: true, docs: [], forEach: () => {}, size: 0 };
     }
 
@@ -163,6 +185,9 @@ class QueryBuilder {
       ref: { 
         update: async (d) => {
            await supabase.from(this.tableName).update(toSnakeCase(d)).eq('id', item.id);
+        },
+        delete: async () => {
+           await supabase.from(this.tableName).delete().eq('id', item.id);
         }
       }
     }));
@@ -176,20 +201,32 @@ class QueryBuilder {
   }
 
   async add(data) {
+    // إضافة مستند جديد (الـ ID يتم توليده تلقائياً من Supabase إذا لم يمرر)
     const payload = toSnakeCase(data);
+    
+    // إذا لم يكن هناك ID في البيانات، Supabase سينشئه (إذا كان العمود uuid DEFAULT gen_random_uuid())
+    // لكن لكي نرجع الـ ID للكود، نستخدم .select()
     const { data: res, error } = await supabase.from(this.tableName).insert(payload).select();
-    if (error) console.error(`[Supabase Add Error] ${this.tableName}:`, error.message);
+    
+    if (error) {
+        console.error(`[Supabase Add Error] ${this.tableName}:`, error.message);
+        throw error;
+    }
     return { id: res && res[0] ? res[0].id : null };
   }
 
   async set(data, options = {}) {
     const payload = { id: this.docId, ...toSnakeCase(data) };
+    // Upsert: إدراج أو تحديث
     const { error } = await supabase.from(this.tableName).upsert(payload);
     if (error) console.error(`[Supabase Set Error] ${this.tableName}:`, error.message);
   }
 
   async update(data) {
-    if (!this.docId) return; // Cannot update without ID
+    if (!this.docId) {
+        console.error("Cannot update without docId");
+        return;
+    }
     const payload = toSnakeCase(data);
     const { error } = await supabase.from(this.tableName).update(payload).eq('id', this.docId);
     if (error) console.error(`[Supabase Update Error] ${this.tableName}:`, error.message);
@@ -204,25 +241,42 @@ class QueryBuilder {
 class FirestoreAdapter {
   collection(path) {
     const parts = path.split('/');
+    // حالة 1: مجموعة مباشرة (users)
     if (parts.length === 1) {
       const mappedName = TABLE_MAP[parts[0]] || parts[0];
       return new QueryBuilder(mappedName);
     } 
+    
+    // حالة 2: Sub-collection (محاكاة)
+    // Firestore: userNotifications/{userId}/inbox
+    // Supabase: user_notifications WHERE user_id = userId AND box_type = 'inbox'
     if (parts[0] === 'userNotifications' && parts[2] === 'inbox') {
-      return new QueryBuilder('user_notifications').where('user_id', '==', parts[1]).where('box_type', '==', 'inbox');
+      return new QueryBuilder('user_notifications')
+        .where('user_id', '==', parts[1])
+        .where('box_type', '==', 'inbox');
     }
-    if (parts[0] === 'userBehaviorAnalytics') {
+    
+    // Firestore: userBehaviorAnalytics/{userId}/events
+    if (parts[0] === 'userBehaviorAnalytics' && parts[2] === 'events') {
+        // بما أن الجدول مسطح في الصور، سنضيف البيانات للجدول الرئيسي ونفلتر بالـ user_id
         return new QueryBuilder('user_behavior_analytics').where('user_id', '==', parts[1]);
     }
-    return new QueryBuilder(TABLE_MAP[parts[parts.length - 1]] || parts[parts.length - 1]); 
+
+    // Default Fallback
+    const lastPart = parts[parts.length - 1];
+    return new QueryBuilder(TABLE_MAP[lastPart] || lastPart); 
   }
 
   batch() {
+    const operations = [];
     return {
-      set: (ref, data) => ref.set(data),
-      update: (ref, data) => ref.update(data),
-      delete: (ref) => ref.delete(),
-      commit: async () => {} 
+      set: (ref, data) => operations.push(ref.set(data)),
+      update: (ref, data) => operations.push(ref.update(data)),
+      delete: (ref) => operations.push(ref.delete()),
+      commit: async () => {
+        // تنفيذ العمليات بالتتابع (ليس Atomic حقيقي في هذا المحاكي البسيط، لكن يفي بالغرض)
+        await Promise.all(operations); 
+      } 
     };
   }
 }
