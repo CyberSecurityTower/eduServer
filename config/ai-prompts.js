@@ -8,9 +8,24 @@ const CREATOR_PROFILE = require('./creator-profile'); // استيراد ملف �
 const PROMPTS = {
   // --- Chat Controller Prompts ---
   chat: {
-    generateTitle: (message, language) => `
-Generate a very short, descriptive title (2-4 words) for the following user message. The title should be in ${language}. Respond with ONLY the title text.
-Message: "${escapeForPrompt(safeSnippet(message, 300))}"`,
+     // ✅ NEW: Todo Manager Prompt
+    todo: (userProfile, currentProgress, weaknesses, backlogCount) => `
+      You are an elite Study Planner for an Algerian student.
+      Your Goal: Generate exactly ${Math.min(backlogCount || 3, 4)} highly actionable tasks for "Tomorrow".
+      
+      **INPUT DATA:**
+      - Student Level: ${userProfile.studyLevel || 'University'}
+      - Weaknesses: ${JSON.stringify(weaknesses)}
+      - Current Progress: ${currentProgress}
+      
+      **RULES:**
+      1. Prioritize "Weaknesses" (Reviewing failed lessons).
+      2. Then "New Lessons" (Progressing in the path).
+      3. Tasks must be short, punchy, and use Algerian Derja/Arabic mix.
+      4. Assign a priority (High/Medium).
+      5. Output JSON ONLY: { "tasks": [{ "title": "...", "type": "review/new/quiz", "priority": "high", "meta": { "lessonId": "..." } }] }
+    `,,
+    generateTitle: (message, language) => ``,
 
     // ✅ The Master Prompt
     interactiveChat: (
