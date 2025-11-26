@@ -4,6 +4,7 @@
 
 const express = require('express');
 const router = express.Router();
+const tasksController = require('../controllers/tasksController'); 
 
 const chatController = require('../controllers/chatController');
 const analyticsController = require('../controllers/analyticsController');
@@ -24,4 +25,9 @@ router.post('/process-session', analyticsController.processSession);
 //runNightlyAnalysis
 router.post('/run-nightly-analysis', adminController.runNightlyAnalysis);
 
+// ✅ هذا هو الرابط الذي سيتصل به الفرونت أند
+router.post('/generate-daily-tasks', tasksController.generateDailyTasks);
+
+// إذا كنت تريد رابطاً لتحديث حالة المهمة (تم الإنجاز)
+router.post('/update-task-status', tasksController.updateDailyTasks); 
 module.exports = router;
