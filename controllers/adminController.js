@@ -154,17 +154,18 @@ async function indexSpecificLesson(req, res) {
 
     for (const chunk of chunks) {
       const vec = await embeddingService.generateEmbedding(chunk);
-      const newRef = db.collection('curriculumEmbeddings').doc();
-      batch.set(newRef, {
-        lessonId,
-        lessonTitle: req.body.lessonTitle || 'Unknown Title', 
-        pathId: req.body.pathId || 'Unknown Path',
-        chunkText: chunk,
-        embedding: vec,
-        type: 'curriculum',
-        createdAt: admin.firestore.FieldValue.serverTimestamp()
-      });
-    }
+      const newRef = db.collection('curriculum_embeddings').doc(); // لاحظ الاسم الجديد
+batch.set(newRef, {
+  content: chunk, // غيرنا الاسم من chunkText إلى content
+  embedding: vec,
+  path_id: req.body.pathId, // تأكد أنك ترسل هذا في الـ Body
+  metadata: {
+    lesson_id: lessonId,
+    lesson_title: req.body.lessonTitle,
+    source_type: 'official' // أو حسب ما ترسل
+  },
+  created_at: admin.firestore.FieldValue.serverTimestamp()
+});
 
     await batch.commit();
     return res.json({ success: true, message: `Indexed ${chunks.length} chunks for lesson ${lessonId}` });
