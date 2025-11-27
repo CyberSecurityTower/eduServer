@@ -228,7 +228,8 @@ async function main() {
           continue;
         }
 
-        const embedding = await generateEmbeddingWithRetry(chunk, embeddingModel);
+        const contextChunk = `المادة: ${task.subjectId} - الدرس: ${task.lessonTitle}\nالمحتوى: ${chunk}`;
+const embedding = await generateEmbeddingWithRetry(contextChunk, embeddingModel);
         const docRef = db.collection(CURRICULUM_CONFIG.collections.destination).doc();
         batch.set(docRef, {
           ...task,
