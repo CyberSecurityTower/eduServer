@@ -33,8 +33,10 @@ async function runCurriculumAgent(userId, userMessage) {
       return '';
     }
 
-    const topContexts = similarChunks.map(chunk => chunk.chunkText);
 
+const topContexts = similarChunks.map(chunk => {
+  return `[المصدر: ${chunk.lessonTitle || 'درس عام'}]\nالمحتوى: ${chunk.chunkText}`;
+});
     const contextReport = `The user's question appears to be highly related to these specific parts of the curriculum:
 ---
 ${topContexts.join('\n---\n')}
