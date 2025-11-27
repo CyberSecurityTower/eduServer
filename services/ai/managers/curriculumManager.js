@@ -20,36 +20,41 @@ async function runCurriculumAgent(userId, userMessage) {
       logger.error('runCurriculumAgent: embeddingService is not set.');
       return '';
     }
+
+    // 1. Generate Embedding
     const questionEmbedding = await embeddingServiceRef.generateEmbedding(userMessage);
-    const pathId = 'UAlger3_L1_ITCF'; // مؤقتاً، أو اجلبه من المستخدم
 
-const similarChunks = await embeddingServiceRef.findSimilarEmbeddings(
-  questionEmbedding,
-  'curriculum', // النوع
-  3,
-  pathId // الفلتر
-);
-
-const topContexts = similarChunks.map(chunk => {
-  const title = chunk.metadata?.lesson_title || 'درس';
-  return `[المصدر: ${title}]\n${chunk.text}`;
-});
-    if (questionEmbedding.length === 0) return '';
-
-    const similarChunks = await embeddingServiceRef.findSimilarEmbeddings(
-      questionEmbedding,
-      'curriculumEmbeddings',
-      3
-    );
-
-    if (similarChunks.length === 0) {
+    if (!questionEmbedding || questionEmbedding.length === 0) {
       return '';
     }
 
+    // 2. Define Search Parameters
+    // TODO: Retrieve pathId dynamically from user profile instead of hardcoding
+    const pathId = 'UAlger3_L1_ITCF'; 
+    const collectionName = 'curriculum'; 
+    const limit = 3;
 
-const topContexts = similarChunks.map(chunk => {
-  return `[المصدر: ${chunk.lessonTitle || 'درس عام'}]\nالمحتوى: ${chunk.chunkText}`;
-});
+    // 3. Find Similar Chunks
+    const similarChunks = await embeddingServiceRef.findSimilarEmbeddings(
+      questionEmbedding,
+      collectionName,
+      limit,
+      pathId // Filter by pathId
+    );
+
+    if (!similarChunks || similarChunks.length === 0) {
+      return '';
+    }
+
+    // 4. Format the Context
+    const topContexts = similarChunks.map(chunk => {
+      // Handle potential variations in data structure (metadata vs direct properties)
+      const title = chunk.metadata?.lesson_title || chunk.lessonTitle || 'درس';
+      const content = chunk.text || chunk.chunkText || '';
+      
+      return `[المصدر: ${title}]\n${content}`;
+    });
+
     const contextReport = `The user's question appears to be highly related to these specific parts of the curriculum:
 ---
 ${topContexts.join('\n---\n')}
