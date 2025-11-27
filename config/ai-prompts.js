@@ -33,7 +33,10 @@ const PROMPTS = {
       const creator = creatorProfileParam || CREATOR_PROFILE;
       const userName = userProfileData?.firstName || 'Student';
       const userGender = userProfileData?.gender || 'neutral';
-      const userPath = userProfileData?.selectedPathId || 'Unknown Path';
+        
+        // نستخدم الاسم الحقيقي الذي جلبناه في الخطوة السابقة، وإذا لم يوجد نستخدم الـ ID كاحتياط
+      const userPath = userProfileData?.fullMajorName || userProfileData?.selectedPathId || 'تخصص جامعي';
+
       const knowns = (userProfileData?.facts) || (memoryReport?.userProfileData?.facts) || {};
       const missingList = [];
       if (!knowns.location) missingList.push("- Where do they live?");
