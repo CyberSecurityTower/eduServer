@@ -9,6 +9,7 @@ const { runReEngagementManager } = require('../services/ai/managers/notification
 const logger = require('../utils/logger');
 const { generateSmartStudyStrategy } = require('../services/data/helpers'); 
 const embeddingService = require('../services/embeddings'); 
+const supabase = require('../services/data/supabase'); 
 
 const db = getFirestoreInstance(); 
 let generateWithFailoverRef; 
