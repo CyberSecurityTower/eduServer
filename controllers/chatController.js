@@ -84,7 +84,9 @@ async function chatInteractive(req, res) {
     let masteryContext = "New Topic.";
     let textDirection = "rtl"; 
     let preferredLang = "Arabic";
-
+    const pathDetails = await getCachedEducationalPathById(userData.selectedPathId);
+    const realMajorName = pathDetails?.display_name || pathDetails?.title || "تخصص جامعي";
+    userData.fullMajorName = realMajorName; 
     // Mastery Context Logic
     if (context.lessonId && context.subjectId && userData.selectedPathId) {
       const pData = progressData.pathProgress?.[userData.selectedPathId]?.subjects?.[context.subjectId]?.lessons?.[context.lessonId];
