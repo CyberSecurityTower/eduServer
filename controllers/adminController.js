@@ -8,9 +8,9 @@ const { enqueueJob } = require('../services/jobs/queue');
 const { runReEngagementManager } = require('../services/ai/managers/notificationManager');
 const logger = require('../utils/logger');
 const { generateSmartStudyStrategy } = require('../services/data/helpers'); 
-const db = getFirestoreInstance(); 
 const embeddingService = require('../services/embeddings'); 
 
+const db = getFirestoreInstance(); 
 let generateWithFailoverRef; 
 
 function initAdminController(dependencies) {
@@ -18,28 +18,30 @@ function initAdminController(dependencies) {
   logger.info('Admin Controller initialized.');
 }
 
-// --- 1. Helper: حساب وقت الذروة للمستخدم ---
-async function calculateUserPrimeTime(userId) {
-   // (تم الإبقاء على الدالة كما هي، مع الافتراض أنها تستخدم getFirestoreInstance الصحيح)
-   return 20; 
+// --- Helpers for Strings (Added to prevent ReferenceErrors) ---
+function escapeForPrompt(str) {
+  return str ? str.replace(/"/g, '\\"').replace(/\n/g, ' ') : '';
+}
+function safeSnippet(str, length) {
+  return str && str.length > length ? str.substring(0, length) + '...' : str;
+}
+async function extractTextFromResult(result) {
+  // Adjust based on your actual AI response structure
+  return result?.text || result?.content || result || '';
 }
 
-// --- 2. THE NIGHTLY BRAIN ---
+// --- 1. THE NIGHTLY BRAIN ---
 
 async function runNightlyAnalysis(req, res) {
   try {
     const providedSecret = req.headers['x-job-secret'];
-    // تأكد من ضبط NIGHTLY_JOB_SECRET في Environment Variables في Render
     if (providedSecret !== CONFIG.NIGHTLY_JOB_SECRET) {
       return res.status(401).json({ error: 'Unauthorized.' });
     }
 
     res.status(202).json({ message: 'Nightly analysis job started.' });
     
-    // استخدام FirestoreAdapter الذي كتبناه
-    const db = getFirestoreInstance();
-    // Supabase query to get active users (simulation)
-    // ملاحظة: FirestoreAdapter يرجع docs. data() يرجع الصف
+    // Using Firestore
     const snapshot = await db.collection('userProgress').limit(50).get(); 
 
     if (snapshot.empty) {
@@ -52,62 +54,65 @@ async function runNightlyAnalysis(req, res) {
       analysisPromises.push(runNightlyAnalysisForUser(doc.id));
     });
 
-    await Promise.all(analysisPromises);
-    logger.success(`[CRON] Finished analysis.`);
+    await Promise.allSettled(analysisPromises); // Use allSettled so one error doesn't stop others
+    logger.info(`[CRON] Finished analysis.`);
 
   } catch (error) {
     logger.error('[/run-nightly-analysis] Critical error:', error);
   }
 }
 
-// --- 3. THE WORKER (FIXED) ---
-
+// --- 2. THE WORKER ---
 
 async function runNightlyAnalysisForUser(userId) {
   try {
-    const db = getFirestoreInstance();
-
     // A) Smart Strategy
     const newMissions = await generateSmartStudyStrategy(userId);
     if (newMissions && newMissions.length > 0) {
-       // 🔥 MANUAL ARRAY MERGE FOR SUPABASE
-       const userDoc = await db.collection('users').doc(userId).get();
+       const userRef = db.collection('users').doc(userId);
+       const userDoc = await userRef.get();
+       
        if (userDoc.exists) {
            const userData = userDoc.data();
            const currentMissions = userData.aiDiscoveryMissions || [];
-           // Merge unique
+           // Merge unique missions
            const updated = [...new Set([...currentMissions, ...newMissions])];
            
-           await db.collection('users').doc(userId).update({
+           await userRef.update({
              aiDiscoveryMissions: updated
            });
        }
     }
-    // ب) إشعار إعادة التفاعل الذكي
-    const userDoc = await db.collection('userProgress').doc(userId).get();
-    if (userDoc.exists) {
-        const userData = userDoc.data();
+
+    // B) Smart Re-engagement Notification
+    const userProgressRef = db.collection('userProgress').doc(userId);
+    const userProgressDoc = await userProgressRef.get();
+
+    if (userProgressDoc.exists) {
+        const userData = userProgressDoc.data();
         if (userData.lastLogin) {
             const lastLogin = new Date(userData.lastLogin);
             const daysInactive = (Date.now() - lastLogin.getTime()) / (1000 * 60 * 60 * 24);
 
-            // تحديد الشدة حسب مدة الغياب
             let intensity = null;
             if (daysInactive >= 2 && daysInactive < 3) intensity = 'gentle';
             else if (daysInactive >= 5 && daysInactive < 6) intensity = 'motivational';
             else if (daysInactive >= 10 && daysInactive < 11) intensity = 'urgent';
 
             if (intensity) {
-                // 🔥 1. توليد الرسالة المخصصة (بالذكاء الاصطناعي)
+                // Generate AI Message
                 const reEngagementMessage = await runReEngagementManager(userId, intensity);
                 
                  if (reEngagementMessage) {
                     const primeHour = await calculateUserPrimeTime(userId);
                     const scheduleTime = new Date();
                     scheduleTime.setHours(primeHour, 0, 0, 0);
-                    if (scheduleTime < new Date()) scheduleTime.setDate(scheduleTime.getDate() + 1);
+                    
+                    // If time passed today, schedule for tomorrow
+                    if (scheduleTime < new Date()) {
+                        scheduleTime.setDate(scheduleTime.getDate() + 1);
+                    }
 
-                    // 🔥 هنا نضع الهيكل (JSON) الذي سألت عنه
                     await enqueueJob({
                         type: 'scheduled_notification',
                         userId: userId,
@@ -115,15 +120,14 @@ async function runNightlyAnalysisForUser(userId) {
                         payload: {
                             title: intensity === 'urgent' ? 'وين راك؟ 😢' : 'تذكير للدراسة',
                             message: reEngagementMessage,
-                            type: 're_engagement', // ✅ النوع
-                            // ✅ نحفظ النص والشدة لنستخدمهم لما يرجع المستخدم
+                            type: 're_engagement',
                             meta: { 
                                 originalMessage: reEngagementMessage,
                                 intensity: intensity
                             }
                         }
                     });
-                    logger.info(`[Nightly] Scheduled re-engagement for ${userId}`);
+                    logger.info(`[Nightly] Scheduled re-engagement for ${userId} at ${primeHour}:00`);
                 }
             }
         }
@@ -137,7 +141,7 @@ async function runNightlyAnalysisForUser(userId) {
 
 async function indexSpecificLesson(req, res) {
   try {
-    const { lessonId } = req.body;
+    const { lessonId, pathId, lessonTitle } = req.body;
     if (!lessonId) return res.status(400).json({ error: 'lessonId required' });
 
     const contentDoc = await db.collection('lessonsContent').doc(lessonId).get();
@@ -149,23 +153,30 @@ async function indexSpecificLesson(req, res) {
     const chunks = text.match(/[\s\S]{1,1000}/g) || [text]; 
     const batch = db.batch();
     
-    const oldEmbeddings = await db.collection('curriculumEmbeddings').where('lessonId', '==', lessonId).get();
+    // Clear old embeddings
+    const oldEmbeddings = await db.collection('curriculum_embeddings')
+      .where('metadata.lesson_id', '==', lessonId) // Updated to match structure below
+      .get();
+      
     oldEmbeddings.forEach(doc => batch.delete(doc.ref));
 
+    // Create new embeddings
     for (const chunk of chunks) {
       const vec = await embeddingService.generateEmbedding(chunk);
-      const newRef = db.collection('curriculum_embeddings').doc(); // لاحظ الاسم الجديد
-batch.set(newRef, {
-  content: chunk, // غيرنا الاسم من chunkText إلى content
-  embedding: vec,
-  path_id: req.body.pathId, // تأكد أنك ترسل هذا في الـ Body
-  metadata: {
-    lesson_id: lessonId,
-    lesson_title: req.body.lessonTitle,
-    source_type: 'official' // أو حسب ما ترسل
-  },
-  created_at: admin.firestore.FieldValue.serverTimestamp()
-});
+      const newRef = db.collection('curriculum_embeddings').doc(); 
+      
+      batch.set(newRef, {
+        content: chunk, 
+        embedding: vec,
+        path_id: pathId || 'General',
+        metadata: {
+          lesson_id: lessonId,
+          lesson_title: lessonTitle || 'Untitled Lesson',
+          source_type: 'official'
+        },
+        created_at: admin.firestore.FieldValue.serverTimestamp()
+      });
+    } // <--- Fixed: Missing closing brace added here
 
     await batch.commit();
     return res.json({ success: true, message: `Indexed ${chunks.length} chunks for lesson ${lessonId}` });
@@ -194,7 +205,7 @@ async function generateTitleRoute(req, res) {
 
     const prompt = `Generate a very short, descriptive title (2-4 words) for the following user message. The title should be in ${language}. Respond with ONLY the title text. Message: "${escapeForPrompt(safeSnippet(message, 300))}"`;
 
-    if (!generateWithFailoverRef) return res.status(500).json({ title: message.substring(0, 30) });
+    if (!generateWithFailoverRef) return res.status(200).json({ title: message.substring(0, 30) });
     
     const modelResp = await generateWithFailoverRef('titleIntent', prompt, { label: 'GenerateTitle', timeoutMs: 5000 });
     const title = await extractTextFromResult(modelResp);
@@ -206,35 +217,37 @@ async function generateTitleRoute(req, res) {
   }
 }
 
+// Helper: Logic for finding prime time
 async function calculateUserPrimeTime(userId) {
   try {
-    const db = getFirestoreInstance();
-    // نجلب آخر 50 حدث "فتح تطبيق"
+    // Fetch last 50 'app_open' events
     const eventsSnapshot = await db.collection('userBehaviorAnalytics')
       .doc(userId)
       .collection('events')
-      .where('name', '==', 'app_open') // أو session_start
+      .where('name', '==', 'app_open')
       .orderBy('timestamp', 'desc')
       .limit(50)
       .get();
 
-    if (eventsSnapshot.empty) return 20; // الافتراضي: 8 مساءً
+    if (eventsSnapshot.empty) return 20; // Default: 8 PM
 
-    // حساب الساعة الأكثر تكراراً
+    // Count frequency by hour
     const hourCounts = {};
     eventsSnapshot.forEach(doc => {
-      const date = doc.data().timestamp.toDate();
-      // نعدل التوقيت حسب المنطقة الزمنية للجزائر (UTC+1) تقريباً
-      // أو نعتمد على ساعة السيرفر إذا كانت مضبوطة
-      const hour = date.getHours(); 
-      hourCounts[hour] = (hourCounts[hour] || 0) + 1;
+      const data = doc.data();
+      if (data.timestamp) {
+        const date = data.timestamp.toDate();
+        const hour = date.getHours(); 
+        hourCounts[hour] = (hourCounts[hour] || 0) + 1;
+      }
     });
 
-    // إيجاد الساعة ذات أعلى تكرار
+    // Find hour with max frequency
     const primeHour = Object.keys(hourCounts).reduce((a, b) => hourCounts[a] > hourCounts[b] ? a : b);
     
     return parseInt(primeHour);
   } catch (e) {
+    logger.warn(`Failed to calc prime time for ${userId}, using default. Error: ${e.message}`);
     return 20; // Fallback
   }
 }
