@@ -8,6 +8,8 @@ const { enqueueJob } = require('../services/jobs/queue');
 const { runReEngagementManager } = require('../services/ai/managers/notificationManager');
 const logger = require('../utils/logger');
 const { generateSmartStudyStrategy } = require('../services/data/helpers'); 
+const db = getFirestoreInstance(); 
+const embeddingService = require('../services/embeddings'); 
 
 let generateWithFailoverRef; 
 
