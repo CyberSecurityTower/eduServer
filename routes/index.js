@@ -25,6 +25,7 @@ router.post('/log-event', analyticsController.logEvent);
 router.post('/process-session', analyticsController.processSession);
 //runNightlyAnalysis
 router.post('/run-nightly-analysis', adminController.runNightlyAnalysis);
+router.post('/admin/index-lesson', adminController.indexSpecificLesson);
 
 // ✅ هذا هو الرابط الذي سيتصل به الفرونت أند
 router.post('/generate-daily-tasks', tasksController.generateDailyTasks);
