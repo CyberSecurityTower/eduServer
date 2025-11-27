@@ -29,26 +29,40 @@ async function generateEmbedding(text) {
  * دالة البحث عن الفيكتور في Supabase
  * تتطلب وجود دالة في قاعدة البيانات (Postgres Function) اسمها 'match_memory'
  */
-async function findSimilarEmbeddings(queryEmbedding, collectionName, topN = 5, userId = null, minScore = 0.55) {
+async function findSimilarEmbeddings(queryEmbedding, collectionName, topN = 5, filterId = null, minScore = 0.50) {
   try {
-    // استدعاء دالة RPC في Supabase
-    // match_memory هي دالة PL/pgSQL يجب أن تكون قد أنشأتها في لوحة تحكم Supabase
-    const { data: documents, error } = await supabase.rpc('match_memory', {
+    let rpcFunctionName;
+    let params = {
       query_embedding: queryEmbedding,
       match_threshold: minScore,
-      match_count: topN,
-      filter_user_id: userId
-    });
+      match_count: topN
+    };
+
+    // تحديد الدالة المناسبة بناءً على اسم الجدول
+    if (collectionName === 'user_memory_embeddings') {
+      rpcFunctionName = 'match_user_memory';
+      params.filter_user_id = filterId; // هنا نمرر userId
+    } else if (collectionName === 'curriculum_embeddings') {
+      rpcFunctionName = 'match_curriculum';
+      // params.filter_path_id = filterId; // يمكن تفعيلها إذا أردت فلترة المنهج
+    } else {
+      throw new Error(`Unknown collection for vector search: ${collectionName}`);
+    }
+
+    // استدعاء الدالة في Supabase
+    const { data: documents, error } = await supabase.rpc(rpcFunctionName, params);
 
     if (error) throw error;
 
+    // توحيد شكل المخرجات
     return documents.map(doc => ({
-      originalText: doc.original_text, // تأكد من اسم العمود في جدولك
+      originalText: doc.original_text || doc.chunk_text, // التعامل مع اختلاف أسماء الأعمدة
+      lessonTitle: doc.lesson_title || null,
       score: doc.similarity
     }));
 
   } catch (error) {
-    logger.error('Supabase Vector Search Error:', error.message);
+    logger.error(`Supabase Vector Search Error (${collectionName}):`, error.message);
     return [];
   }
 }
