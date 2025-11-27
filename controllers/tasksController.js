@@ -2,29 +2,27 @@
 // controllers/tasksController.js
 'use strict';
 
-const { getFirestoreInstance, admin } = require('../services/data/firestore');
-const { cacheDel } = require('../services/data/helpers');
-const { runPlannerManager } = require('../services/ai/managers/plannerManager');
+// 👇👇👇 هذا السطر هو الأهم والذي كان ناقصاً 👇👇👇
+const supabase = require('../services/data/supabase'); 
+const { generateSmartTodos } = require('../services/ai/managers/todoManager');
 const logger = require('../utils/logger');
-const { generateSmartTodos } = require('../services/ai/managers/todoManager'); // ✅ استيراد الماناجير الجديد
 
-const db = getFirestoreInstance();
 async function generateDailyTasks(req, res) {
   try {
     const { userId, count = 3 } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId required' });
 
-    // 1. استدعاء الـ AI
+    // استدعاء الماناجير
     const tasks = await generateSmartTodos(userId, count);
 
-    // 2. حفظ المهام في Supabase
-    if (tasks.length > 0) {
+    // الحفظ في Supabase
+    if (tasks && tasks.length > 0) {
       const tasksToInsert = tasks.map(t => ({
         user_id: userId,
         title: t.title,
-        type: t.type,
-        priority: t.priority,
-        meta: t.meta,
+        type: t.type || 'general',
+        priority: t.priority || 'medium',
+        meta: t.meta || {},
         status: 'pending',
         created_at: new Date().toISOString()
       }));
@@ -37,29 +35,24 @@ async function generateDailyTasks(req, res) {
 
   } catch (err) {
     logger.error('Generate Tasks Error:', err.message);
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 }
+
+// دالة التحديث (مهمة لكي لا يحدث خطأ عند استدعاء الملف)
 async function updateDailyTasks(req, res) {
   try {
-    const { userId, updatedTasks } = req.body || {};
-    if (!userId || !Array.isArray(updatedTasks)) {
-      return res.status(400).json({ error: 'User ID and updatedTasks array are required.' });
-    }
-    await db.collection('userProgress').doc(userId).set({
-      dailyTasks: { tasks: updatedTasks, generatedAt: admin.firestore.FieldValue.serverTimestamp() }
-    }, { merge: true });
-    cacheDel('progress', userId);
-    res.status(200).json({ success: true, message: 'Daily tasks updated successfully.' });
-  } catch (error) {
-    logger.error('/update-daily-tasks error:', error.stack);
-    res.status(500).json({ error: 'An error occurred while updating daily tasks.' });
+      const { taskId, status } = req.body;
+      if (!taskId) return res.status(400).json({ error: 'Missing taskId' });
+
+      await supabase.from('user_tasks').update({ status }).eq('id', taskId);
+      res.json({ success: true });
+  } catch (e) {
+      res.status(500).json({ error: e.message });
   }
 }
 
-
 module.exports = {
-  updateDailyTasks,
   generateDailyTasks,
-  
+  updateDailyTasks
 };
