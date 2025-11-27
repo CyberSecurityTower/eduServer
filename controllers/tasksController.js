@@ -12,12 +12,14 @@ async function generateDailyTasks(req, res) {
     const { userId, count = 3 } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId required' });
 
-    // استدعاء الماناجير
-    const tasks = await generateSmartTodos(userId, count);
+    // 1. AI يولد المهام
+    const aiTasks = await generateSmartTodos(userId, count);
 
-    // الحفظ في Supabase
-    if (tasks && tasks.length > 0) {
-      const tasksToInsert = tasks.map(t => ({
+    let finalTasks = [];
+
+    // 2. الحفظ في Supabase مع استرجاع البيانات (.select())
+    if (aiTasks && aiTasks.length > 0) {
+      const tasksToInsert = aiTasks.map(t => ({
         user_id: userId,
         title: t.title,
         type: t.type || 'general',
@@ -27,18 +29,24 @@ async function generateDailyTasks(req, res) {
         created_at: new Date().toISOString()
       }));
 
-      const { error } = await supabase.from('user_tasks').insert(tasksToInsert);
+      // 👇👇 التغيير هنا: أضفنا .select() لنحصل على البيانات المحفوظة (مع IDs)
+      const { data: insertedTasks, error } = await supabase
+        .from('user_tasks')
+        .insert(tasksToInsert)
+        .select(); 
+
       if (error) throw error;
+      finalTasks = insertedTasks; // نستخدم البيانات القادمة من الداتابيز
     }
 
-    return res.status(200).json({ success: true, tasks });
+    // 3. إرجاع البيانات الكاملة للفرونت أند
+    return res.status(200).json({ success: true, tasks: finalTasks });
 
   } catch (err) {
     logger.error('Generate Tasks Error:', err.message);
     return res.status(500).json({ error: err.message });
   }
 }
-
 // دالة التحديث (مهمة لكي لا يحدث خطأ عند استدعاء الملف)
 async function updateDailyTasks(req, res) {
   try {
