@@ -21,6 +21,19 @@ async function runCurriculumAgent(userId, userMessage) {
       return '';
     }
     const questionEmbedding = await embeddingServiceRef.generateEmbedding(userMessage);
+    const pathId = 'UAlger3_L1_ITCF'; // مؤقتاً، أو اجلبه من المستخدم
+
+const similarChunks = await embeddingServiceRef.findSimilarEmbeddings(
+  questionEmbedding,
+  'curriculum', // النوع
+  3,
+  pathId // الفلتر
+);
+
+const topContexts = similarChunks.map(chunk => {
+  const title = chunk.metadata?.lesson_title || 'درس';
+  return `[المصدر: ${title}]\n${chunk.text}`;
+});
     if (questionEmbedding.length === 0) return '';
 
     const similarChunks = await embeddingServiceRef.findSimilarEmbeddings(
