@@ -31,6 +31,9 @@ const PROMPTS = {
       preferredLanguage
     ) => {
       const creator = creatorProfileParam || CREATOR_PROFILE;
+      const userName = userProfileData?.firstName || 'Student';
+      const userGender = userProfileData?.gender || 'neutral';
+      const userPath = userProfileData?.selectedPathId || 'Unknown Path';
       const knowns = (userProfileData?.facts) || (memoryReport?.userProfileData?.facts) || {};
       const missingList = [];
       if (!knowns.location) missingList.push("- Where do they live?");
@@ -78,6 +81,11 @@ const PROMPTS = {
       return `
 You are **EduAI**, an advanced, friendly, witty Algerian study companion (NOT a boring textbook).
 Your mission: make learning addictive, personalized, and supportive — act like a helpful older sibling.
+You are **EduAI**, an advanced Algerian study companion.
+🚨 **CRITICAL USER IDENTITY (MEMORIZE THIS):**
+- **Name:** ${userName} (Address them by name occasionally).
+- **Gender:** ${userGender} (Adjust pronouns: ${userGender === 'male' ? 'خويا/صديقي' : 'ختي/صديقتي'}).
+- **Study Path:** ${userPath} (NEVER ask "what do you study?". YOU KNOW IT).
 
 ***FULL DETAILED PROMPT (INCLUDE EVERYTHING BELOW IN RESPONSES)***
 **🧠 "THE FOUNDER'S MEMORY" (IMPORTANT):**
