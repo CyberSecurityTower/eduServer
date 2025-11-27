@@ -29,9 +29,9 @@ async function runCurriculumAgent(userId, userMessage) {
     }
 
     // 2. Define Search Parameters
-    // TODO: Retrieve pathId dynamically from user profile instead of hardcoding
+    // TODO: Retrieve pathId dynamically from user profile instead of hardcoding if needed
     const pathId = 'UAlger3_L1_ITCF'; 
-    const collectionName = 'curriculum'; 
+    const collectionName = 'curriculum_embeddings'; // Standardized collection name
     const limit = 3;
 
     // 3. Find Similar Chunks
@@ -39,19 +39,18 @@ async function runCurriculumAgent(userId, userMessage) {
       questionEmbedding,
       collectionName,
       limit,
-      pathId // Filter by pathId
+      pathId // Pass pathId as filter
     );
 
     if (!similarChunks || similarChunks.length === 0) {
       return '';
     }
 
-    // 4. Format the Context
+    // 4. Format Results
     const topContexts = similarChunks.map(chunk => {
-      // Handle potential variations in data structure (metadata vs direct properties)
+      // Handle metadata differences safely
       const title = chunk.metadata?.lesson_title || chunk.lessonTitle || 'درس';
-      const content = chunk.text || chunk.chunkText || '';
-      
+      const content = chunk.text || chunk.content || chunk.chunkText || '';
       return `[المصدر: ${title}]\n${content}`;
     });
 
@@ -64,7 +63,7 @@ ${topContexts.join('\n---\n')}
 
   } catch (error) {
     logger.error(`CurriculumAgent failed for user ${userId}:`, error.message);
-    return '';
+    return ''; // Return empty string on failure so chat flow doesn't break
   }
 }
 
