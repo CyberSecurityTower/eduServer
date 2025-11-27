@@ -59,8 +59,32 @@ async function updateDailyTasks(req, res) {
       res.status(500).json({ error: e.message });
   }
 }
+async function getDailyTasks(req, res) {
+  try {
+    const { userId } = req.query; // نستخدم query params (GET request)
+    
+    if (!userId) return res.status(400).json({ error: 'userId required' });
 
+    // جلب المهام غير المكتملة (pending)
+    const { data: tasks, error } = await supabase
+      .from('user_tasks')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('status', 'pending')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    return res.status(200).json({ success: true, tasks: tasks || [] });
+
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+}
+
+// لا تنس تصدير الدالة الجديدة في الأسفل
 module.exports = {
   generateDailyTasks,
-  updateDailyTasks
+  updateDailyTasks,
+  getDailyTasks // ✅ مضاف
 };
