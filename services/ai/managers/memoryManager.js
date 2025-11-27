@@ -31,12 +31,11 @@ async function saveMemoryChunk(userId, userMessage, aiReply) {
     if (!embedding || embedding.length === 0) return;
 
     // Supabase Insert
-    const { error } = await supabase.from(COLLECTION_NAME).insert({
+    const { error } = await supabase.from('user_memory_embeddings').insert({
       user_id: userId,
-      user_memory_embeddings: combinedText,
-      embedding: embedding, // Supabase pgvector accepts array directly
-      timestamp: nowISO(),
-      type: 'conversation_exchange'
+      content: combinedText,   
+      embedding: embedding,
+      created_at: nowISO()    
     });
 
     if (error) logger.warn(`[Memory] Insert failed: ${error.message}`);
