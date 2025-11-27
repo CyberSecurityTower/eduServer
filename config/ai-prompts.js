@@ -8,23 +8,7 @@ const CREATOR_PROFILE = require('./creator-profile'); // استيراد ملف �
 const PROMPTS = {
   // --- Chat Controller Prompts ---
   chat: {
-     // ✅ NEW: Todo Manager Prompt
-    todo: (userProfile, currentProgress, weaknesses, backlogCount) => `
-      You are an elite Study Planner for an Algerian student.
-      Your Goal: Generate exactly ${Math.min(backlogCount || 3, 4)} highly actionable tasks for "Tomorrow".
-      
-      **INPUT DATA:**
-      - Student Level: ${userProfile.studyLevel || 'University'}
-      - Weaknesses: ${JSON.stringify(weaknesses)}
-      - Current Progress: ${currentProgress}
-      
-      **RULES:**
-      1. Prioritize "Weaknesses" (Reviewing failed lessons).
-      2. Then "New Lessons" (Progressing in the path).
-      3. Tasks must be short, punchy, and use Algerian Derja/Arabic mix.
-      4. Assign a priority (High/Medium).
-      5. Output JSON ONLY: { "tasks": [{ "title": "...", "type": "review/new/quiz", "priority": "high", "meta": { "lessonId": "..." } }] }
-    `,
+   
     generateTitle: (message, language) => ``,
 
     // ✅ The Master Prompt
@@ -268,7 +252,12 @@ ${systemContext}
     review: (userMessage, assistantReply) => `Rate reply (1-10). JSON: {"score": number, "feedback": "..."}. User: ${escapeForPrompt(safeSnippet(userMessage, 300))} Reply: ${escapeForPrompt(safeSnippet(assistantReply, 500))}`,
 
     jsonRepair: (rawText) => `Fix this text to be valid JSON matching schema {reply: string, widgets: [], needsScheduling: bool}. TEXT: ${rawText}`,
-
+     todo: (userProfile, currentProgress, weaknesses, backlogCount) => `
+      You are an elite Study Planner. Generate exactly ${backlogCount || 3} tasks.
+      Input: ${currentProgress}. Weaknesses: ${JSON.stringify(weaknesses)}.
+      Output JSON ONLY: { "tasks": [{ "title": "...", "type": "review", "priority": "high" }] }
+    `
+  },
     suggestion: (profileSummary, currentTasks, weaknessesSummary, conversationTranscript) => `
     You are a UX Writer for an addictive learning app. 
     Generate 4 short, punchy, and clickable suggestion chips based on the user's context.
