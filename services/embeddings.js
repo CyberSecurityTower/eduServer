@@ -36,13 +36,13 @@ async function findSimilarEmbeddings(queryEmbedding, type, topN = 5, filterId = 
       match_count: topN
     };
 
-    // توجيه الطلب للدالة الصحيحة
-    if (type === 'curriculum') {
+    // ✅ التعديل هنا: نقبل الاسم القصير أو اسم الجدول الكامل
+    if (type === 'curriculum' || type === 'curriculum_embeddings') {
       rpcName = 'match_curriculum';
-      params.filter_path_id = filterId; // هنا نمرر pathId
-    } else if (type === 'memory') {
+      params.filter_path_id = filterId;
+    } else if (type === 'memory' || type === 'user_memory_embeddings') {
       rpcName = 'match_user_memory';
-      params.filter_user_id = filterId; // هنا نمرر userId
+      params.filter_user_id = filterId;
     } else {
       throw new Error(`Unknown embedding type: ${type}`);
     }
@@ -52,8 +52,8 @@ async function findSimilarEmbeddings(queryEmbedding, type, topN = 5, filterId = 
     if (error) throw error;
 
     return data.map(doc => ({
-      text: doc.content,
-      metadata: doc.metadata || {}, // للمنهج فقط
+      text: doc.content, // تأكدنا في SQL أن العمود اسمه content
+      metadata: doc.metadata || {},
       score: doc.similarity
     }));
 
