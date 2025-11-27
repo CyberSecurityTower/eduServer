@@ -18,6 +18,7 @@ router.post('/chat-interactive', chatController.chatInteractive);
 
 // Suggestions (Optional, kept for UI chips)
 router.post('/generate-chat-suggestions', chatController.generateChatSuggestions); // تأكد من تصديرها في chatController
+router.get('/get-daily-tasks', tasksController.getDailyTasks); 
 
 // Analytics
 router.post('/log-event', analyticsController.logEvent);
