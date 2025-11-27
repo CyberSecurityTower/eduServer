@@ -252,102 +252,93 @@ async function calculateUserPrimeTime(userId) {
   }
 }
 async function triggerFullIndexing(req, res) {
-  // 1. حماية الرابط
+  // حماية
   if (req.headers['x-admin-secret'] !== 'my-secret-islam-123') {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  // الرد فوراً لتجنب Timeout في Postman
-  res.json({ message: 'Indexing process started V2 (Relational)... Check logs.' });
+  // رد سريع
+  res.json({ message: 'Started DIRECT indexing (Raw Mode)...' });
 
   try {
-    logger.info('🚀 Starting Relational Indexing...');
-    
-    // 1. جلب محتوى الدروس مباشرة (لأن هذا هو ما يهمنا)
-    const contentSnapshot = await db.collection('lessonsContent').get();
-    
-    if (contentSnapshot.empty) {
-        logger.error('❌ Table lessonsContent is EMPTY. Nothing to index.');
-        return;
+    console.log('🚨 STARTING DIRECT INDEXING FROM LESSONS_CONTENT 🚨');
+
+    // 1. قراءة البيانات مباشرة من الجدول الظاهر في الصورة
+    const { data: lessons, error: readError } = await supabase
+      .from('lessons_content') // الاسم كما في صورتك بالضبط
+      .select('*');
+
+    if (readError) {
+      console.error('❌ CRITICAL DB ERROR:', readError);
+      return;
     }
 
-    logger.info(`Found ${contentSnapshot.size} content documents. Processing...`);
+    if (!lessons || lessons.length === 0) {
+      console.error('⚠️ Table lessons_content is officially EMPTY via direct query.');
+      return;
+    }
 
-    const batchSize = 100;
-    let batch = db.batch();
-    let counter = 0;
-    let totalIndexed = 0;
+    console.log(`✅ SUCCESS: Found ${lessons.length} lessons to index.`);
+    console.log(`📝 First Lesson ID: ${lessons[0].id}`);
 
-    // حلقة تكرار على كل درس
-    for (const doc of contentSnapshot.docs) {
-      const data = doc.data();
-      const content = data.content;
-      const lessonId = doc.id; // في تصميمك الـ ID هو نفسه lessonId
-      const subjectId = data.subject_id || data.subjectId; // قد يكون الاسم مختلفاً في الداتابايز
+    let totalChunks = 0;
 
-      if (!content || content.length < 10) {
-          logger.warn(`Skipping empty lesson: ${lessonId}`);
-          continue;
+    // 2. الحلقة التكرارية
+    for (const lesson of lessons) {
+      const content = lesson.content;
+      
+      if (!content || content.length < 5) {
+        console.log(`Skipping empty lesson: ${lesson.id}`);
+        continue;
       }
 
-      // 2. محاولة جلب Path ID (مهم جداً للفلترة)
-      let pathId = 'General'; // قيمة افتراضية
-      if (subjectId) {
-          // نجلب المادة لنعرف المسار التابعة له
-          const subjectDoc = await db.collection('subjects').doc(subjectId).get();
-          if (subjectDoc.exists) {
-              const subData = subjectDoc.data();
-              pathId = subData.path_id || subData.pathId || 'General';
-          }
-      }
+      // محاولة استنتاج المسار (اختياري)
+      // إذا كان لديك جدول subjects وتعرف العلاقة، يمكن تفعيل هذا الجزء
+      // حالياً سنضعه 'General' لضمان عمل الفهرسة أولاً
+      const pathId = 'UAlger3_L1_ITCF'; // قيمة ثابتة مؤقتة للتجربة، أو اجلبها من subject_id
 
-      // 3. التقطيع (Chunking)
+      // التقطيع (Chunking)
       const chunks = content.match(/[\s\S]{1,1000}/g) || [content];
 
       for (const chunk of chunks) {
-        // توليد الفيكتور
+        // توليد الـ Vector
         const vector = await embeddingService.generateEmbedding(chunk);
-        
-        // تجهيز المستند
-        const newRef = db.collection('curriculumEmbeddings').doc();
-        
-        batch.set(newRef, {
-          content: chunk,
-          embedding: vector,
-          path_id: pathId, // هذا الحقل ضروري لدالة البحث match_curriculum
-          metadata: {
-            lesson_id: lessonId,
-            subject_id: subjectId,
-            source: 'admin_indexer'
-          },
-          created_at: admin.firestore.FieldValue.serverTimestamp()
-        });
 
-        counter++;
-        totalIndexed++;
-
-        // الحفظ على دفعات
-        if (counter >= batchSize) {
-          await batch.commit();
-          logger.info(`Saved batch of ${counter} chunks...`);
-          batch = db.batch();
-          counter = 0;
-          // توقف بسيط لتجنب حظر جوجل (Rate Limit)
-          await new Promise(r => setTimeout(r, 500)); 
+        if (!vector || vector.length === 0) {
+            console.error('⚠️ Google AI returned empty vector. Check API Key.');
+            continue;
         }
+
+        // الحفظ المباشر في curriculum_embeddings
+        const { error: insertError } = await supabase
+          .from('curriculum_embeddings')
+          .insert({
+            path_id: pathId,
+            content: chunk,
+            embedding: vector,
+            metadata: {
+              lesson_id: lesson.id,
+              subject_id: lesson.subject_id, // الاسم كما في الصورة
+              source: 'direct_indexer'
+            },
+            created_at: new Date().toISOString()
+          });
+
+        if (insertError) {
+          console.error('❌ Insert Error:', insertError.message);
+        } else {
+          totalChunks++;
+          if (totalChunks % 5 === 0) console.log(`💾 Indexed ${totalChunks} chunks so far...`);
+        }
+        
+        await new Promise(r => setTimeout(r, 200));
       }
     }
 
-    // حفظ الباقي
-    if (counter > 0) {
-      await batch.commit();
-    }
+    console.log(`🎉 FINISHED! Total chunks indexed: ${totalChunks}`);
 
-    logger.success(`✅ Indexing Finished! Total Chunks: ${totalIndexed}`);
-
-  } catch (e) {
-    logger.error('❌ Indexing Fatal Error:', e.message);
-    console.error(e);
+  } catch (err) {
+    console.error('❌ FATAL SCRIPT ERROR:', err);
   }
 }
 module.exports = {
