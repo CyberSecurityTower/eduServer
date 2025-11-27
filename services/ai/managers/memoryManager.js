@@ -33,7 +33,7 @@ async function saveMemoryChunk(userId, userMessage, aiReply) {
     // Supabase Insert
     const { error } = await supabase.from(COLLECTION_NAME).insert({
       user_id: userId,
-      original_text: combinedText,
+      user_memory_embeddings: combinedText,
       embedding: embedding, // Supabase pgvector accepts array directly
       timestamp: nowISO(),
       type: 'conversation_exchange'
