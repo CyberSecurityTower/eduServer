@@ -252,38 +252,102 @@ async function calculateUserPrimeTime(userId) {
   }
 }
 async function triggerFullIndexing(req, res) {
-  // حماية بسيطة بكلمة سر في الهيدر
+  // 1. حماية الرابط
   if (req.headers['x-admin-secret'] !== 'my-secret-islam-123') {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  // رد سريع عشان ما يصير Timeout في Postman
-  res.json({ message: 'Indexing started in background...' });
+  // الرد فوراً لتجنب Timeout في Postman
+  res.json({ message: 'Indexing process started V2 (Relational)... Check logs.' });
 
   try {
-    const { getFirestoreInstance } = require('../services/data/firestore');
-    const embeddingService = require('../services/embeddings');
-    const db = getFirestoreInstance();
-
-    // 1. جلب كل المسارات
-    const pathsSnapshot = await db.collection('educationalPaths').get();
-    let totalLessons = 0;
-
-    // سنستخدم حلقة تكرارية بسيطة (ليست الأسرع لكنها الأضمن)
-    // ملاحظة: هذا الكود ثقيل، في Render المجاني قد يتوقف إذا كانت البيانات ضخمة
-    // لكنه سيعمل لعدد قليل من الدروس
+    logger.info('🚀 Starting Relational Indexing...');
     
-    // هذا مجرد Pseudo-code للمنطق، عليك تكييفه مع هيكلة بياناتك
-    /* 
-      Loop paths -> Loop subjects -> Loop lessons
-      Get content from 'lessonsContent'
-      Generate Embedding
-      Save to 'curriculumEmbeddings'
-    */
+    // 1. جلب محتوى الدروس مباشرة (لأن هذا هو ما يهمنا)
+    const contentSnapshot = await db.collection('lessonsContent').get();
     
-    logger.info('Background indexing finished');
+    if (contentSnapshot.empty) {
+        logger.error('❌ Table lessonsContent is EMPTY. Nothing to index.');
+        return;
+    }
+
+    logger.info(`Found ${contentSnapshot.size} content documents. Processing...`);
+
+    const batchSize = 100;
+    let batch = db.batch();
+    let counter = 0;
+    let totalIndexed = 0;
+
+    // حلقة تكرار على كل درس
+    for (const doc of contentSnapshot.docs) {
+      const data = doc.data();
+      const content = data.content;
+      const lessonId = doc.id; // في تصميمك الـ ID هو نفسه lessonId
+      const subjectId = data.subject_id || data.subjectId; // قد يكون الاسم مختلفاً في الداتابايز
+
+      if (!content || content.length < 10) {
+          logger.warn(`Skipping empty lesson: ${lessonId}`);
+          continue;
+      }
+
+      // 2. محاولة جلب Path ID (مهم جداً للفلترة)
+      let pathId = 'General'; // قيمة افتراضية
+      if (subjectId) {
+          // نجلب المادة لنعرف المسار التابعة له
+          const subjectDoc = await db.collection('subjects').doc(subjectId).get();
+          if (subjectDoc.exists) {
+              const subData = subjectDoc.data();
+              pathId = subData.path_id || subData.pathId || 'General';
+          }
+      }
+
+      // 3. التقطيع (Chunking)
+      const chunks = content.match(/[\s\S]{1,1000}/g) || [content];
+
+      for (const chunk of chunks) {
+        // توليد الفيكتور
+        const vector = await embeddingService.generateEmbedding(chunk);
+        
+        // تجهيز المستند
+        const newRef = db.collection('curriculumEmbeddings').doc();
+        
+        batch.set(newRef, {
+          content: chunk,
+          embedding: vector,
+          path_id: pathId, // هذا الحقل ضروري لدالة البحث match_curriculum
+          metadata: {
+            lesson_id: lessonId,
+            subject_id: subjectId,
+            source: 'admin_indexer'
+          },
+          created_at: admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        counter++;
+        totalIndexed++;
+
+        // الحفظ على دفعات
+        if (counter >= batchSize) {
+          await batch.commit();
+          logger.info(`Saved batch of ${counter} chunks...`);
+          batch = db.batch();
+          counter = 0;
+          // توقف بسيط لتجنب حظر جوجل (Rate Limit)
+          await new Promise(r => setTimeout(r, 500)); 
+        }
+      }
+    }
+
+    // حفظ الباقي
+    if (counter > 0) {
+      await batch.commit();
+    }
+
+    logger.success(`✅ Indexing Finished! Total Chunks: ${totalIndexed}`);
+
   } catch (e) {
-    logger.error('Indexing failed', e);
+    logger.error('❌ Indexing Fatal Error:', e.message);
+    console.error(e);
   }
 }
 module.exports = {
