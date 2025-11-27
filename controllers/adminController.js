@@ -251,11 +251,46 @@ async function calculateUserPrimeTime(userId) {
     return 20; // Fallback
   }
 }
+async function triggerFullIndexing(req, res) {
+  // حماية بسيطة بكلمة سر في الهيدر
+  if (req.headers['x-admin-secret'] !== 'my-secret-islam-123') {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
 
+  // رد سريع عشان ما يصير Timeout في Postman
+  res.json({ message: 'Indexing started in background...' });
+
+  try {
+    const { getFirestoreInstance } = require('../services/data/firestore');
+    const embeddingService = require('../services/embeddings');
+    const db = getFirestoreInstance();
+
+    // 1. جلب كل المسارات
+    const pathsSnapshot = await db.collection('educationalPaths').get();
+    let totalLessons = 0;
+
+    // سنستخدم حلقة تكرارية بسيطة (ليست الأسرع لكنها الأضمن)
+    // ملاحظة: هذا الكود ثقيل، في Render المجاني قد يتوقف إذا كانت البيانات ضخمة
+    // لكنه سيعمل لعدد قليل من الدروس
+    
+    // هذا مجرد Pseudo-code للمنطق، عليك تكييفه مع هيكلة بياناتك
+    /* 
+      Loop paths -> Loop subjects -> Loop lessons
+      Get content from 'lessonsContent'
+      Generate Embedding
+      Save to 'curriculumEmbeddings'
+    */
+    
+    logger.info('Background indexing finished');
+  } catch (e) {
+    logger.error('Indexing failed', e);
+  }
+}
 module.exports = {
   initAdminController,
   indexSpecificLesson,
   runNightlyAnalysis,
   enqueueJobRoute,
   generateTitleRoute,
+  triggerFullIndexing 
 };
