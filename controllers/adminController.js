@@ -252,96 +252,101 @@ async function calculateUserPrimeTime(userId) {
     return 20; // Fallback
   }
 }
+
 async function triggerFullIndexing(req, res) {
-  // حماية
   if (req.headers['x-admin-secret'] !== 'my-secret-islam-123') {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  // رد سريع
-  res.json({ message: 'Started DIRECT indexing (Raw Mode)...' });
+  res.json({ message: 'Started Contextual Indexing (V3)...' });
 
   try {
-    console.log('🚨 STARTING DIRECT INDEXING FROM LESSONS_CONTENT 🚨');
+    console.log('🚨 STARTING CONTEXTUAL INDEXING 🚨');
 
-    // 1. قراءة البيانات مباشرة من الجدول الظاهر في الصورة
-    const { data: lessons, error: readError } = await supabase
-      .from('lessons_content') // الاسم كما في صورتك بالضبط
+    // 1. جلب المحتوى
+    const { data: contents, error: contentError } = await supabase
+      .from('lessons_content')
       .select('*');
 
-    if (readError) {
-      console.error('❌ CRITICAL DB ERROR:', readError);
+    if (contentError || !contents) {
+      console.error('❌ Error fetching content:', contentError);
       return;
     }
 
-    if (!lessons || lessons.length === 0) {
-      console.error('⚠️ Table lessons_content is officially EMPTY via direct query.');
-      return;
+    // 2. جلب العناوين (Meta Data) من جدول lessons
+    // سنقوم بجلب كل الدروس ونضعها في Map للسرعة
+    const { data: lessonsMeta, error: metaError } = await supabase
+      .from('lessons') // تأكد أن اسم الجدول lessons في Supabase
+      .select('id, title');
+
+    if (metaError) console.error('⚠️ Could not fetch titles:', metaError);
+
+    // تحويل المصفوفة إلى Map ليسهل البحث فيها
+    // النتيجة: { 'les_eco_1': 'مدخل إلى الاقتصاد', ... }
+    const titlesMap = {};
+    if (lessonsMeta) {
+        lessonsMeta.forEach(l => { titlesMap[l.id] = l.title; });
     }
 
-    console.log(`✅ SUCCESS: Found ${lessons.length} lessons to index.`);
-    console.log(`📝 First Lesson ID: ${lessons[0].id}`);
+    console.log(`✅ Found ${contents.length} lessons content to process.`);
 
     let totalChunks = 0;
 
-    // 2. الحلقة التكرارية
-    for (const lesson of lessons) {
-      const content = lesson.content;
+    for (const item of contents) {
+      const rawContent = item.content;
+      const lessonId = item.id;
       
-      if (!content || content.length < 5) {
-        console.log(`Skipping empty lesson: ${lesson.id}`);
-        continue;
-      }
+      // هنا السحر: نجلب العنوان الخاص بهذا الدرس
+      const lessonTitle = titlesMap[lessonId] || 'درس تعليمي'; 
 
-      // محاولة استنتاج المسار (اختياري)
-      // إذا كان لديك جدول subjects وتعرف العلاقة، يمكن تفعيل هذا الجزء
-      // حالياً سنضعه 'General' لضمان عمل الفهرسة أولاً
-      const pathId = 'UAlger3_L1_ITCF'; // قيمة ثابتة مؤقتة للتجربة، أو اجلبها من subject_id
+      if (!rawContent || rawContent.length < 5) continue;
 
-      // التقطيع (Chunking)
-      const chunks = content.match(/[\s\S]{1,1000}/g) || [content];
+      // التقطيع
+      const chunks = rawContent.match(/[\s\S]{1,1000}/g) || [rawContent];
 
       for (const chunk of chunks) {
-        // توليد الـ Vector
-        const vector = await embeddingService.generateEmbedding(chunk);
+        
+        // 🔥 التعديل الجوهري: دمج العنوان مع المحتوى 🔥
+        // هذا النص هو الذي سيقرأه الـ AI ويفهمه
+        const richText = `عنوان الدرس: ${lessonTitle}\n---\n${chunk}`;
 
-        if (!vector || vector.length === 0) {
-            console.error('⚠️ Google AI returned empty vector. Check API Key.');
-            continue;
-        }
+        // توليد الفيكتور للنص "الغني"
+        const vector = await embeddingService.generateEmbedding(richText);
 
-        // الحفظ المباشر في curriculum_embeddings
+        if (!vector || vector.length === 0) continue;
+
+        // الحفظ
         const { error: insertError } = await supabase
           .from('curriculum_embeddings')
           .insert({
-            path_id: pathId,
-            content: chunk,
+            path_id: 'UAlger3_L1_ITCF', // يمكنك تحسين هذا لاحقاً لجلبه ديناميكياً
+            content: richText, // نحفظ النص الغني ليراه الـ AI في الرد
             embedding: vector,
             metadata: {
-              lesson_id: lesson.id,
-              subject_id: lesson.subject_id, // الاسم كما في الصورة
-              source: 'direct_indexer'
+              lesson_id: lessonId,
+              lesson_title: lessonTitle, // نضيف العنوان في الميتادات أيضا
+              subject_id: item.subject_id,
+              source: 'contextual_indexer'
             },
             created_at: new Date().toISOString()
           });
 
-        if (insertError) {
-          console.error('❌ Insert Error:', insertError.message);
-        } else {
-          totalChunks++;
-          if (totalChunks % 5 === 0) console.log(`💾 Indexed ${totalChunks} chunks so far...`);
+        if (!insertError) {
+           totalChunks++;
+           if (totalChunks % 5 === 0) console.log(`💾 Indexed ${totalChunks} contextual chunks...`);
         }
         
         await new Promise(r => setTimeout(r, 200));
       }
     }
 
-    console.log(`🎉 FINISHED! Total chunks indexed: ${totalChunks}`);
+    console.log(`🎉 FINISHED V3! Total contextual chunks: ${totalChunks}`);
 
   } catch (err) {
-    console.error('❌ FATAL SCRIPT ERROR:', err);
+    console.error('❌ FATAL ERROR:', err);
   }
 }
+
 module.exports = {
   initAdminController,
   indexSpecificLesson,
