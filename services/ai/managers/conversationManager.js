@@ -60,7 +60,7 @@ async function runConversationAgent(userId, userMessage) {
       logger.error('runConversationAgent: generateWithFailover is not set.');
       return '';
     }
-    const res = await generateWithFailoverRef('analysis', prompt, { label: 'ConversationAgent', timeoutMs: 5000 });
+    const res = await generateWithFailoverRef('analysis', prompt, { label: 'ConversationAgent', timeoutMs: 25000 });
     const raw = await extractTextFromResult(res);
     const parsed = await ensureJsonOrRepair(raw, 'analysis');
 
