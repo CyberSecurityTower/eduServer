@@ -53,6 +53,7 @@ async function getUserDisplayName(userId) {
   }
 }
 
+
 async function getProfile(userId) {
   try {
     const cached = await cacheGet('profile', userId);
@@ -60,23 +61,28 @@ async function getProfile(userId) {
 
     const { data, error } = await supabase
       .from('ai_memory_profiles')
-      .select('*') // هذا سيجلب عمود facts الجديد
+      .select('*')
       .eq('user_id', userId)
-      .single();
+      .maybeSingle(); // 👈 استخدم maybeSingle بدلاً من single لتجنب الخطأ إذا لم يوجد
 
     if (data) {
       let val = toCamelCase(data);
-      // 🔥 دمج: facts تصبح متاحة مباشرة في الكائن
       if (!val.facts) val.facts = {}; 
       
       await cacheSet('profile', userId, val);
       return val;
     } else {
-      return { profileSummary: 'New user.', facts: {} };
+      // ⚠️ حالة مستخدم جديد: نرجع كائن فارغ لكن صالح
+      console.log(`⚠️ No memory profile found for ${userId}, returning empty default.`);
+      return { 
+          profileSummary: 'New user.', 
+          facts: {}, 
+          aiAgenda: [] 
+      };
     }
   } catch (err) {
     logger.error('getProfile error:', err.message);
-    return { profileSummary: 'No available memory.' };
+    return { profileSummary: 'No available memory.', facts: {} };
   }
 }
 
