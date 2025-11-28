@@ -479,6 +479,37 @@ async function getOptimalStudyTime(userId) {
   return d;
 }
 
+async function scheduleSpacedRepetition(userId, topic, daysDelay) {
+  const db = require('./firestore').getFirestoreInstance(); // أو Supabase مباشرة
+  
+  // حساب التاريخ القادم
+  const triggerDate = new Date();
+  triggerDate.setDate(triggerDate.getDate() + daysDelay);
+  
+  // إضافة المهمة إلى "أجندة الـ AI" وليس كإشعار Push
+  // لأننا نريد أن يسأله الـ AI في الشات: "شفيت على الدرس الفلاني؟"
+  
+  // 1. نجلب الأجندة الحالية
+  const { data } = await supabase.from('ai_memory_profiles').select('ai_agenda').eq('user_id', userId).single();
+  let agenda = data?.ai_agenda || [];
+  
+  // 2. نضيف مهمة المراجعة
+  const newTask = {
+      id: `review_${Date.now()}`,
+      type: 'spaced_review',
+      content: `Ask the user a quick review question about: "${topic}" to test their memory.`,
+      triggerDate: triggerDate.toISOString(),
+      status: 'pending'
+  };
+  
+  agenda.push(newTask);
+  
+  // 3. نحفظ
+  await supabase.from('ai_memory_profiles').update({ ai_agenda: agenda }).eq('user_id', userId);
+  
+  logger.info(`[Spaced Repetition] Scheduled review for ${topic} in ${daysDelay} days.`);
+}
+
 module.exports = {
   initDataHelpers,
   getUserDisplayName,
@@ -496,5 +527,6 @@ module.exports = {
   calculateSafeProgress,
   getSpacedRepetitionCandidates,
   generateSmartStudyStrategy,
-  getOptimalStudyTime
+  getOptimalStudyTime,
+  scheduleSpacedRepetition
 };
