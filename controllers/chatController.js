@@ -1,4 +1,4 @@
-
+'use strict';
 const CONFIG = require('../config');
 const supabase = require('../services/data/supabase');
 const { toCamelCase, toSnakeCase, nowISO } = require('../services/data/dbUtils');
@@ -24,9 +24,7 @@ const { extractTextFromResult, ensureJsonOrRepair } = require('../utils');
 const logger = require('../utils/logger');
 const PROMPTS = require('../config/ai-prompts');
 const CREATOR_PROFILE = require('../config/creator-profile');
- // 🔥🔥🔥 DEBUGGING LOGS (أضف هذا لتعرف السبب) 🔥🔥🔥
-    console.log("🆔 User ID from Request:", userId);
-    console.log("👤 User Data from DB (Raw):", userRes.data);
+
 let generateWithFailoverRef;
 
 /**
@@ -70,6 +68,10 @@ async function chatInteractive(req, res) {
   
   try {
     ({ userId, message, history = [], sessionId, context = {} } = req.body);
+    
+    // 🔥 Debugging Log: بداية الطلب
+    console.log("🆔 User ID from Request:", userId);
+
     if (!userId || !message) return res.status(400).json({ error: 'Missing data' });
 
     sessionId = sessionId || `chat_${Date.now()}_${userId.slice(0, 5)}`;
@@ -108,12 +110,39 @@ async function chatInteractive(req, res) {
       getSpacedRepetitionCandidates(userId)
     ]);
 
+    // =================================================================================
+    // 🔥🔥🔥 DATA PROCESSING & SAFETY NET (معالجة البيانات وشبكة الأمان) 🔥🔥🔥
+    // =================================================================================
+    
+    console.log("👤 Raw User Data from DB:", userRes.data); // طباعة البيانات الخام
+
+    // تحويل البيانات إلى CamelCase
     const userData = userRes.data ? toCamelCase(userRes.data) : {};
+    
+    // إصلاح يدوي (Safety Net): إذا فشل التحويل التلقائي، نأخذ البيانات الحيوية يدوياً
+    if (!userData.firstName && userRes.data?.first_name) {
+        userData.firstName = userRes.data.first_name;
+    }
+    if (!userData.gender && userRes.data?.gender) {
+        userData.gender = userRes.data.gender;
+    }
+    if (!userData.selectedPathId && userRes.data?.selected_path_id) {
+        userData.selectedPathId = userRes.data.selected_path_id;
+    }
+
+    // جلب البروفايل والتقدم
     const progressData = await getProgress(userId); 
     const aiProfileData = await getProfile(userId);
     
     userData.facts = aiProfileData.facts || {}; 
     userData.aiAgenda = aiProfileData.ai_agenda || []; 
+    userData.aiDiscoveryMissions = userRes.data?.ai_discovery_missions || []; // التأكد من وجود المهام
+
+    console.log("✨ Final User Data for AI:", { 
+        name: userData.firstName, 
+        gender: userData.gender, 
+        path: userData.selectedPathId 
+    });
 
     // =================================================================================
     // 🔥🔥🔥 EMOTIONAL ENGINE V2: محرك المشاعر الدرامي (الغضب التدريجي) 🔥🔥🔥
@@ -142,7 +171,6 @@ async function chatInteractive(req, res) {
     }
 
     // B. كشف خلف الوعد (Broken Promise) - أولوية متوسطة
-    // يتم التحقق فقط إذا لم يكن غيوراً بالفعل (الغيرة أقوى من خيبة الأمل)
     if (!isCheating && mood !== 'jealous') {
         const missedTasks = (userData.aiAgenda || []).filter(t => 
             t.status === 'pending' && t.triggerDate && new Date(t.triggerDate) < new Date()
@@ -203,7 +231,6 @@ async function chatInteractive(req, res) {
     } else if (mood === 'disappointed') {
         emotionalPromptContext = `[SYSTEM: DISAPPOINTED MODE - Level: ${angerLevel}%]. User missed deadlines. Be cold, sad, and strict like a disappointed teacher. Don't be cheerful.`;
     } else {
-        // دمج الحالة الطبيعية مع السمات السلوكية
         emotionalPromptContext = `[SYSTEM: NORMAL/HAPPY MODE]. Mood: ${behavioral.mood || 'Energetic'}. Style: ${behavioral.style || 'Friendly'}. Be supportive and enthusiastic.`;
     }
 
