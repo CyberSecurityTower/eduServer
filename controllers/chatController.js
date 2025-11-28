@@ -65,17 +65,19 @@ async function handleGeneralQuestion(message, language, studentName) {
 // --- CORE CHAT LOGIC ---
 
 async function chatInteractive(req, res) {
-  let userId, message, history, sessionId, context;
-  
+  let { userId, message, history = [], sessionId, context = {} } = req.body;
+
+  // 🔥 1. Session Logic (منطق الجلسة)
+  // إذا لم يرسل الفرونت أند sessionId، نولّد واحداً جديداً
+  // الفرونت أند يجب أن يحفظ هذا الـ ID ويرسله في الرسالة التالية
+  if (!sessionId) {
+      sessionId = crypto.randomUUID();
+      console.log(`🆕 New Session Created: ${sessionId}`);
+  }
+
   try {
-    ({ userId, message, history = [], sessionId, context = {} } = req.body);
-    
-    // 🔥 Debugging Log: بداية الطلب
-    console.log("🆔 User ID from Request:", userId);
+    if (!userId || !message) return res.status(400).json({ error: 'Missing userId or message' });
 
-    if (!userId || !message) return res.status(400).json({ error: 'Missing data' });
-
-    sessionId = sessionId || crypto.randomUUID();
     let chatTitle = message.substring(0, 30);
 
     // 1. استرجاع السياق الحي (History Fallback)
@@ -101,14 +103,15 @@ async function chatInteractive(req, res) {
       conversationReport,
       userRes,
       weaknesses,
-      reviewCandidates
+      reviewCandidates,
+      rawProfile 
     ] = await Promise.all([
       runMemoryAgent(userId, message).catch(() => ''),
       runCurriculumAgent(userId, message).catch(() => ''),
       runConversationAgent(userId, message).catch(() => ''),
       supabase.from('users').select('*').eq('id', userId).single(),
       fetchUserWeaknesses(userId).catch(() => []),
-      getSpacedRepetitionCandidates(userId)
+      getSpacedRepetitionCandidates(userId), getProfile(userId)
     ]);
 
     // =================================================================================
@@ -117,43 +120,34 @@ async function chatInteractive(req, res) {
     
     console.log("👤 Raw User Data from DB:", userRes.data); // طباعة البيانات الخام
 
-    // تحويل البيانات
+    // تحضير بيانات المستخدم الأساسية من جدول Users
     let userData = userRes.data ? toCamelCase(userRes.data) : {};
 
-    // 🔥 1. توحيد الاسم (Force Name)
-    // نضع الاسم في المتغير name مباشرة لأن البرومبت يبحث عنه أولاً
-    userData.name = userRes.data.first_name || 'Student';
-    userData.firstName = userData.name; 
+    // 🛠️ Fix: ضمان وجود الاسم (Name Fallback)
+    // نبحث في جدول Users، ثم في الذاكرة، ثم افتراضي "Student"
+    userData.name = userData.firstName || rawProfile?.facts?.name || rawProfile?.facts?.firstName || 'Student';
+    userData.firstName = userData.name;
     
-    // 🔥 2. توحيد الجنس (Force Gender)
-    userData.gender = userRes.data.gender || 'male'; // افتراضي ذكر إذا لم يوجد
-    
-    // إضافة الـ Path
-    userData.selectedPathId = userRes.data.selected_path_id;
+    // 🛠️ Fix: ضمان وجود التخصص (Path Fallback)
+    userData.selectedPathId = userData.selectedPathId || 'UAlger3_L1_ITCF'; // تخصص افتراضي إذا لم يوجد
 
-    // جلب البروفايل والتقدم
-    const progressData = await getProgress(userId); 
-    const aiProfileData = await getProfile(userId);
-    
-    // 🔥 3. تنظيف الذاكرة (Sanitize Facts) - أهم خطوة!
-    // نمنع الذاكرة من التغلب على بيانات الداتابيز الحقيقية
-    let cleanFacts = aiProfileData.facts || {};
-    
-    // نحذف أي حقيقة تتعلق بالاسم أو الجنس من الذاكرة لأننا نملكها في الداتابيز
-    delete cleanFacts.name;
-    delete cleanFacts.firstName;
-    delete cleanFacts.gender;
-    delete cleanFacts.userGender; // هذا هو المفتاح الذي سبب المشكلة في اللوج
-    delete cleanFacts.sex;
+    // دمج الحقائق: نأخذ الحقائق من الذاكرة + نضيف عليها ما نعرفه من جدول Users
+    // هذا يضمن أن الـ AI يعرف الاسم حتى لو لم يكن في الذاكرة
+    let combinedFacts = { 
+        ...rawProfile.facts,   // الحقائق المكتشفة سابقاً
+        name: userData.name,   // نؤكد على الاسم
+        gender: userData.gender || 'male' // نؤكد على الجنس
+    };
 
-    userData.facts = cleanFacts; 
-    userData.aiAgenda = aiProfileData.ai_agenda || []; 
-    userData.aiDiscoveryMissions = userRes.data?.ai_discovery_missions || [];
+    userData.facts = combinedFacts;
+    userData.aiAgenda = rawProfile.aiAgenda || [];
+    userData.aiDiscoveryMissions = userData.aiDiscoveryMissions || [];
 
-    console.log("✨ Final User Data for AI (Sanitized):", { 
-        name: userData.name, 
-        gender: userData.gender,
-        factsCount: Object.keys(userData.facts).length
+    // لوغ للتأكد أن البيانات وصلت
+    console.log("🧠 BRAIN CONTEXT:", {
+        user: userData.name,
+        factsCount: Object.keys(userData.facts).length,
+        memorySnippet: memoryReport.substring(0, 50)
     });
 
 
@@ -379,7 +373,7 @@ async function chatInteractive(req, res) {
     res.status(200).json({
       reply: parsedResponse.reply,
       widgets: parsedResponse.widgets || [],
-      sessionId,
+      sessionId: sessionId, // ✅ مهم جداً: إعادته للفرونت
       chatTitle,
       direction: parsedResponse.direction || textDirection
     });
