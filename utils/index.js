@@ -120,41 +120,38 @@ async function ensureJsonOrRepair(rawText, repairPool = 'review') {
   }
 }
 /**
- * دالة الوعي الزمني الخاصة بالجزائر
- * تعيد الوقت + السياق النفسي للطالب
+ * دالة الوعي الزمني (النسخة المعتمدة على Intl)
+ * تحل مشكلة اختلاف الأيام بدقة
  */
 function getAlgiersTimeContext() {
   const now = new Date();
   
-  // 1. الحساب اليدوي: جلب ساعة غرينتش (UTC) وإضافة 1
-  let hour = now.getUTCHours() + 1;
-  let minute = now.getUTCMinutes();
-  
-  // تصحيح اليوم والساعة في حال تجاوزنا منتصف الليل (مثلاً 23:00 UTC هي 00:00 عندنا)
-  // ملاحظة: لتبسيط الكود، سنركز على الساعة. لتحديد اليوم بدقة تامة نحتاج logic أطول
-  // لكن هذا يكفي بنسبة 99%
-  if (hour >= 24) {
-    hour = hour - 24;
-  }
+  // نطلب من النظام استخراج الوقت واليوم حسب توقيت الجزائر تحديداً
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Africa/Algiers',
+    hour12: false,
+    weekday: 'long',
+    hour: 'numeric',
+    minute: 'numeric'
+  });
 
-  // تنسيق الدقائق لتظهر بصفر (مثلاً 05 وليس 5)
-  const minuteString = minute < 10 ? `0${minute}` : minute;
-  const timeString = `${hour}:${minuteString}`;
+  const parts = formatter.formatToParts(now);
   
-  // تحديد اليوم (تقريبي بناءً على السيرفر)
-  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const dayIndex = now.getUTCDay(); // قد يكون متأخراً بيوم إذا كنا بين 11 ليلاً ومنتصف الليل، لكنه مقبول حالياً
-  const day = days[dayIndex];
+  // استخراج القيم الصحيحة
+  const dayName = parts.find(p => p.type === 'weekday').value; // سيخرج "Friday"
+  const hour = parseInt(parts.find(p => p.type === 'hour').value, 10);
+  const minute = parseInt(parts.find(p => p.type === 'minute').value, 10);
+  
+  const timeString = `${hour}:${minute < 10 ? '0' + minute : minute}`;
 
-  // 2. تحليل "الفايب" (نفس المنطق السابق)
+  // تحليل الفايب (Vibe)
   let timeVibe = "";
-
   if (hour >= 5 && hour < 9) {
     timeVibe = "Early Morning Grind 🌅";
   } else if (hour >= 9 && hour < 12) {
     timeVibe = "Active Study Hours 📚";
   } else if (hour >= 12 && hour < 14) {
-    timeVibe = "Lunch/Nap Time 🥪";
+    timeVibe = "Lunch/Nap Time 🥪"; // وقت الجمعة = وقت الطعام والراحة
   } else if (hour >= 14 && hour < 18) {
     timeVibe = "Afternoon Push ☕";
   } else if (hour >= 18 && hour < 22) {
@@ -162,19 +159,23 @@ function getAlgiersTimeContext() {
   } else if (hour >= 22 && hour < 24) {
     timeVibe = "Late Night 🦉";
   } else if (hour >= 0 && hour < 5) {
-    // هنا المصيبة، إذا كانت الساعة 00 إلى 05 صباحاً
-    timeVibe = "Sleep Deprivation! 😴 User should be sleeping.";
+    timeVibe = "Sleep Deprivation! 😴 Go to sleep.";
   }
 
-  const isWeekend = (day === 'Friday' || day === 'Saturday');
-  const dayContext = isWeekend ? "Weekend" : "Week day";
+  // التعامل مع الجمعة (يوم مقدس وعطلة)
+  const isWeekend = (dayName === 'Friday' || dayName === 'Saturday');
+  let dayContext = isWeekend ? "Weekend" : "Week day";
+  
+  if (dayName === 'Friday') {
+      dayContext = "Friday (Holy day & Family time)";
+  }
 
   return {
-    fullTime: `${day}, ${timeString} (Algiers Time)`,
+    fullTime: `${dayName}, ${timeString} (Algiers Time)`,
     hour: hour,
     vibe: timeVibe,
     isWeekend: isWeekend,
-    contextSummary: `Current Time in Algeria: ${timeString}.\nStatus: ${timeVibe}.`
+    contextSummary: `Current Time in Algeria: ${timeString}. Day: ${dayName} (${dayContext}).\nStatus: ${timeVibe}.`
   };
 }
 module.exports = {
