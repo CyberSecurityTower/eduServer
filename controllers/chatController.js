@@ -119,29 +119,42 @@ async function chatInteractive(req, res) {
     // تحويل البيانات
     let userData = userRes.data ? toCamelCase(userRes.data) : {};
 
-    // 🔥 تصحيح التسمية (Mapping) 🔥
-    // نضع الاسم في المتغير firstName لأن البرومبت يبحث عنه هناك
-    userData.firstName = userRes.data.first_name || userData.name || 'Student';
-    userData.gender = userRes.data.gender || 'neutral';
+    // 🔥 1. توحيد الاسم (Force Name)
+    // نضع الاسم في المتغير name مباشرة لأن البرومبت يبحث عنه أولاً
+    userData.name = userRes.data.first_name || 'Student';
+    userData.firstName = userData.name; 
+    
+    // 🔥 2. توحيد الجنس (Force Gender)
+    userData.gender = userRes.data.gender || 'male'; // افتراضي ذكر إذا لم يوجد
     
     // إضافة الـ Path
     userData.selectedPathId = userRes.data.selected_path_id;
-
-    console.log("✨ Final Data sent to Prompt:", userData); 
 
     // جلب البروفايل والتقدم
     const progressData = await getProgress(userId); 
     const aiProfileData = await getProfile(userId);
     
-    userData.facts = aiProfileData.facts || {}; 
-    userData.aiAgenda = aiProfileData.ai_agenda || []; 
-    userData.aiDiscoveryMissions = userRes.data?.ai_discovery_missions || []; // التأكد من وجود المهام
+    // 🔥 3. تنظيف الذاكرة (Sanitize Facts) - أهم خطوة!
+    // نمنع الذاكرة من التغلب على بيانات الداتابيز الحقيقية
+    let cleanFacts = aiProfileData.facts || {};
+    
+    // نحذف أي حقيقة تتعلق بالاسم أو الجنس من الذاكرة لأننا نملكها في الداتابيز
+    delete cleanFacts.name;
+    delete cleanFacts.firstName;
+    delete cleanFacts.gender;
+    delete cleanFacts.userGender; // هذا هو المفتاح الذي سبب المشكلة في اللوج
+    delete cleanFacts.sex;
 
-    console.log("✨ Final User Data for AI:", { 
-        name: userData.firstName, 
-        gender: userData.gender, 
-        path: userData.selectedPathId 
+    userData.facts = cleanFacts; 
+    userData.aiAgenda = aiProfileData.ai_agenda || []; 
+    userData.aiDiscoveryMissions = userRes.data?.ai_discovery_missions || [];
+
+    console.log("✨ Final User Data for AI (Sanitized):", { 
+        name: userData.name, 
+        gender: userData.gender,
+        factsCount: Object.keys(userData.facts).length
     });
+
 
     // =================================================================================
     // 🔥🔥🔥 EMOTIONAL ENGINE V2: محرك المشاعر الدرامي (الغضب التدريجي) 🔥🔥🔥
