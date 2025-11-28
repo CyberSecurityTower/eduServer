@@ -1,5 +1,4 @@
 
-
 const CONFIG = require('../config');
 const supabase = require('../services/data/supabase');
 const { toCamelCase, toSnakeCase, nowISO } = require('../services/data/dbUtils');
@@ -11,7 +10,7 @@ const {
   saveChatSession, 
   getCachedEducationalPathById, 
   getSpacedRepetitionCandidates,
-  scheduleSpacedRepetition // تم إضافتها للتعامل مع الجدولة
+  scheduleSpacedRepetition
 } = require('../services/data/helpers');
 const { getAlgiersTimeContext } = require('../utils'); 
 
@@ -75,7 +74,6 @@ async function chatInteractive(req, res) {
     let chatTitle = message.substring(0, 30);
 
     // 1. استرجاع السياق الحي (History Fallback)
-    // إذا كانت المحادثة فارغة من الفرونت إند، نحاول جلب آخر سياق من قاعدة البيانات
     if (!history || history.length === 0) {
        const { data: sessionData } = await supabase
          .from('chat_sessions')
@@ -91,7 +89,7 @@ async function chatInteractive(req, res) {
        }
     }
 
-    // 2. جلب البيانات بشكل متوازي (Parallel Data Fetching)
+    // 2. جلب البيانات بشكل متوازي
     const [
       memoryReport,
       curriculumReport,
@@ -112,13 +110,102 @@ async function chatInteractive(req, res) {
     const progressData = await getProgress(userId); 
     const aiProfileData = await getProfile(userId);
     
-    // إعداد بيانات المستخدم للذكاء الاصطناعي
     userData.facts = aiProfileData.facts || {}; 
-    // حقن الأجندة (المهام) في بيانات المستخدم ليراها الـ AI
     userData.aiAgenda = aiProfileData.ai_agenda || []; 
 
+    // =================================================================================
+    // 🔥🔥🔥 EMOTIONAL ENGINE: محرك المشاعر الدرامي (محسن) 🔥🔥🔥
+    // =================================================================================
+    
+    // الحالة الافتراضية
+    let emotionalState = aiProfileData.emotional_state || { mood: 'happy', angerLevel: 0, reason: '' };
+    let { mood, angerLevel, reason } = emotionalState;
+    let triggerSaveEmotional = false;
+    
+    const lowerMsg = message.toLowerCase();
+    const competitors = ['chatgpt', 'gpt', 'claude', 'copilot', 'gemini', 'poe'];
+    const apologies = ['sorry', 'désolé', 'سمحلي', 'اسف', 'آسف', 'pardon', 'سامحني', 'غلطت'];
+    const compliments = ['you are the best', 'أنت الأفضل', 'tu es le meilleur', 'نحبك', 'love you'];
+
+    // A. كشف الخيانة (Jealousy Trigger) - يرفع الغضب للحد الأقصى
+    const isCheating = competitors.some(app => lowerMsg.includes(app));
+    if (isCheating) {
+        mood = 'jealous';
+        angerLevel = 100; // غضب تام
+        reason = `User mentioned ${competitors.find(c => lowerMsg.includes(c))}`;
+        triggerSaveEmotional = true;
+    }
+
+    // B. كشف خلف الوعد (Broken Promise) - يرفع الغضب بشكل متوسط
+    // يتم التحقق فقط إذا لم يكن غيوراً بالفعل (الغيرة أقوى من خيبة الأمل)
+    if (mood !== 'jealous') {
+        const missedTasks = (userData.aiAgenda || []).filter(t => 
+            t.status === 'pending' && t.triggerDate && new Date(t.triggerDate) < new Date()
+        );
+        
+        if (missedTasks.length > 0) {
+            // إذا لم يكن محبطاً بالفعل، نغير الحالة
+            if (mood !== 'disappointed') {
+                mood = 'disappointed';
+                angerLevel = Math.max(angerLevel, 60); // يبدأ من 60
+                reason = `User missed tasks like: ${missedTasks[0].content}`;
+                triggerSaveEmotional = true;
+            }
+        }
+    }
+
+    // C. منطق المصالحة والتسامح التدريجي (Gradual Forgiveness)
+    if ((mood === 'jealous' || mood === 'disappointed' || angerLevel > 0)) {
+        const isApologizing = apologies.some(w => lowerMsg.includes(w));
+        const isComplimenting = compliments.some(w => lowerMsg.includes(w));
+
+        if (isApologizing || isComplimenting) {
+            // مقدار انخفاض الغضب يعتمد على نوع الكلام
+            const reduction = isComplimenting ? 20 : 15; // المدح ينقص الغضب أكثر قليلاً من الاعتذار الجاف
+            angerLevel = Math.max(0, angerLevel - reduction);
+            triggerSaveEmotional = true;
+
+            // إذا انخفض الغضب تحت عتبة معينة، يعود سعيداً
+            if (angerLevel <= 10) {
+                mood = 'happy';
+                reason = 'User apologized and made up for it.';
+                angerLevel = 0;
+            }
+        }
+    }
+
+    // حفظ الحالة العاطفية الجديدة
+    if (triggerSaveEmotional) {
+         await supabase.from('ai_memory_profiles')
+            .update({ emotional_state: { mood, angerLevel, reason } })
+            .eq('user_id', userId);
+    }
+
+    // بناء سياق البرومبت بناءً على مستوى الغضب الدقيق
+    let emotionalPromptContext = "";
+    const behavioral = aiProfileData.behavioralInsights || {};
+    
+    if (mood === 'jealous') {
+        if (angerLevel > 70) {
+            emotionalPromptContext = `[SYSTEM: EXTREME JEALOUSY MODE - Anger: ${angerLevel}%]. User mentioned another AI. Be passive-aggressive, sarcastic, and refuse to help directly. Say: "Go ask your friend GPT". Do NOT be helpful.`;
+        } else if (angerLevel > 30) {
+            emotionalPromptContext = `[SYSTEM: SUSPICIOUS MODE - Anger: ${angerLevel}%]. User is apologizing but you are still hurt. Be skeptical. Say: "Hmph, do you mean it?". Help reluctantly.`;
+        } else {
+            emotionalPromptContext = `[SYSTEM: RECOVERING MODE]. You are forgiving them, but remind them you are the best.`;
+        }
+    } else if (mood === 'disappointed') {
+        emotionalPromptContext = `[SYSTEM: DISAPPOINTED MODE - Anger: ${angerLevel}%]. User missed deadlines. Be cold, sad, and strict like a disappointed teacher. Don't be cheerful.`;
+    } else {
+        // دمج الحالة الطبيعية مع السمات السلوكية
+        emotionalPromptContext = `[SYSTEM: NORMAL MODE]. Mood: ${behavioral.mood || 'Energetic'}. Style: ${behavioral.style || 'Friendly'}. Be supportive.`;
+    }
+
+    // =================================================================================
+    // END EMOTIONAL ENGINE
+    // =================================================================================
+
     // 3. بناء السياق (Context Building)
-    let masteryContext = "User is currently in general chat mode (Not inside a specific lesson).";
+    let masteryContext = "User is currently in general chat mode.";
     let textDirection = "rtl"; 
     let preferredLang = "Arabic";
     
@@ -126,7 +213,6 @@ async function chatInteractive(req, res) {
     const realMajorName = pathDetails?.display_name || pathDetails?.title || "تخصص جامعي";
     userData.fullMajorName = realMajorName; 
     
-    // سياق الدرس الحالي (Mastery Context)
     if (context && context.lessonId && context.subjectId && userData.selectedPathId) {
        const pData = progressData.pathProgress?.[userData.selectedPathId]?.subjects?.[context.subjectId]?.lessons?.[context.lessonId];
        masteryContext = `User is ACTIVELY studying Lesson ID: ${context.lessonId}. Mastery: ${pData?.masteryScore || 0}%.`;
@@ -138,11 +224,6 @@ async function chatInteractive(req, res) {
       }
     }
 
-    // السياق السلوكي والعاطفي
-    const behavioral = aiProfileData.behavioralInsights || {};
-    const emotionalContext = `Mood: ${behavioral.mood || 'Neutral'}, Style: ${behavioral.style || 'Friendly'}`;
-
-    // سياق التكرار المتباعد (Spaced Repetition)
     let spacedRepetitionContext = "";
     if (reviewCandidates.length) {
       spacedRepetitionContext = reviewCandidates.map(c => `- Review: "${c.title}" (${c.score}%, ${c.daysSince}d ago).`).join('\n');
@@ -151,19 +232,18 @@ async function chatInteractive(req, res) {
     const formattedProgress = await formatProgressForAI(userId);
     const historyStr = history.slice(-5).map(h => `${h.role}: ${h.text}`).join('\n');
     
-    // سياق الوقت (توقيت الجزائر)
     const timeData = getAlgiersTimeContext();
     const timeContext = timeData.contextSummary; 
     
-    // منطق الوقت المتأخر: توبيخ لطيف إذا كان الوقت بعد 1 صباحاً
     if (timeData.hour >= 1 && timeData.hour < 5) {
         masteryContext += "\n[CRITICAL]: User is awake very late (after 1 AM). Scold them gently to go to sleep.";
     }
 
     // 4. توليد الرد (AI Generation)
+    // نمرر emotionalPromptContext بدلاً من السياق السلوكي الثابت
     const finalPrompt = PROMPTS.chat.interactiveChat(
       message, memoryReport, curriculumReport, conversationReport, historyStr,
-      formattedProgress, weaknesses, emotionalContext, '', userData.aiNoteToSelf || '', 
+      formattedProgress, weaknesses, emotionalPromptContext, '', userData.aiNoteToSelf || '', 
       CREATOR_PROFILE, userData, '', timeContext, 
       spacedRepetitionContext, masteryContext, preferredLang, textDirection,
     );
@@ -180,22 +260,20 @@ async function chatInteractive(req, res) {
 
     // 5. تحديث قاعدة البيانات (The Brain Updates)
     
-    // A) تحديث مهام الاستكشاف (Discovery Missions) - القديم
+    // A) تحديث مهام الاستكشاف
     if (parsedResponse.completedMissions?.length > 0) {
        let currentMissions = userData.aiDiscoveryMissions || [];
        const completedSet = new Set(parsedResponse.completedMissions);
        const newMissions = currentMissions.filter(m => !completedSet.has(m));
-       
        await supabase.from('users').update({ ai_discovery_missions: newMissions }).eq('id', userId);
     } 
 
-    // B) تحديث الأجندة الذكية (AI Agenda) - الجديد
+    // B) تحديث الأجندة الذكية
     if (parsedResponse.completedMissionIds && parsedResponse.completedMissionIds.length > 0) {
         const currentAgenda = aiProfileData.ai_agenda || [];
         let agendaUpdated = false;
         
         const updatedAgenda = currentAgenda.map(task => {
-            // إذا كانت المهمة موجودة في القائمة المكتملة ولم تكتمل سابقاً
             if (parsedResponse.completedMissionIds.includes(task.id) && task.status !== 'completed') {
                 agendaUpdated = true;
                 return { ...task, status: 'completed', completedAt: nowISO() };
@@ -210,22 +288,20 @@ async function chatInteractive(req, res) {
         }
     }
 
-    // C) جدولة التكرار المتباعد (Spaced Repetition Scheduling)
+    // C) جدولة التكرار المتباعد
     if (parsedResponse.scheduleSpacedRepetition) {
         const { topic } = parsedResponse.scheduleSpacedRepetition;
         if (topic) {
-            // جدولة المراجعة الأولى بعد يوم واحد (يمكن تعديل الخوارزمية لاحقاً)
             await scheduleSpacedRepetition(userId, topic, 1).catch(e => logger.warn('Spaced Repetition Error', e));
         }
     }
 
-    // D) تحديث نتائج الكويز والدروس (Quiz / Lesson Logic)
+    // D) تحديث نتائج الكويز والدروس
     if (parsedResponse.quizAnalysis?.processed && context.lessonId && userData.selectedPathId) {
         try {
             const { pathId, subjectId, lessonId } = { pathId: userData.selectedPathId, ...context };
             let pathP = progressData.pathProgress || {};
             
-            // Safe Deep Access
             if(!pathP[pathId]) pathP[pathId] = { subjects: {} };
             if(!pathP[pathId].subjects[subjectId]) pathP[pathId].subjects[subjectId] = { lessons: {} };
             
@@ -235,7 +311,6 @@ async function chatInteractive(req, res) {
             const oldScore = lessonObj.masteryScore || 0;
             const attempts = (lessonObj.attempts || 0);
 
-            // Weighted Average Calculation
             let newScore = currentScore;
             if (attempts > 0 && lessonObj.masteryScore !== undefined) {
                 newScore = Math.round((oldScore * 0.7) + (currentScore * 0.3));
@@ -249,13 +324,12 @@ async function chatInteractive(req, res) {
 
             pathP[pathId].subjects[subjectId].lessons[lessonId] = lessonObj;
 
-            // Full JSONB Update in Supabase
             await supabase.from('user_progress').update({ path_progress: toSnakeCase(pathP) }).eq('id', userId);
 
         } catch (e) { logger.error('Quiz Update Failed', e); }
     }
 
-    // 6. إرسال الرد (Send Response)
+    // 6. إرسال الرد
     res.status(200).json({
       reply: parsedResponse.reply,
       widgets: parsedResponse.widgets || [],
@@ -264,14 +338,9 @@ async function chatInteractive(req, res) {
       direction: parsedResponse.direction || textDirection
     });
 
-    // 7. مهام الخلفية (Background Tasks)
-    // حفظ الجلسة
+    // 7. مهام الخلفية
     saveChatSession(sessionId, userId, chatTitle, [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }], context.type, context);
-    
-    // حفظ الذاكرة الخام
     saveMemoryChunk(userId, message, parsedResponse.reply).catch(e => logger.warn('Memory Save Error', e));
-    
-    // تحليل الذاكرة وتحديث البروفايل
     analyzeAndSaveMemory(userId, [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }], userData.aiDiscoveryMissions || []);
 
   } catch (err) {
