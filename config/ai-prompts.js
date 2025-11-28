@@ -20,6 +20,7 @@ const PROMPTS = {
       formattedProgress,
       weaknesses,
       emotionalContext = '',
+      emotionalPromptContext, 
       romanceContext = '',
       noteToSelfParam = '',
       creatorProfileParam = null,
@@ -28,7 +29,8 @@ const PROMPTS = {
       systemContext = '',
       masteryContext,
       preferredDirection,
-      preferredLanguage
+      preferredLanguage,
+      
     ) => {
       const creator = creatorProfileParam || CREATOR_PROFILE;
       const userName = userProfileData?.firstName || 'Student';
