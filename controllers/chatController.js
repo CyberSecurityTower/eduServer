@@ -8,6 +8,8 @@ const {
   getProfile, getProgress, fetchUserWeaknesses, formatProgressForAI,
   saveChatSession, getCachedEducationalPathById, getSpacedRepetitionCandidates
 } = require('../services/data/helpers');
+const { getAlgiersTimeContext } = require('../utils'); 
+
 
 // Managers
 const { runMemoryAgent, saveMemoryChunk, analyzeAndSaveMemory } = require('../services/ai/managers/memoryManager');
@@ -128,15 +130,22 @@ async function chatInteractive(req, res) {
 
     const formattedProgress = await formatProgressForAI(userId);
     const historyStr = history.slice(-5).map(h => `${h.role}: ${h.text}`).join('\n');
-
+    // 🔥🔥 التعديل هنا: استخدام دالة توقيت الجزائر 🔥🔥
+    const timeData = getAlgiersTimeContext();
+    const timeContext = timeData.contextSummary; 
+    
+    // منطق إضافي ذكي: إذا كان الوقت متأخراً جداً (بعد 1 ليلاً)، نغير "المزاج العاطفي"
+    if (timeData.hour >= 1 && timeData.hour < 5) {
+        // نضيف ملاحظة للـ AI أن يوبخ الطالب بحنية
+        masteryContext += "\n[CRITICAL]: User is awake very late (after 1 AM). Scold them gently to go to sleep.";
+    }
     // 3. AI Generation
     const finalPrompt = PROMPTS.chat.interactiveChat(
       message, memoryReport, curriculumReport, conversationReport, historyStr,
       formattedProgress, weaknesses, emotionalContext, '', userData.aiNoteToSelf || '', 
-      CREATOR_PROFILE, userData, '', `Time: ${new Date().toLocaleTimeString()}`, 
+      CREATOR_PROFILE, userData, '', timeContext, 
       spacedRepetitionContext, masteryContext, preferredLang, textDirection,
     );
-
     const isAnalysis = context.isSystemInstruction || message.includes('[SYSTEM REPORT');
     const modelResp = await generateWithFailoverRef('chat', finalPrompt, { 
       label: 'GenUI-Chat', 
