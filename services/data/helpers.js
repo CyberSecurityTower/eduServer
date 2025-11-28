@@ -22,7 +22,6 @@ function initDataHelpers(dependencies) {
   generateWithFailoverRef = dependencies.generateWithFailover;
   logger.info('Data Helpers initialized (Supabase Native).');
 }
-sessionId = crypto.randomUUID()
 // ---------- Cache instances ----------
 const DEFAULT_TTL = CONFIG.CACHE_TTL_MS || 1000 * 60 * 60;
 const educationalPathCache = new LRUCache(50, DEFAULT_TTL);
