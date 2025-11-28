@@ -33,8 +33,19 @@ const PROMPTS = {
       
     ) => {
       const creator = creatorProfileParam || CREATOR_PROFILE;
-      const userName = userProfileData?.firstName || 'Student';
-      const userGender = userProfileData?.gender || 'neutral';
+       // نجعل الكود يبحث عن الاسم في كل الاحتمالات (name, firstName, first_name)
+      const userName = 
+        userProfileData?.name ||           // الاحتمال الأقوى حسب اللوج الخاص بك
+        userProfileData?.firstName ||      // الاحتمال القياسي
+        userProfileData?.first_name ||     // احتمال الداتابيز الخام
+        userProfileData?.facts?.name ||    // احتمال الذاكرة
+        'Student';
+
+      // نفس الشيء للجنس
+      const userGender = 
+        userProfileData?.gender || 
+        userProfileData?.facts?.gender || 
+        'neutral';
         // 1. تحضير الأجندة (سنمررها من الكونترولر لاحقاً)
     const agendaList = (userProfileData?.aiAgenda || []).filter(t => t.status === 'pending');
     
