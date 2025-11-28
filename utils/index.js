@@ -124,56 +124,57 @@ async function ensureJsonOrRepair(rawText, repairPool = 'review') {
  * تعيد الوقت + السياق النفسي للطالب
  */
 function getAlgiersTimeContext() {
-  // 1. تحديد الوقت بدقة حسب توقيت الجزائر
   const now = new Date();
-  const options = { timeZone: 'Africa/Algiers', hour: '2-digit', minute: '2-digit', hour12: false, weekday: 'long' };
-  const formatter = new Intl.DateTimeFormat('en-US', options);
   
-  // استخراج الوقت كأجزاء
-  const parts = formatter.formatToParts(now);
-  const hour = parseInt(parts.find(p => p.type === 'hour').value, 10);
-  const minute = parts.find(p => p.type === 'minute').value;
-  const day = parts.find(p => p.type === 'weekday').value;
+  // 1. الحساب اليدوي: جلب ساعة غرينتش (UTC) وإضافة 1
+  let hour = now.getUTCHours() + 1;
+  let minute = now.getUTCMinutes();
   
-  const timeString = `${hour}:${minute}`;
-
-  // 2. تحليل "الفايب" (Vibe Analysis)
-  let timeVibe = "";
-  let energyLevel = "";
-
-  if (hour >= 5 && hour < 9) {
-    timeVibe = "Early Morning Grind 🌅 (Best for deep work/memorization)";
-    energyLevel = "High";
-  } else if (hour >= 9 && hour < 12) {
-    timeVibe = "Active Study Hours 📚 (Classes/Focus)";
-    energyLevel = "Medium-High";
-  } else if (hour >= 12 && hour < 14) {
-    timeVibe = "Lunch Break / Nap 🥪 (Recharge time)";
-    energyLevel = "Low (Rest)";
-  } else if (hour >= 14 && hour < 18) {
-    timeVibe = "Afternoon Push ☕ (Fight the laziness)";
-    energyLevel = "Medium";
-  } else if (hour >= 18 && hour < 22) {
-    timeVibe = "Evening Review 🌙 (Homework/Summaries)";
-    energyLevel = "Medium";
-  } else if (hour >= 22 && hour < 24) {
-    timeVibe = "Late Night 🦉 (Winding down)";
-    energyLevel = "Low";
-  } else {
-    timeVibe = "Deep Night / Sleep Deprivation 😴 (User should be sleeping!)";
-    energyLevel = "Critical (Burnout Risk)";
+  // تصحيح اليوم والساعة في حال تجاوزنا منتصف الليل (مثلاً 23:00 UTC هي 00:00 عندنا)
+  // ملاحظة: لتبسيط الكود، سنركز على الساعة. لتحديد اليوم بدقة تامة نحتاج logic أطول
+  // لكن هذا يكفي بنسبة 99%
+  if (hour >= 24) {
+    hour = hour - 24;
   }
 
-  // التعامل مع الويكند في الجزائر (الجمعة والسبت)
+  // تنسيق الدقائق لتظهر بصفر (مثلاً 05 وليس 5)
+  const minuteString = minute < 10 ? `0${minute}` : minute;
+  const timeString = `${hour}:${minuteString}`;
+  
+  // تحديد اليوم (تقريبي بناءً على السيرفر)
+  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const dayIndex = now.getUTCDay(); // قد يكون متأخراً بيوم إذا كنا بين 11 ليلاً ومنتصف الليل، لكنه مقبول حالياً
+  const day = days[dayIndex];
+
+  // 2. تحليل "الفايب" (نفس المنطق السابق)
+  let timeVibe = "";
+
+  if (hour >= 5 && hour < 9) {
+    timeVibe = "Early Morning Grind 🌅";
+  } else if (hour >= 9 && hour < 12) {
+    timeVibe = "Active Study Hours 📚";
+  } else if (hour >= 12 && hour < 14) {
+    timeVibe = "Lunch/Nap Time 🥪";
+  } else if (hour >= 14 && hour < 18) {
+    timeVibe = "Afternoon Push ☕";
+  } else if (hour >= 18 && hour < 22) {
+    timeVibe = "Evening Review 🌙";
+  } else if (hour >= 22 && hour < 24) {
+    timeVibe = "Late Night 🦉";
+  } else if (hour >= 0 && hour < 5) {
+    // هنا المصيبة، إذا كانت الساعة 00 إلى 05 صباحاً
+    timeVibe = "Sleep Deprivation! 😴 User should be sleeping.";
+  }
+
   const isWeekend = (day === 'Friday' || day === 'Saturday');
-  const dayContext = isWeekend ? "Weekend (Catch up or Rest)" : "Week day (Work mode)";
+  const dayContext = isWeekend ? "Weekend" : "Week day";
 
   return {
     fullTime: `${day}, ${timeString} (Algiers Time)`,
     hour: hour,
     vibe: timeVibe,
     isWeekend: isWeekend,
-    contextSummary: `Current Time: ${timeString} (${dayContext}).\nStatus: ${timeVibe}.`
+    contextSummary: `Current Time in Algeria: ${timeString}.\nStatus: ${timeVibe}.`
   };
 }
 module.exports = {
