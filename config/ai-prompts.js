@@ -299,21 +299,24 @@ ${strategicContext}
     ${chatHistory}
 
     **Task:** 
-    Analyze the chat to extract NEW information. Compare with "Current Known Facts" to AVOID duplication.
+    Analyze the chat to extract NEW *PERMANENT* information.
 
     **Rules:**
-    1. **Hard Facts:** Extract specific details (Names, Locations, Dates, Favorites, Relationships) -> Update 'facts'.
-       - If a fact changes (e.g., moved to new city), overwrite it.
-       - If a fact exists and is same, IGNORE it.
-    2. **Life Scenarios (Stories):** Extract meaningful life events, dreams, or struggles -> Put in 'newVectorText'.
-       - Example: "I was bullied at school" or "I launched my first startup".
-       - Exclude trivial chat (e.g., "I ate pizza", "Hello").
-    3. **Output:** Return JSON ONLY.
+    1. **Hard Facts (PERMANENT ONLY):** Extract specific details (Names, Majors, Hobbies, Relationships, Goals).
+    2. **Life Scenarios (Stories):** Extract meaningful events for vector embedding.
+    
+    🔥🔥 **3. ⛔ EXCLUSIONS (IGNORE THESE):** 🔥🔥
+    - **Transient States:** DO NOT save "Current Day" (Friday, Monday...), "Current Time", "Weather", or "Current Location" (unless they moved house).
+    - **Temporary Feelings:** Ignore "I am hungry", "I am sleepy", "I am busy now".
+    - **System Meta:** Ignore "The user sent a message", "AI replied".
+    - **Repetitions:** If the fact is already in "Current Known Facts", DO NOT include it again.
+
+    **Output:** Return JSON ONLY.
     
     **Schema:**
     {
-      "newFacts": { "key": "value" }, // Only NEW or UPDATED facts
-      "vectorContent": "string", // A rich paragraph summarizing the NEW story/scenario for embedding (or null if nothing important)
+      "newFacts": { "key": "value" }, 
+      "vectorContent": "string",
       "reason": "Why you saved this"
     }
     `,
