@@ -79,6 +79,7 @@ async function chatInteractive(req, res) {
     // helpers.js uses Supabase internally now
     const progressData = await getProgress(userId); 
     const aiProfileData = await getProfile(userId);
+    userData.facts = aiProfileData.facts || {}; 
 
     // 2. Context Building
     let masteryContext = "New Topic.";
@@ -117,7 +118,7 @@ async function chatInteractive(req, res) {
       message, memoryReport, curriculumReport, conversationReport, historyStr,
       formattedProgress, weaknesses, emotionalContext, '', userData.aiNoteToSelf || '', 
       CREATOR_PROFILE, userData, '', `Time: ${new Date().toLocaleTimeString()}`, 
-      spacedRepetitionContext, masteryContext, preferredLang, textDirection
+      spacedRepetitionContext, masteryContext, preferredLang, textDirection,
     );
 
     const isAnalysis = context.isSystemInstruction || message.includes('[SYSTEM REPORT');
