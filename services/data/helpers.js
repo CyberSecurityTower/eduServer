@@ -61,20 +61,19 @@ async function getProfile(userId) {
 
     const { data, error } = await supabase
       .from('ai_memory_profiles')
-      .select('*')
+      .select('*') // هذا سيجلب عمود facts الجديد
       .eq('user_id', userId)
       .single();
 
     if (data) {
       let val = toCamelCase(data);
-      // 🔥 UNWRAP: دمج الرؤى السلوكية في الكائن الرئيسي
-      if (val.behavioralInsights) {
-          val = { ...val, ...val.behavioralInsights };
-      }
+      // 🔥 دمج: facts تصبح متاحة مباشرة في الكائن
+      if (!val.facts) val.facts = {}; 
+      
       await cacheSet('profile', userId, val);
       return val;
     } else {
-      return { profileSummary: 'New user.' };
+      return { profileSummary: 'New user.', facts: {} };
     }
   } catch (err) {
     logger.error('getProfile error:', err.message);
