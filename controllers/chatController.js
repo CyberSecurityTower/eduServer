@@ -249,7 +249,7 @@ async function chatInteractive(req, res) {
       message, memoryReport, curriculumReport, conversationReport, historyStr,
       formattedProgress, weaknesses, emotionalPromptContext, '', userData.aiNoteToSelf || '', 
       CREATOR_PROFILE, userData, '', timeContext, 
-      spacedRepetitionContext, masteryContext, preferredLang, textDirection,
+      spacedRepetitionContext, masteryContext, preferredLang, textDirection
     );
 
     const isAnalysis = context.isSystemInstruction || message.includes('[SYSTEM REPORT');
