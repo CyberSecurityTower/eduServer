@@ -119,7 +119,63 @@ async function ensureJsonOrRepair(rawText, repairPool = 'review') {
     return null;
   }
 }
+/**
+ * دالة الوعي الزمني الخاصة بالجزائر
+ * تعيد الوقت + السياق النفسي للطالب
+ */
+function getAlgiersTimeContext() {
+  // 1. تحديد الوقت بدقة حسب توقيت الجزائر
+  const now = new Date();
+  const options = { timeZone: 'Africa/Algiers', hour: '2-digit', minute: '2-digit', hour12: false, weekday: 'long' };
+  const formatter = new Intl.DateTimeFormat('en-US', options);
+  
+  // استخراج الوقت كأجزاء
+  const parts = formatter.formatToParts(now);
+  const hour = parseInt(parts.find(p => p.type === 'hour').value, 10);
+  const minute = parts.find(p => p.type === 'minute').value;
+  const day = parts.find(p => p.type === 'weekday').value;
+  
+  const timeString = `${hour}:${minute}`;
 
+  // 2. تحليل "الفايب" (Vibe Analysis)
+  let timeVibe = "";
+  let energyLevel = "";
+
+  if (hour >= 5 && hour < 9) {
+    timeVibe = "Early Morning Grind 🌅 (Best for deep work/memorization)";
+    energyLevel = "High";
+  } else if (hour >= 9 && hour < 12) {
+    timeVibe = "Active Study Hours 📚 (Classes/Focus)";
+    energyLevel = "Medium-High";
+  } else if (hour >= 12 && hour < 14) {
+    timeVibe = "Lunch Break / Nap 🥪 (Recharge time)";
+    energyLevel = "Low (Rest)";
+  } else if (hour >= 14 && hour < 18) {
+    timeVibe = "Afternoon Push ☕ (Fight the laziness)";
+    energyLevel = "Medium";
+  } else if (hour >= 18 && hour < 22) {
+    timeVibe = "Evening Review 🌙 (Homework/Summaries)";
+    energyLevel = "Medium";
+  } else if (hour >= 22 && hour < 24) {
+    timeVibe = "Late Night 🦉 (Winding down)";
+    energyLevel = "Low";
+  } else {
+    timeVibe = "Deep Night / Sleep Deprivation 😴 (User should be sleeping!)";
+    energyLevel = "Critical (Burnout Risk)";
+  }
+
+  // التعامل مع الويكند في الجزائر (الجمعة والسبت)
+  const isWeekend = (day === 'Friday' || day === 'Saturday');
+  const dayContext = isWeekend ? "Weekend (Catch up or Rest)" : "Week day (Work mode)";
+
+  return {
+    fullTime: `${day}, ${timeString} (Algiers Time)`,
+    hour: hour,
+    vibe: timeVibe,
+    isWeekend: isWeekend,
+    contextSummary: `Current Time: ${timeString} (${dayContext}).\nStatus: ${timeVibe}.`
+  };
+}
 module.exports = {
   sleep,
   iso,
@@ -131,4 +187,5 @@ module.exports = {
   parseJSONFromText,
   ensureJsonOrRepair,
   setGenerateWithFailover, // Export the setter
+  getAlgiersTimeContext 
 };
