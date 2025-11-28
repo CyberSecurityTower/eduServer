@@ -238,7 +238,34 @@ ${strategicContext}
   // --- Managers Prompts ---
   managers: {
     traffic: (message) => `Analyze: { "language": "Ar/En/Fr", "title": "Short Title" }. Msg: "${escapeForPrompt(message)}"`,
+    memoryExtractor: (currentFacts, chatHistory) => `
+    You are the "Memory Architect" for user context.
+    
+    **Current Known Facts (JSON):**
+    ${JSON.stringify(currentFacts)}
 
+    **Recent Chat Interaction:**
+    ${chatHistory}
+
+    **Task:** 
+    Analyze the chat to extract NEW information. Compare with "Current Known Facts" to AVOID duplication.
+
+    **Rules:**
+    1. **Hard Facts:** Extract specific details (Names, Locations, Dates, Favorites, Relationships) -> Update 'facts'.
+       - If a fact changes (e.g., moved to new city), overwrite it.
+       - If a fact exists and is same, IGNORE it.
+    2. **Life Scenarios (Stories):** Extract meaningful life events, dreams, or struggles -> Put in 'newVectorText'.
+       - Example: "I was bullied at school" or "I launched my first startup".
+       - Exclude trivial chat (e.g., "I ate pizza", "Hello").
+    3. **Output:** Return JSON ONLY.
+    
+    **Schema:**
+    {
+      "newFacts": { "key": "value" }, // Only NEW or UPDATED facts
+      "vectorContent": "string", // A rich paragraph summarizing the NEW story/scenario for embedding (or null if nothing important)
+      "reason": "Why you saved this"
+    }
+    `,
     review: (userMessage, assistantReply) => `Rate reply (1-10). JSON: {"score": number, "feedback": "..."}. User: ${escapeForPrompt(safeSnippet(userMessage, 300))} Reply: ${escapeForPrompt(safeSnippet(assistantReply, 500))}`,
 
     jsonRepair: (rawText) => `Fix this text to be valid JSON matching schema {reply: string, widgets: [], needsScheduling: bool}. TEXT: ${rawText}`,
