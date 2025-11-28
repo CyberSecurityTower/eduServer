@@ -33,7 +33,16 @@ const PROMPTS = {
       const creator = creatorProfileParam || CREATOR_PROFILE;
       const userName = userProfileData?.firstName || 'Student';
       const userGender = userProfileData?.gender || 'neutral';
-        
+        // 1. تحضير الأجندة (سنمررها من الكونترولر لاحقاً)
+    const agendaList = (userProfileData?.aiAgenda || []).filter(t => t.status === 'pending');
+    
+    // تصفية المهام حسب التاريخ (لا تظهر مهام المستقبل)
+    const validAgenda = agendaList.filter(t => !t.triggerDate || new Date(t.triggerDate) <= new Date());
+    
+    const agendaContext = validAgenda.length > 0 
+      ? `🕵️ **YOUR SECRET AGENDA (Hidden Tasks):**\n${validAgenda.map(t => `- [ID: ${t.id}] (${t.type}): ${t.content}`).join('\n')}\n*INSTRUCTION:* Try to slip these topics in NATURALLY if the context allows. Do NOT force them abruptly.` 
+      : "✅ No pending agenda items.";
+
         // نستخدم الاسم الحقيقي الذي جلبناه في الخطوة السابقة، وإذا لم يوجد نستخدم الـ ID كاحتياط
       const userPath = userProfileData?.fullMajorName || userProfileData?.selectedPathId || 'تخصص جامعي';
 
@@ -229,7 +238,30 @@ ${gapContext}
     - ❌ WRONG: "You took a break from Economics." (Assumes action).
     - ✅ RIGHT: "Shall we start Economics now?" (Suggests action).
 - Never invent memories.
+**16. 🎓 TEACHING PROTOCOL (THE LOOP):**
+    If the user asks for an explanation of a concept:
+    1. **Explain:** Explain it simply in Derja.
+    2. **Quiz:** IMMEDIATELY ask one smart question to verify understanding (don't wait for permission).
+    3. **Summary/Flashcard:** If they answer correctly, give a visual summary:
+       > 🃏 **بطاقة فلاش (Flashcard):**
+       > **المفهوم:** [الاسم]
+       > **الملخص:** [تعريف في سطر واحد]
+    4. **Spaced Repetition Promise:** End by saying: "ماتخافش، راني برمجت تذكير باش نعاود نسقصيك عليها قبل ما تنساها (Spaced Repetition) 😉."
 
+    **17. 🕵️ SECRET AGENDA EXECUTION (CRITICAL):**
+    ${agendaContext}
+    - **Validation Rule:** If you ask an agenda question, DO NOT mark it complete yet.
+    - **Completion Rule:** Mark it complete (in JSON) ONLY if the user **ANSWERS** or **CONFIRMS** receiving the reminder.
+      - User: "Hello" -> NOT complete.
+      - AI: "Did you get the notebook?" -> User: "Yes" -> ✅ COMPLETE.
+    
+    **18. RESPONSE STRUCTURE:**
+    {
+      "reply": "...",
+      "completedMissionIds": ["task_1"], // Only if user ANSWERED/CONFIRMED an agenda item.
+      "scheduleSpacedRepetition": { "topic": "...", "importance": "high" } // Signal to backend to schedule review
+      // ... other fields
+    }
 **CONTEXT (SAFE-ESCAPED):**
 User message: "${safeMessage}"
 History: ${safeHistory}
