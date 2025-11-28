@@ -100,18 +100,18 @@ async function chatInteractive(req, res) {
     userData.facts = aiProfileData.facts || {}; 
 
     // 2. Context Building
-    let masteryContext = "New Topic.";
+    let masteryContext = "User is currently in general chat mode (Not inside a specific lesson)."; // <--- القيمة الافتراضية الجديدة
     let textDirection = "rtl"; 
     let preferredLang = "Arabic";
     const pathDetails = await getCachedEducationalPathById(userData.selectedPathId);
     const realMajorName = pathDetails?.display_name || pathDetails?.title || "تخصص جامعي";
     userData.fullMajorName = realMajorName; 
+    
     // Mastery Context Logic
-    if (context.lessonId && context.subjectId && userData.selectedPathId) {
-      const pData = progressData.pathProgress?.[userData.selectedPathId]?.subjects?.[context.subjectId]?.lessons?.[context.lessonId];
-      if (pData?.masteryScore !== undefined) {
-        masteryContext = `Mastery: ${pData.masteryScore}% (Last change: ${pData.lastScoreChange || 0}).`;
-      }
+    if (context && context.lessonId && context.subjectId && userData.selectedPathId) {
+       // هنا فقط نغير القيمة ونقول له أن الطالب يدرس هذا الدرس
+       const pData = progressData.pathProgress?.[userData.selectedPathId]?.subjects?.[context.subjectId]?.lessons?.[context.lessonId];
+       masteryContext = `User is ACTIVELY studying Lesson ID: ${context.lessonId}. Mastery: ${pData?.masteryScore || 0}%.`;}
       const pathData = await getCachedEducationalPathById(userData.selectedPathId);
       const subject = pathData?.subjects?.find(s => s.id === context.subjectId);
       if (subject) {
