@@ -116,19 +116,18 @@ async function chatInteractive(req, res) {
     
     console.log("👤 Raw User Data from DB:", userRes.data); // طباعة البيانات الخام
 
-    // تحويل البيانات إلى CamelCase
-    const userData = userRes.data ? toCamelCase(userRes.data) : {};
+    // تحويل البيانات
+    let userData = userRes.data ? toCamelCase(userRes.data) : {};
+
+    // 🔥 تصحيح التسمية (Mapping) 🔥
+    // نضع الاسم في المتغير firstName لأن البرومبت يبحث عنه هناك
+    userData.firstName = userRes.data.first_name || userData.name || 'Student';
+    userData.gender = userRes.data.gender || 'neutral';
     
-    // إصلاح يدوي (Safety Net): إذا فشل التحويل التلقائي، نأخذ البيانات الحيوية يدوياً
-    if (!userData.firstName && userRes.data?.first_name) {
-        userData.firstName = userRes.data.first_name;
-    }
-    if (!userData.gender && userRes.data?.gender) {
-        userData.gender = userRes.data.gender;
-    }
-    if (!userData.selectedPathId && userRes.data?.selected_path_id) {
-        userData.selectedPathId = userRes.data.selected_path_id;
-    }
+    // إضافة الـ Path
+    userData.selectedPathId = userRes.data.selected_path_id;
+
+    console.log("✨ Final Data sent to Prompt:", userData); 
 
     // جلب البروفايل والتقدم
     const progressData = await getProgress(userId); 
