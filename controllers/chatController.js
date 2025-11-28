@@ -13,6 +13,7 @@ const {
   scheduleSpacedRepetition
 } = require('../services/data/helpers');
 const { getAlgiersTimeContext } = require('../utils'); 
+const crypto = require('crypto');
 
 // Managers
 const { runMemoryAgent, saveMemoryChunk, analyzeAndSaveMemory } = require('../services/ai/managers/memoryManager');
@@ -74,7 +75,7 @@ async function chatInteractive(req, res) {
 
     if (!userId || !message) return res.status(400).json({ error: 'Missing data' });
 
-    sessionId = sessionId || `chat_${Date.now()}_${userId.slice(0, 5)}`;
+    sessionId = sessionId || crypto.randomUUID();
     let chatTitle = message.substring(0, 30);
 
     // 1. استرجاع السياق الحي (History Fallback)
