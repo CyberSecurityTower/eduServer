@@ -57,7 +57,23 @@ async function chatInteractive(req, res) {
 
     sessionId = sessionId || `chat_${Date.now()}_${userId.slice(0, 5)}`;
     let chatTitle = message.substring(0, 30);
-
+    // 🔥🔥 التعديل الجديد: جلب الذاكرة الحية من الداتابايز إذا كانت فارغة 🔥🔥
+    if (!history || history.length === 0) {
+       // نجلب آخر جلسة محادثة لهذا المستخدم ونستخرج آخر الرسائل
+       const { data: sessionData } = await supabase
+         .from('chat_sessions')
+         .select('messages')
+         .eq('id', sessionId) // نبحث بنفس الـ Session ID
+         .single();
+         
+       if (sessionData && sessionData.messages) {
+           // نأخذ آخر 10 رسائل فقط لنشكل سياقاً حياً
+           history = sessionData.messages.slice(-10).map(m => ({
+               role: m.author === 'bot' ? 'model' : 'user', // توحيد التسميات
+               text: m.text
+           }));
+       }
+    }
     // 1. Parallel Data Fetching
     const [
       memoryReport,
