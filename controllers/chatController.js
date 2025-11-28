@@ -24,7 +24,9 @@ const { extractTextFromResult, ensureJsonOrRepair } = require('../utils');
 const logger = require('../utils/logger');
 const PROMPTS = require('../config/ai-prompts');
 const CREATOR_PROFILE = require('../config/creator-profile');
-
+ // 🔥🔥🔥 DEBUGGING LOGS (أضف هذا لتعرف السبب) 🔥🔥🔥
+    console.log("🆔 User ID from Request:", userId);
+    console.log("👤 User Data from DB (Raw):", userRes.data);
 let generateWithFailoverRef;
 
 /**
