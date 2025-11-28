@@ -343,9 +343,15 @@ async function saveChatSession(sessionId, userId, title, messages, type = 'main_
       updated_at: nowISO(),
     };
     const { error } = await supabase.from('chat_sessions').upsert(payload);
-    if (error) logger.error(`Error saving session:`, error.message);
+    if (error) {
+        console.error("🚨 كارثة في حفظ الشات:", error.message); // سيطبع لك السبب الحقيقي
+        console.error("Payload:", payload); // لترى ماذا حاولت أن ترسل
+    } else {
+        console.log("✅ تم حفظ الشات بنجاح ID:", sessionId);
+    }
+
   } catch (error) {
-    logger.error(`Error saving session:`, error);
+    console.error(`Error saving session:`, error);
   }
 }
 
