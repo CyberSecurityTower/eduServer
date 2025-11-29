@@ -2,7 +2,8 @@
 // services/ai/index.js
 'use strict';
 
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+// 👇 استخدام المكتبة الجديدة
+const { GoogleGenAI } = require('@google/genai');
 const CONFIG = require('../../config');
 const logger = require('../../utils/logger');
 const { shuffled, withTimeout } = require('../../utils');
@@ -15,60 +16,82 @@ const keyStates = {};
 function initializeModelPools() {
   const apiKeyCandidates = Array.from({ length: 5 }, (_, i) => process.env[`GOOGLE_API_KEY_${i + 1}`]).filter(Boolean);
   if (process.env.GOOGLE_API_KEY && !apiKeyCandidates.includes(process.env.GOOGLE_API_KEY)) apiKeyCandidates.push(process.env.GOOGLE_API_KEY);
+  
   if (apiKeyCandidates.length === 0) {
-    logger.error('No Google API keys found (GOOGLE_API_KEY or GOOGLE_API_KEY_1..5). Exiting.');
+    logger.error('No Google API keys found. Exiting.');
     process.exit(1);
   }
 
   for (const key of apiKeyCandidates) {
     try {
-      const client = new GoogleGenerativeAI(key);
+      // 👇 التهيئة بالمكتبة الجديدة
+      const client = new GoogleGenAI({ apiKey: key });
+      
       keyStates[key] = { fails: 0, backoffUntil: 0 };
+      
       for (const pool of poolNames) {
-        try {
-          const instance = client.getGenerativeModel({ model: CONFIG.MODEL[pool] });
-          modelPools[pool].push({ model: instance, key });
-        } catch (e) {
-          logger.warn(`Failed to create model instance for pool ${pool} with key:`, e.message);
-        }
+        // في المكتبة الجديدة، لا ننشئ "instance" للموديل، بل نحفظ الـ client واسم الموديل
+        modelPools[pool].push({ 
+            client: client, 
+            modelName: CONFIG.MODEL[pool], 
+            key 
+        });
       }
     } catch (e) {
-      logger.warn('GoogleGenerativeAI init failed for a key:', e.message);
+      logger.warn('GoogleGenAI init failed for a key:', e.message);
     }
   }
 
-  poolNames.forEach(p => {
-    if (!modelPools[p] || modelPools[p].length === 0) {
-      logger.error(`Model pool "${p}" is empty. Check API keys & model names. Requires: ${CONFIG.MODEL[p]}`);
-      process.exit(1);
-    }
-  });
-  logger.success('Model pools ready:', Object.fromEntries(poolNames.map(p => [p, modelPools[p].length])));
+  logger.success('Model pools ready (GenAI SDK V1).');
 }
 
-// Robust model caller that tries multiple possible SDK method names
+// 👇 دالة الاستدعاء الجديدة المتوافقة مع Gemini 3
 async function _callModelInstance(instance, prompt, timeoutMs, label) {
-  const model = instance.model;
-  const methodCandidates = ['generateContent', 'generate', 'generateText', 'predict', 'response', 'complete'];
-  let lastErr = null;
-
-  for (const name of methodCandidates) {
-    const fn = model && model[name];
-    if (typeof fn !== 'function') continue;
-    try {
-      // --- FIX ---
-      // Use .call(model, ...) to preserve the 'this' context of the SDK's model instance.
-      const maybe = fn.length === 1 ? fn.call(model, prompt) : fn.call(model, { prompt });
-      // --- END FIX ---
-      const res = await withTimeout(Promise.resolve(maybe), timeoutMs, `${label}:${name}`);
-      return res;
-    } catch (err) {
-      lastErr = err;
-      logger.warn(`Model method ${name} failed for key ${instance.key?.slice(-4)}:`, err && err.message ? err.message : err);
+  const { client, modelName } = instance;
+  
+  try {
+    // تحويل البرومبت إلى الصيغة التي تفهمها المكتبة الجديدة
+    // المكتبة الجديدة تتوقع contents كمصفوفة
+    let contents = [];
+    if (typeof prompt === 'string') {
+        contents = [{ role: 'user', parts: [{ text: prompt }] }];
+    } else {
+        // إذا كان البرومبت معقداً أصلاً
+        contents = prompt; 
     }
-  }
 
-  throw lastErr || new Error('No callable model method found on instance');
+    // إعدادات التفكير (اختياري، يمكن تفعيلها إذا أردت ذكاءً خارقاً)
+    const config = {
+        temperature: 0.3, // تقليل العشوائية لزيادة الدقة
+        // thinkingConfig: { thinkingLevel: 'HIGH' } // ⚠️ فعل هذا السطر فقط إذا كان الموديل يدعم Thinking
+    };
+
+    // 👇 الاستدعاء الجديد
+    const response = await withTimeout(
+        client.models.generateContent({
+            model: modelName,
+            config: config,
+            contents: contents
+        }),
+        timeoutMs,
+        `${label}:generateContent`
+    );
+
+    // استخراج النص من الرد الجديد
+    if (response && response.text) {
+        return response.text();
+    } else if (response && response.candidates && response.candidates[0]) {
+         // أحياناً الرد يكون في candidates
+         const parts = response.candidates[0].content.parts;
+         return parts.map(p => p.text).join('');
+    }
+    
+    throw new Error('Empty response from GenAI');
+
+  } catch (err) {
+    logger.warn(`GenAI call failed for ${modelName} (key ending ${instance.key.slice(-4)}):`, err.message);
+    throw err;
+  }
 }
 
 module.exports = {
