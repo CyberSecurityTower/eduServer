@@ -5,21 +5,8 @@
 const CONFIG = require('../../config');
 const logger = require('../../utils/logger');
 const { shuffled } = require('../../utils');
-const { modelPools, keyStates, _callModelInstance } = require('./index'); // Import from ai/index
+const { modelPools, keyStates, _callModelInstance } = require('./index');
 
-/**
- * يستدعي نموذجًا من مجموعة (pool) محددة، مع تطبيق آليات قوية للتعامل مع الأخطاء والتجاوز (Failover).
- * يقوم بتوزيع الحمل عشوائيًا على مفاتيح الواجهة البرمجية المتاحة، ويتجنب مؤقتًا المفاتيح التي تواجه أخطاء،
- * ويعيد المحاولة باستخدام المفتاح التالي المتاح حتى ينجح أو تستنفد جميع الخيارات.
- *
- * @param {string} poolName - اسم مجموعة النماذج المراد استخدامها (مثل 'chat', 'analysis').
- * @param {any} prompt - المُوجّه (prompt) الذي سيتم إرساله إلى النموذج.
- * @param {object} [opts={}] - خيارات إضافية.
- * @param {number} [opts.timeoutMs] - مهلة زمنية مخصصة بالمللي ثانية لهذا الطلب.
- * @param {string} [opts.label] - تسمية مخصصة للطلب لتظهر في سجلات الأخطاء.
- * @returns {Promise<any>} - يعد بإرجاع نتيجة ناجحة من النموذج.
- * @throws {Error} - يطلق خطأ إذا فشلت جميع المحاولات مع كل المفاتيح المتاحة في المجموعة.
- */
 async function generateWithFailover(poolName, prompt, opts = {}) {
   const pool = modelPools[poolName];
   if (!pool || pool.length === 0) {
@@ -32,7 +19,8 @@ async function generateWithFailover(poolName, prompt, opts = {}) {
 
   for (const inst of shuffled(pool)) {
     try {
-      if (!inst || !inst.model) {
+      // 🔥 التعديل هنا: التحقق من client و modelName بدلاً من model
+      if (!inst || !inst.client || !inst.modelName) {
         logger.warn(`[Failover] Skipping invalid instance in pool "${poolName}"`);
         continue;
       }
