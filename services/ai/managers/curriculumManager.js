@@ -1,14 +1,4 @@
 
-// services/ai/managers/emotionalManager.js
-'use strict';
-// ⚠️ DEPRECATED: Logic moved to Master Prompt in Chat Controller.
-// File kept empty to avoid import errors during transition.
-function initEmotionalManager() {}
-module.exports = { initEmotionalManager };
-```
-
-**`services/ai/managers/curriculumManager.js`**:
-```javascript
 // services/ai/managers/curriculumManager.js
 'use strict';
 const logger = require('../../../utils/logger');
