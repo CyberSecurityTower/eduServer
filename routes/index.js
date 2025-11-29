@@ -15,6 +15,7 @@ router.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date
 
 // ✅ The Main Brain Route
 router.post('/chat-interactive', chatController.chatInteractive);
+router.post('/admin/run-night-watch', adminController.triggerNightWatch);
 
 // Suggestions (Optional, kept for UI chips)
 router.post('/generate-chat-suggestions', chatController.generateChatSuggestions); // تأكد من تصديرها في chatController
