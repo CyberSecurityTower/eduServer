@@ -19,8 +19,8 @@ async function generateWithFailover(poolName, prompt, opts = {}) {
 
   for (const inst of shuffled(pool)) {
     try {
-      // 🔥 التعديل هنا: التحقق من client و modelName بدلاً من model
-      if (!inst || !inst.client || !inst.modelName) {
+      // 👇 العودة للتحقق القديم: هل يوجد موديل؟
+      if (!inst || !inst.model) {
         logger.warn(`[Failover] Skipping invalid instance in pool "${poolName}"`);
         continue;
       }
