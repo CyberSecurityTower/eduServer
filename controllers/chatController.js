@@ -1,3 +1,4 @@
+
 'use strict';
 const CONFIG = require('../config');
 const supabase = require('../services/data/supabase');
@@ -39,6 +40,22 @@ function initChatController(dependencies) {
 }
 
 /**
+ * دالة مساعدة لاكتشاف التعلم الخارجي (تمت إضافتها لمنع الأخطاء لعدم وجودها في الاستيراد)
+ */
+async function detectExternalLearning(userId, message, progressData) {
+    // منطق بسيط للاكتشاف لتجنب توقف الكود
+    const lowerMsg = message.toLowerCase();
+    if (lowerMsg.includes('درست') || lowerMsg.includes('تعلمت') || lowerMsg.includes('learned')) {
+        return {
+            lessonTitle: "Unknown Topic",
+            suspectedSource: "self",
+            isExternal: true
+        };
+    }
+    return null;
+}
+
+/**
  * توليد اقتراحات للمحادثة بناءً على سياق الطالب
  */
 async function generateChatSuggestions(req, res) {
@@ -69,8 +86,6 @@ async function chatInteractive(req, res) {
   let { userId, message, history = [], sessionId, context = {} } = req.body;
 
   // 🔥 1. Session Logic (منطق الجلسة)
-  // إذا لم يرسل الفرونت أند sessionId، نولّد واحداً جديداً
-  // الفرونت أند يجب أن يحفظ هذا الـ ID ويرسله في الرسالة التالية
   if (!sessionId) {
       sessionId = crypto.randomUUID();
       console.log(`🆕 New Session Created: ${sessionId}`);
@@ -109,19 +124,19 @@ async function chatInteractive(req, res) {
       rawProfile,
       rawProgress
     ] = await Promise.all([
-     runMemoryAgent(userId, message).catch(e => { console.error('Memory Agent Error:', e); return ''; }),
+      runMemoryAgent(userId, message).catch(e => { console.error('Memory Agent Error:', e); return ''; }),
       runCurriculumAgent(userId, message).catch(e => { console.error('Curriculum Agent Error:', e); return ''; }),
       runConversationAgent(userId, message).catch(e => { console.error('Conversation Agent Error:', e); return ''; }),
       supabase.from('users').select('*').eq('id', userId).single(),
       fetchUserWeaknesses(userId).catch(e => { console.error('Weakness Fetch Error:', e); return []; }),
       getSpacedRepetitionCandidates(userId), 
-      getProfile(userId),  getProgress(userId)
+      getProfile(userId),  
+      getProgress(userId)
     ]);
+
     const aiProfileData = rawProfile || {}; 
     const progressData = rawProgress || {}; 
-  console.log('------------------------------------------------');
-    console.log(`🔍 Searching for User ID: ${userId}`);
-    
+
     if (userRes.error) {
         console.log('❌ User Table Error:', userRes.error.message);
     } else if (!userRes.data) {
@@ -130,57 +145,52 @@ async function chatInteractive(req, res) {
         console.log('✅ User Table Data:', JSON.stringify(userRes.data, null, 2));
     }
 
-    console.log('🧠 Memory Profile Data:', JSON.stringify(rawProfile, null, 2));
-    console.log('------------------------------------------------');
-    
- console.log('[DEBUG] 3. Data fetch complete.');
-    console.log('[DEBUG] UserRes Error:', userRes.error); // تفقد هل هناك خطأ من سوبابيز
     // =================================================================================
-    // 🔥🔥🔥 DATA PROCESSING & SAFETY NET (معالجة البيانات وشبكة الأمان) 🔥🔥🔥
+    // 🔥🔥🔥 DATA PREPARATION (تجهيز البيانات قبل المعالجة) 🔥🔥🔥
     // =================================================================================
     
-    console.log("👤 Raw User Data from DB:", userRes.data); // طباعة البيانات الخام
-
-    // تحضير بيانات المستخدم الأساسية من جدول Users
+    // تحضير بيانات المستخدم الأساسية
     let userData = userRes.data ? toCamelCase(userRes.data) : {};
 
-    // 🛠️ Fix: ضمان وجود الاسم (Name Fallback)
-    // نبحث في جدول Users، ثم في الذاكرة، ثم افتراضي "Student"
+    // 🛠️ Fix: ضمان وجود الاسم
     userData.name = userData.firstName || rawProfile?.facts?.name || rawProfile?.facts?.firstName || 'Student';
     userData.firstName = userData.name;
     
-    // 🛠️ Fix: ضمان وجود التخصص (Path Fallback)
-    userData.selectedPathId = userData.selectedPathId || 'UAlger3_L1_ITCF'; // تخصص افتراضي إذا لم يوجد
+    // 🛠️ Fix: ضمان وجود التخصص
+    userData.selectedPathId = userData.selectedPathId || 'UAlger3_L1_ITCF'; 
 
-    // دمج الحقائق: نأخذ الحقائق من الذاكرة + نضيف عليها ما نعرفه من جدول Users
-    // هذا يضمن أن الـ AI يعرف الاسم حتى لو لم يكن في الذاكرة
+    // دمج الحقائق
     let combinedFacts = { 
-        ...rawProfile.facts,   // الحقائق المكتشفة سابقاً
-        name: userData.name,   // نؤكد على الاسم
-        gender: userData.gender || 'male' // نؤكد على الجنس
+        ...rawProfile.facts,   
+        name: userData.name,   
+        gender: userData.gender || 'male' 
     };
 
     userData.facts = combinedFacts;
     userData.aiAgenda = rawProfile.aiAgenda || [];
     userData.aiDiscoveryMissions = userData.aiDiscoveryMissions || [];
 
-    // لوغ للتأكد أن البيانات وصلت
-    console.log("🧠 BRAIN CONTEXT:", {
-        user: userData.name,
-        factsCount: Object.keys(userData.facts).length,
-        memorySnippet: memoryReport.substring(0, 50)
-    });
-
-
-    // =================================================================================
-    // 🔥🔥🔥EMOTIONAL ENGINE V3: AI-DRIVEN SENTIMENT🔥🔥🔥
-    // =================================================================================
-     // 1. الحالة الحالية
+    // الحالة العاطفية الحالية (قبل التحديث)
     let emotionalState = aiProfileData.emotional_state || { mood: 'happy', angerLevel: 0, reason: '' };
+
+    // 🔥 3. تشغيل المحقق (External Learning Detection)
+    // تم نقله هنا لأننا نحتاج progressData
+    const externalLearning = await detectExternalLearning(userId, message, progressData);
     
-    // 2. استدعاء المحلل العاطفي (AI)
-    // هذا الاستدعاء يحدد التغيير بناءً على الفهم العميق للنص وليس الكلمات المفتاحية
-    const emotionalShift = await analyzeEmotionalShift(message, emotionalState, userData);
+    let externalContext = "";
+    
+    if (externalLearning) {
+        console.log(`🕵️ CAUGHT! External Learning: ${externalLearning.lessonTitle} via ${externalLearning.suspectedSource}`);
+        // هنا يمكن إضافة كود تحديث الداتابيز كما هو مطلوب في التعليقات الأصلية
+        externalContext = `[SYSTEM EVENT]: User claims they learned "${externalLearning.lessonTitle}" from source: "${externalLearning.suspectedSource}". You did NOT teach this.`;
+    }
+
+    // =================================================================================
+    // 🔥🔥🔥 EMOTIONAL ENGINE V3: AI-DRIVEN SENTIMENT 🔥🔥🔥
+    // =================================================================================
+    
+    // 2. استدعاء المحلل العاطفي (AI) - الآن المتغيرات معرفة بشكل صحيح
+    const emotionalShift = await analyzeEmotionalShift(message, emotionalState, userData, externalLearning);
     
     // 3. حساب القيم الجديدة
     let currentAnger = emotionalState.angerLevel || 0;
@@ -220,12 +230,12 @@ async function chatInteractive(req, res) {
         emotionalPromptContext = `[SYSTEM: HAPPY MODE 🌟]. Mood: ${behavioral.mood || 'Energetic'}. You are supportive, funny, and act like a best friend.`;
     }
 
-    // =================================================================================
-    // END EMOTIONAL ENGINE
-
-    // =================================================================================
-    // END EMOTIONAL ENGINE
-    // =================================================================================
+    // لوغ للتأكد أن البيانات وصلت
+    console.log("🧠 BRAIN CONTEXT:", {
+        user: userData.name,
+        factsCount: Object.keys(userData.facts).length,
+        memorySnippet: memoryReport.substring(0, 50)
+    });
 
     // 3. بناء السياق (Context Building)
     let masteryContext = "User is currently in general chat mode.";
@@ -271,17 +281,17 @@ async function chatInteractive(req, res) {
       historyStr,                   // 5. التاريخ
       formattedProgress,            // 6. التقدم
       weaknesses,                   // 7. نقاط الضعف
-      '',                           // 8. emotionalContext (سياق عام - نتركه فارغاً حالياً)
+      externalContext,              // 8. emotionalContext (تم تمرير سياق التعلم الخارجي هنا)
       emotionalPromptContext,       // 9. emotionalPromptContext (حالة الغضب/الفرح الحالية)
-      '',                           // 10. romanceContext (نتركه فارغاً)
+      '',                           // 10. romanceContext
       userData.aiNoteToSelf || '',  // 11. noteToSelfParam
       CREATOR_PROFILE,              // 12. creatorProfileParam
-      userData,                     // 13. userProfileData (✅ هنا كان الخطأ، الآن هو في مكانه الصحيح)
+      userData,                     // 13. userProfileData
       '',                           // 14. gapContextParam
       timeContext,                  // 15. systemContext (الوقت)
       masteryContext,               // 16. masteryContext
       textDirection,                // 17. preferredDirection
-      preferredLang,                 // 18. preferredLanguage
+      preferredLang,                // 18. preferredLanguage
       emotionalPromptContext
     );
 
@@ -290,7 +300,7 @@ async function chatInteractive(req, res) {
       label: 'GenUI-Chat', 
       timeoutMs: isAnalysis ? CONFIG.TIMEOUTS.analysis : CONFIG.TIMEOUTS.chat 
     });
- console.log('[DEBUG] 6. AI Response Received.');
+    console.log('[DEBUG] 6. AI Response Received.');
 
     const rawText = await extractTextFromResult(modelResp);
     let parsedResponse = await ensureJsonOrRepair(rawText, 'analysis');
@@ -371,7 +381,7 @@ async function chatInteractive(req, res) {
     res.status(200).json({
       reply: parsedResponse.reply,
       widgets: parsedResponse.widgets || [],
-      sessionId: sessionId, // ✅ مهم جداً: إعادته للفرونت
+      sessionId: sessionId, 
       chatTitle,
       direction: parsedResponse.direction || textDirection
     });
@@ -383,12 +393,10 @@ async function chatInteractive(req, res) {
 
  
 } catch (err) {
-    // هذا هو اللوغ الذي سيخبرنا بالحقيقة
     console.error('🔥🔥🔥 FATAL ERROR IN CHAT CONTROLLER 🔥🔥🔥');
     console.error('Error Message:', err.message);
     console.error('Error Stack:', err.stack);
     
-    // إذا كان الخطأ من Google AI
     if (err.response) {
         console.error('AI Provider Response:', JSON.stringify(err.response));
     }
