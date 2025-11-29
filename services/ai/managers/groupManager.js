@@ -1,44 +1,45 @@
-
 // services/ai/managers/groupManager.js
 'use strict';
 
 const supabase = require('../../data/supabase');
 const { nowISO } = require('../../data/dbUtils');
+const { calculateVoteWeight } = require('./reputationManager');
 
-// جلب الذاكرة المشتركة للفوج
 async function getGroupMemory(groupId) {
   if (!groupId) return null;
   const { data } = await supabase.from('study_groups').select('shared_knowledge').eq('id', groupId).single();
   return data?.shared_knowledge || {};
 }
 
-// تحديث الذاكرة المشتركة (مع منطق التصويت)
-async function updateGroupKnowledge(groupId, factType, key, value) {
-  if (!groupId) return;
+async function updateGroupKnowledge(groupId, userId, factType, key, value) {
+  if (!groupId || !userId) return;
 
   // 1. جلب البيانات الحالية
   const { data } = await supabase.from('study_groups').select('shared_knowledge').eq('id', groupId).single();
   let knowledge = data?.shared_knowledge || {};
 
-  // تهيئة الهيكل إذا لم يكن موجوداً
+  // تهيئة الهيكل
   if (!knowledge[factType]) knowledge[factType] = {};
-  if (!knowledge[factType][key]) knowledge[factType][key] = { candidates: {} };
+  if (!knowledge[factType][key]) knowledge[factType][key] = { candidates: {}, is_verified: false };
 
-  // 2. منطق التصويت (Voting Logic)
-  const entry = knowledge[factType][key]; // مثلاً exams -> economics
-  
-  // زيادة التصويت للقيمة الجديدة
-  if (!entry.candidates[value]) {
-      entry.candidates[value] = 1;
-  } else {
-      entry.candidates[value]++;
+  const entry = knowledge[factType][key];
+
+  // 🔒 GOD MODE CHECK: إذا كانت المعلومة مثبتة من الأدمين، لا أحد يغيرها إلا الأدمين
+  const voteWeight = await calculateVoteWeight(userId);
+  const isGod = voteWeight >= 1000;
+
+  if (entry.is_verified && !isGod) {
+      console.log(`🛡️ Blocked update: Fact '${key}' is verified by Admin.`);
+      return { blocked: true };
   }
 
-  // 3. تحديد القيمة الفائزة (الأكثر تكراراً)
+  // 2. تسجيل التصويت
+  if (!entry.candidates[value]) entry.candidates[value] = 0;
+  entry.candidates[value] += voteWeight;
+
+  // 3. تحديد الفائز
   let winnerValue = null;
   let maxVotes = 0;
-  let conflictDetected = false;
-
   Object.entries(entry.candidates).forEach(([val, votes]) => {
       if (votes > maxVotes) {
           maxVotes = votes;
@@ -46,24 +47,23 @@ async function updateGroupKnowledge(groupId, factType, key, value) {
       }
   });
 
-  // كشف التضارب: هل هناك قيمة أخرى قريبة جداً في عدد الأصوات؟
-  const totalVotes = Object.values(entry.candidates).reduce((a, b) => a + b, 0);
-  if (totalVotes > 3 && maxVotes / totalVotes < 0.6) {
-      conflictDetected = true; // تضارب قوي (مثلاً 4 يقولون 12 و 3 يقولون 15)
-  }
-
-  // تحديث الحالة النهائية
+  // تحديث القيم النهائية
   entry.confirmed_value = winnerValue;
   entry.confidence_score = maxVotes;
-  entry.has_conflict = conflictDetected;
+  
+  // إذا كان الأدمين هو من صوت، نثبت المعلومة فوراً
+  if (isGod) {
+      entry.is_verified = true;
+      entry.candidates = { [value]: 1000 }; // مسح باقي الآراء الخاطئة
+  }
 
-  // 4. الحفظ في الداتابيز
+  // 4. الحفظ
   await supabase.from('study_groups').update({ 
       shared_knowledge: knowledge,
-      last_updated_at: nowISO()
+      updated_at: nowISO()
   }).eq('id', groupId);
 
-  return { conflictDetected, winnerValue };
+  return { success: true, winnerValue, isVerified: entry.is_verified };
 }
 
 module.exports = { getGroupMemory, updateGroupKnowledge };
