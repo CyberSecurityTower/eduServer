@@ -1,5 +1,4 @@
 
-// controllers/chatController.js
 'use strict';
 const CONFIG = require('../config');
 const supabase = require('../services/data/supabase');
@@ -9,7 +8,8 @@ const {
   getProgress, 
   formatProgressForAI,
   saveChatSession, 
-  getCachedEducationalPathById
+  getCachedEducationalPathById,
+  fetchUserWeaknesses // ✅ تمت إضافتها لجلب نقاط الضعف
 } = require('../services/data/helpers');
 const { getAlgiersTimeContext, extractTextFromResult, ensureJsonOrRepair } = require('../utils'); 
 const crypto = require('crypto');
@@ -66,13 +66,17 @@ async function chatInteractive(req, res) {
       curriculumReport,
       userRes,
       rawProfile,
-      rawProgress
+      rawProgress,
+      weaknesses,       // ✅ جلب نقاط الضعف
+      formattedProgress // ✅ جلب التقدم كنص
     ] = await Promise.all([
       runMemoryAgent(userId, message),
       runCurriculumAgent(userId, message), 
       supabase.from('users').select('*').eq('id', userId).single(),
       getProfile(userId),  
-      getProgress(userId)
+      getProgress(userId),
+      fetchUserWeaknesses(userId), // ✅ إضافة دالة جلب نقاط الضعف
+      formatProgressForAI(userId)  // ✅ تحضير نص التقدم هنا لتسريع العملية
     ]);
 
     // Prepare raw data
@@ -107,17 +111,23 @@ async function chatInteractive(req, res) {
         }
     }
 
+    // تحضير سجل المحادثة كنص
+    const historyString = history.slice(-5).map(h => `${h.role}: ${h.text}`).join('\n');
+
     // 2. AI Invocation (The One Shot)
+    // ✅ تصحيح ترتيب المعاملات ليتطابق مع ai-prompts.js
     const finalPrompt = PROMPTS.chat.interactiveChat(
-      message,
-      memoryReport,
-      curriculumReport,
-      history.slice(-5).map(h => `${h.role}: ${h.text}`).join('\n'), // Format history as string
-      await formatProgressForAI(userId),
-      currentEmotionalState, 
-      fullUserProfile, // ✅ Passing the correctly merged object
-      getAlgiersTimeContext().contextSummary,
-      examContext 
+      message,                                // 1. message
+      memoryReport,                           // 2. memoryReport
+      curriculumReport,                       // 3. curriculumReport
+      historyString,                          // 4. conversationReport
+      historyString,                          // 5. history
+      formattedProgress,                      // 6. formattedProgress
+      weaknesses,                             // 7. weaknesses
+      currentEmotionalState,                  // 8. currentEmotionalState
+      fullUserProfile,                        // 9. userProfileData (✅ تم التصحيح: كان examContext سابقاً مما سبب الخطأ)
+      getAlgiersTimeContext().contextSummary, // 10. systemContext
+      examContext                             // 11. examContext
     );
 
     const modelResp = await generateWithFailoverRef('chat', finalPrompt, { 
