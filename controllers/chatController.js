@@ -105,7 +105,8 @@ async function chatInteractive(req, res) {
       userRes,
       weaknesses,
       reviewCandidates,
-      rawProfile 
+      rawProfile,
+      rawProgress
     ] = await Promise.all([
      runMemoryAgent(userId, message).catch(e => { console.error('Memory Agent Error:', e); return ''; }),
       runCurriculumAgent(userId, message).catch(e => { console.error('Curriculum Agent Error:', e); return ''; }),
@@ -113,8 +114,11 @@ async function chatInteractive(req, res) {
       supabase.from('users').select('*').eq('id', userId).single(),
       fetchUserWeaknesses(userId).catch(e => { console.error('Weakness Fetch Error:', e); return []; }),
       getSpacedRepetitionCandidates(userId), 
-      getProfile(userId)
+      getProfile(userId),  getProgress(userId)
     ]);
+    const aiProfileData = rawProfile || {}; 
+    const progressData = rawProgress || {}; 
+
  console.log('[DEBUG] 3. Data fetch complete.');
     console.log('[DEBUG] UserRes Error:', userRes.error); // تفقد هل هناك خطأ من سوبابيز
     // =================================================================================
