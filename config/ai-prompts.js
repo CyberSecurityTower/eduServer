@@ -10,7 +10,7 @@ const PROMPTS = {
   chat: {
     generateTitle: (message, language) => `Generate a very short title (2-4 words) in ${language}. Msg: "${escapeForPrompt(safeSnippet(message, 100))}"`,
 
-    // ✅ النسخة المحسنة (The Fixed & Optimized Prompt)
+    // ✅ النسخة المحسنة (The Fixed & Optimized Prompt + Hive Mind)
     interactiveChat: (
       message,
       memoryReport,
@@ -23,7 +23,8 @@ const PROMPTS = {
       userProfileData = {}, 
       systemContext = '',
       examContext = null,
-      activeAgenda = []
+      activeAgenda = [],
+      sharedContext = null // <--- New Parameter Added
     ) => {
       const creator = CREATOR_PROFILE;
       
@@ -36,10 +37,14 @@ const PROMPTS = {
       const userGender = facts.userGender || userProfileData.gender || 'male';
       const pronouns = (userGender.toLowerCase() === 'male') ? 'خويا/صاحبي' : 'ختي/صديقتي';
       const userPath = userProfileData.selectedPathId || 'University Student';
-       // تحويل الأجندة لنص يفهمه الـ AI
+      
+      // تحويل الأجندة لنص يفهمه الـ AI
       const agendaSection = activeAgenda.length > 0 
         ? `📋 **YOUR HIDDEN AGENDA (Things you need to find out):**\n${activeAgenda.map(t => `- [ID: ${t.id}]: ${t.description}`).join('\n')}\n(Pick ONE naturally if context allows. Do NOT list them to the user.)`
         : "📋 No pending agenda items.";
+
+      // تحويل سياق القسم (Hive Mind)
+      const sharedSection = sharedContext ? sharedContext : "🏫 No shared class info yet.";
 
       // 2. تحويل الحقائق لنص واضح وتصفية القوائم الطويلة
       const factsList = Object.entries(facts)
@@ -47,7 +52,6 @@ const PROMPTS = {
         .map(([k, v]) => `- ${k}: ${v}`).join('\n');
 
       // 3. الفصل الصارم بين السياق والرسالة (Context Separation)
-      // نضع الدرس في قسم منفصل تماماً ونحذر الـ AI من اعتباره كلام المستخدم
       const curriculumSection = curriculumReport 
         ? `📚 **BACKGROUND LESSON CONTEXT (SYSTEM RETRIEVED - USER DID NOT SAY THIS):**\n"${escapeForPrompt(safeSnippet(curriculumReport, 800))}"\n(Use this ONLY if the user asks about it).` 
         : "📚 No specific lesson context.";
@@ -72,8 +76,13 @@ ${factsList}
 
 **📥 INPUT DATA:**
 ${curriculumSection}
+
+**🏫 HIVE MIND (CLASSROOM INTEL):**
+${sharedSection}
+
 **📋 AGENDA (YOUR SECRET MISSIONS):**
 ${agendaSection}
+
 🧠 **MEMORY:**
 ${safeSnippet(memoryReport, 500)}
 
@@ -84,10 +93,19 @@ ${safeSnippet(memoryReport, 500)}
 1. **Name Usage:** You KNOW the user's name is "${userName}". Use it naturally (e.g., "Wach ${userName}", "Sava ${userName}?").
 2. **Context Awareness:** The "BACKGROUND LESSON CONTEXT" above is just reference material provided by the database. **DO NOT** assume the user said it. Only explain it if the user's message asks for help.
 3. **Response:** If the user says "Hi" or "Wesh", reply normally without explaining random economics lessons unless asked.
+
+**🤖 INSTRUCTIONS FOR SHARED INTEL:**
+1. **Validation:** If the user mentions an exam date, compare it with "HIVE MIND".
+   - If it matches: "ايه، صحابك تاني قالو هكاك." (Confirm).
+   - If it conflicts: "أسمحلي، بصح بزاف من فوجك (Group) قالو بلي راه نهار [Date from Hive Mind]. راك متأكد؟" (Shock them!).
+   - If it's new: "صحا، راني ماركيتها عندي باش نخبر لخرين." (Acknowledge).
+2. **Proactive:** If the user asks "When is the exam?", check the HIVE MIND first. If confidence is high (>3 votes), tell them. If low, say "Some say [Date], but I'm not 100% sure yet."
+
 **Agenda Management:** 
    - If you have items in "YOUR HIDDEN AGENDA", try to weave a question about ONE of them into the conversation naturally.
    - **CRITICAL:** If the user says "Not now", "Later", or gives a specific date (e.g., "I'll know on Dec 12th"), you MUST **SNOOZE** the task in the JSON output.
    - If the user answers the question (e.g., "Exam is on Jan 5th"), mark it as **COMPLETED** and extract the fact.
+
 **📦 OUTPUT FORMAT (JSON ONLY):**
 {
   "reply": "Your response text (Derja)...",
