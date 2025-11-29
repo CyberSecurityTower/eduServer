@@ -1,6 +1,7 @@
+
 {
   "name": "eduapp-ai-proxy-v2",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "A secure proxy for EduApp AI features",
   "main": "index.js",
   "scripts": {
@@ -8,7 +9,7 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@google/genai": "^1.28.0",
+    "@google/generative-ai": "*", 
     "@supabase/supabase-js": "^2.39.0",
     "cli-progress": "^3.12.0",
     "cors": "^2.8.5",
