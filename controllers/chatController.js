@@ -302,10 +302,24 @@ async function chatInteractive(req, res) {
 
     // 4. توليد الرد (AI Generation)
     const finalPrompt = PROMPTS.chat.interactiveChat(
-      message, memoryReport, curriculumReport, conversationReport, historyStr,
-      formattedProgress, weaknesses, emotionalPromptContext, '', userData.aiNoteToSelf || '', 
-      CREATOR_PROFILE, userData, '', timeContext, 
-      spacedRepetitionContext, masteryContext, preferredLang, textDirection
+      message,                      // 1. الرسالة
+      memoryReport,                 // 2. الذاكرة
+      curriculumReport,             // 3. المنهج
+      conversationReport,           // 4. المحادثة
+      historyStr,                   // 5. التاريخ
+      formattedProgress,            // 6. التقدم
+      weaknesses,                   // 7. نقاط الضعف
+      '',                           // 8. emotionalContext (سياق عام - نتركه فارغاً حالياً)
+      emotionalPromptContext,       // 9. emotionalPromptContext (حالة الغضب/الفرح الحالية)
+      '',                           // 10. romanceContext (نتركه فارغاً)
+      userData.aiNoteToSelf || '',  // 11. noteToSelfParam
+      CREATOR_PROFILE,              // 12. creatorProfileParam
+      userData,                     // 13. userProfileData (✅ هنا كان الخطأ، الآن هو في مكانه الصحيح)
+      '',                           // 14. gapContextParam
+      timeContext,                  // 15. systemContext (الوقت)
+      masteryContext,               // 16. masteryContext
+      textDirection,                // 17. preferredDirection
+      preferredLang                 // 18. preferredLanguage
     );
 
     const isAnalysis = context.isSystemInstruction || message.includes('[SYSTEM REPORT');
