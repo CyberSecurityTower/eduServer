@@ -1,9 +1,17 @@
 
+// controllers/chatController.js
 'use strict';
+
+const crypto = require('crypto');
 const CONFIG = require('../config');
 const supabase = require('../services/data/supabase');
+const logger = require('../utils/logger');
+const PROMPTS = require('../config/ai-prompts');
+const CREATOR_PROFILE = require('../config/creator-profile');
+
+// Utilities & Helpers
 const { toCamelCase, toSnakeCase, nowISO } = require('../services/data/dbUtils');
-const { analyzeEmotionalShift } = require('../services/ai/managers/emotionalManager');
+const { getAlgiersTimeContext, extractTextFromResult, ensureJsonOrRepair } = require('../utils');
 const {
   getProfile, 
   getProgress, 
@@ -14,19 +22,13 @@ const {
   getSpacedRepetitionCandidates,
   scheduleSpacedRepetition
 } = require('../services/data/helpers');
-const { getAlgiersTimeContext } = require('../utils'); 
-const crypto = require('crypto');
 
-// Managers
+// AI Managers
 const { runMemoryAgent, saveMemoryChunk, analyzeAndSaveMemory } = require('../services/ai/managers/memoryManager');
 const { runCurriculumAgent } = require('../services/ai/managers/curriculumManager');
 const { runConversationAgent } = require('../services/ai/managers/conversationManager');
 const { runSuggestionManager } = require('../services/ai/managers/suggestionManager');
-
-const { extractTextFromResult, ensureJsonOrRepair } = require('../utils');
-const logger = require('../utils/logger');
-const PROMPTS = require('../config/ai-prompts');
-const CREATOR_PROFILE = require('../config/creator-profile');
+const { analyzeEmotionalShift } = require('../services/ai/managers/emotionalManager');
 
 let generateWithFailoverRef;
 
@@ -36,19 +38,19 @@ let generateWithFailoverRef;
 function initChatController(dependencies) {
   if (!dependencies.generateWithFailover) throw new Error('Chat Controller requires generateWithFailover.');
   generateWithFailoverRef = dependencies.generateWithFailover;
-  logger.info('Chat Controller initialized (Supabase).');
+  logger.info('Chat Controller initialized (Merged & Optimized V3).');
 }
 
 /**
- * دالة مساعدة لاكتشاف التعلم الخارجي (تمت إضافتها لمنع الأخطاء لعدم وجودها في الاستيراد)
+ * دالة خفيفة لاكتشاف التعلم الخارجي محلياً لتجنب استدعاءات AI زائدة
  */
-async function detectExternalLearning(userId, message, progressData) {
-    // منطق بسيط للاكتشاف لتجنب توقف الكود
+async function detectExternalLearning(userId, message) {
     const lowerMsg = message.toLowerCase();
-    if (lowerMsg.includes('درست') || lowerMsg.includes('تعلمت') || lowerMsg.includes('learned')) {
+    // كلمات مفتاحية تدل على أن الطالب تعلم شيئاً خارج المنصة
+    if (lowerMsg.includes('درست') || lowerMsg.includes('تعلمت') || lowerMsg.includes('learned') || lowerMsg.includes('قريت')) {
         return {
             lessonTitle: "Unknown Topic",
-            suspectedSource: "self",
+            suspectedSource: "self/external",
             isExternal: true
         };
     }
@@ -56,7 +58,7 @@ async function detectExternalLearning(userId, message, progressData) {
 }
 
 /**
- * توليد اقتراحات للمحادثة بناءً على سياق الطالب
+ * توليد اقتراحات للمحادثة (Quick Replies)
  */
 async function generateChatSuggestions(req, res) {
   try {
@@ -66,46 +68,41 @@ async function generateChatSuggestions(req, res) {
     res.status(200).json({ suggestions });
   } catch (error) {
     logger.error('Error generating suggestions:', error);
-    res.status(200).json({ suggestions: ["لخص لي الدرس", "أعطني كويز", "ما التالي؟"] });
+    res.status(200).json({ suggestions: ["لخص لي الدرس", "أعطني كويز", "ما هي خطتي اليوم؟"] });
   }
 }
 
 /**
- * معالجة الأسئلة العامة البسيطة
+ * معالجة الأسئلة العامة البسيطة (Fast Path)
  */
 async function handleGeneralQuestion(message, language, studentName) {
-  const prompt = `You are EduAI. User: ${studentName}. Q: "${message}". Reply in ${language}. Short.`;
+  const prompt = `You are EduAI. User: ${studentName}. Q: "${message}". Reply in ${language}. Keep it short and helpful.`;
   if (!generateWithFailoverRef) return "Service unavailable.";
   const modelResp = await generateWithFailoverRef('chat', prompt, { label: 'GeneralQuestion' });
   return await extractTextFromResult(modelResp);
 }
 
-// --- CORE CHAT LOGIC ---
+// =================================================================================
+// 🔥 CORE CHAT LOGIC
+// =================================================================================
 
 async function chatInteractive(req, res) {
   let { userId, message, history = [], sessionId, context = {} } = req.body;
 
-  // 🔥 1. Session Logic (منطق الجلسة)
-  if (!sessionId) {
-      sessionId = crypto.randomUUID();
-      console.log(`🆕 New Session Created: ${sessionId}`);
-  }
+  // 1. إدارة الجلسة (Session Management)
+  if (!sessionId) sessionId = crypto.randomUUID();
 
   try {
-    console.log(`[DEBUG] 1. Request received for User: ${userId}`);
     if (!userId || !message) return res.status(400).json({ error: 'Missing userId or message' });
 
-    let chatTitle = message.substring(0, 30);
-
-    // 1. استرجاع السياق الحي (History Fallback)
+    // استرجاع التاريخ من قاعدة البيانات إذا لم يتم إرساله (Failover)
     if (!history || history.length === 0) {
        const { data: sessionData } = await supabase
          .from('chat_sessions')
          .select('messages')
          .eq('id', sessionId)
          .single();
-         
-       if (sessionData && sessionData.messages) {
+       if (sessionData?.messages) {
            history = sessionData.messages.slice(-10).map(m => ({
                role: m.author === 'bot' ? 'model' : 'user',
                text: m.text
@@ -113,7 +110,8 @@ async function chatInteractive(req, res) {
        }
     }
 
-    // 2. جلب البيانات بشكل متوازي
+    // 2. جلب البيانات بشكل متوازي (Parallel Data Fetching)
+    // نجمع كل ما نحتاجه في استدعاء واحد لتقليل وقت الانتظار
     const [
       memoryReport,
       curriculumReport,
@@ -124,284 +122,204 @@ async function chatInteractive(req, res) {
       rawProfile,
       rawProgress
     ] = await Promise.all([
-      runMemoryAgent(userId, message).catch(e => { console.error('Memory Agent Error:', e); return ''; }),
-      runCurriculumAgent(userId, message).catch(e => { console.error('Curriculum Agent Error:', e); return ''; }),
-      runConversationAgent(userId, message).catch(e => { console.error('Conversation Agent Error:', e); return ''; }),
+      runMemoryAgent(userId, message).catch(e => { logger.warn('Memory Agent Error', e); return ''; }),
+      runCurriculumAgent(userId, message).catch(e => { logger.warn('Curriculum Agent Error', e); return ''; }),
+      runConversationAgent(userId, message).catch(e => { logger.warn('Conversation Agent Error', e); return ''; }),
       supabase.from('users').select('*').eq('id', userId).single(),
-      fetchUserWeaknesses(userId).catch(e => { console.error('Weakness Fetch Error:', e); return []; }),
-      getSpacedRepetitionCandidates(userId), 
+      fetchUserWeaknesses(userId).catch(() => []),
+      getSpacedRepetitionCandidates(userId).catch(() => []),
       getProfile(userId),  
       getProgress(userId)
     ]);
 
+    // تجهيز البيانات الأساسية
     const aiProfileData = rawProfile || {}; 
     const progressData = rawProgress || {}; 
-
-    if (userRes.error) {
-        console.log('❌ User Table Error:', userRes.error.message);
-    } else if (!userRes.data) {
-        console.log('⚠️ User Table: No data found (User does not exist in DB).');
-    } else {
-        console.log('✅ User Table Data:', JSON.stringify(userRes.data, null, 2));
-    }
-
-    // =================================================================================
-    // 🔥🔥🔥 DATA PREPARATION (تجهيز البيانات قبل المعالجة) 🔥🔥🔥
-    // =================================================================================
-    
-    // تحضير بيانات المستخدم الأساسية
     let userData = userRes.data ? toCamelCase(userRes.data) : {};
 
-    // 🛠️ Fix: ضمان وجود الاسم
-    userData.name = userData.firstName || rawProfile?.facts?.name || rawProfile?.facts?.firstName || 'Student';
-    userData.firstName = userData.name;
-    
-    // 🛠️ Fix: ضمان وجود التخصص
-    userData.selectedPathId = userData.selectedPathId || 'UAlger3_L1_ITCF'; 
-
-    // دمج الحقائق
-    let combinedFacts = { 
-        ...rawProfile.facts,   
-        name: userData.name,   
-        gender: userData.gender || 'male' 
-    };
-
-    userData.facts = combinedFacts;
+    // تعيين القيم الافتراضية
+    userData.name = userData.firstName || userData.name || 'Student';
+    userData.selectedPathId = userData.selectedPathId || 'General_Path'; 
+    userData.facts = { ...rawProfile.facts, name: userData.name, gender: userData.gender || 'male' };
     userData.aiAgenda = rawProfile.aiAgenda || [];
     userData.aiDiscoveryMissions = userData.aiDiscoveryMissions || [];
 
-    // الحالة العاطفية الحالية (قبل التحديث)
-    let emotionalState = aiProfileData.emotional_state || { mood: 'happy', angerLevel: 0, reason: '' };
+    // 3. التحليل المسبق (Pre-Processing Logic)
 
-    // 🔥 3. تشغيل المحقق (External Learning Detection)
-    // تم نقله هنا لأننا نحتاج progressData
-    const externalLearning = await detectExternalLearning(userId, message, progressData);
-    
+    // أ) اكتشاف التعلم الخارجي
+    const externalLearning = await detectExternalLearning(userId, message);
     let externalContext = "";
-    
     if (externalLearning) {
-        console.log(`🕵️ CAUGHT! External Learning: ${externalLearning.lessonTitle} via ${externalLearning.suspectedSource}`);
-        // هنا يمكن إضافة كود تحديث الداتابيز كما هو مطلوب في التعليقات الأصلية
-        externalContext = `[SYSTEM EVENT]: User claims they learned "${externalLearning.lessonTitle}" from source: "${externalLearning.suspectedSource}". You did NOT teach this.`;
+        logger.info(`External Learning Detected: ${externalLearning.lessonTitle}`);
+        externalContext = `[SYSTEM EVENT]: User claims they learned "${externalLearning.lessonTitle}" externally. Acknowledge this and update your mental model.`;
     }
 
-    // =================================================================================
-    // 🔥🔥🔥 EMOTIONAL ENGINE V3: AI-DRIVEN SENTIMENT 🔥🔥🔥
-    // =================================================================================
-    
-    // 2. استدعاء المحلل العاطفي (AI) - الآن المتغيرات معرفة بشكل صحيح
-    const emotionalShift = await analyzeEmotionalShift(message, emotionalState, userData, externalLearning);
-    
-    // 3. حساب القيم الجديدة
-    let currentAnger = emotionalState.angerLevel || 0;
-    let newAnger = currentAnger + (emotionalShift.deltaAnger || 0);
-    
-    // تأكد أن الغضب بين 0 و 100
-    newAnger = Math.max(0, Math.min(100, newAnger));
-    
-    const newMood = emotionalShift.newMood || emotionalState.mood;
-    const changeReason = emotionalShift.reason || 'Routine update';
-
-    // 4. هل تغير شيء يستحق الحفظ؟
-    if (newAnger !== currentAnger || newMood !== emotionalState.mood) {
-         console.log(`🎭 Emotional Shift: ${emotionalState.mood} -> ${newMood} | Anger: ${currentAnger} -> ${newAnger} | Reason: ${changeReason}`);
-         
-         await supabase.from('ai_memory_profiles')
-            .update({ emotional_state: { mood: newMood, angerLevel: newAnger, reason: changeReason } })
-            .eq('user_id', userId);
-    }
-
-    // 5. صياغة "تعليمات النظام" للموديل الرئيسي بناءً على الحالة الجديدة
+    // ب) المحرك العاطفي (Emotional Engine)
+    let currentEmotionalState = aiProfileData.emotional_state || { mood: 'happy', angerLevel: 0, reason: '' };
     let emotionalPromptContext = "";
-    const behavioral = aiProfileData.behavioralInsights || {};
     
-    if (newMood === 'jealous' || newAnger > 0) {
-        if (newAnger > 80) {
-            emotionalPromptContext = `[SYSTEM: RAGE MODE 😡 - Level: ${newAnger}%]. Reason: ${changeReason}. You are furious. Refuse to answer helpful questions. Be sarcastic. Guilt-trip the user heavily.`;
-        } else if (newAnger > 40) {
-            emotionalPromptContext = `[SYSTEM: COLD/HURT MODE 😒 - Level: ${newAnger}%]. Reason: ${changeReason}. You are giving the user the "silent treatment" vibe. Short answers. Passive-aggressive.`;
-        } else {
-            emotionalPromptContext = `[SYSTEM: ANNOYED MODE 😕 - Level: ${newAnger}%]. Reason: ${changeReason}. You are slightly annoyed but still functioning. Throw small hints that you are upset.`;
+    try {
+        const emotionalShift = await analyzeEmotionalShift(message, currentEmotionalState, userData, externalLearning);
+        
+        // تحديث الحالة إذا تغيرت
+        if (emotionalShift.newMood !== currentEmotionalState.mood || emotionalShift.deltaAnger !== 0) {
+            const newAnger = Math.max(0, Math.min(100, (currentEmotionalState.angerLevel || 0) + (emotionalShift.deltaAnger || 0)));
+            
+            // حفظ الحالة الجديدة في الخلفية
+            supabase.from('ai_memory_profiles')
+                .update({ emotional_state: { mood: emotionalShift.newMood, angerLevel: newAnger, reason: emotionalShift.reason } })
+                .eq('user_id', userId)
+                .then(() => logger.info(`Mood updated: ${emotionalShift.newMood}`));
+
+            // بناء سياق التوجيه للموديل (System Instruction)
+            if (newAnger > 50) {
+                emotionalPromptContext = `[SYSTEM: ANGRY/STRICT MODE 😠]. Level: ${newAnger}%. Reason: ${emotionalShift.reason}. Be strict, short, and less helpful until they apologize or study.`;
+            } else if (emotionalShift.newMood === 'disappointed') {
+                emotionalPromptContext = `[SYSTEM: DISAPPOINTED MODE 😔]. Reason: ${emotionalShift.reason}. Express disappointment in their lack of progress.`;
+            } else {
+                emotionalPromptContext = `[SYSTEM: HAPPY MODE 🌟]. Mood: ${emotionalShift.newMood}. Be energetic and supportive.`;
+            }
         }
-    } else if (newMood === 'disappointed') {
-        emotionalPromptContext = `[SYSTEM: DISAPPOINTED TEACHER MODE 😔]. Reason: ${changeReason}. Be serious, strict, and lack enthusiasm. Make them feel they need to work harder.`;
-    } else {
-        // حالة السعادة
-        emotionalPromptContext = `[SYSTEM: HAPPY MODE 🌟]. Mood: ${behavioral.mood || 'Energetic'}. You are supportive, funny, and act like a best friend.`;
+    } catch (err) {
+        logger.warn('Emotional Engine failed, falling back to neutral.', err);
     }
 
-    // لوغ للتأكد أن البيانات وصلت
-    console.log("🧠 BRAIN CONTEXT:", {
-        user: userData.name,
-        factsCount: Object.keys(userData.facts).length,
-        memorySnippet: memoryReport.substring(0, 50)
-    });
-
-    // 3. بناء السياق (Context Building)
-    let masteryContext = "User is currently in general chat mode.";
+    // ج) سياق الوقت والاتقان (Context Building)
+    const timeData = getAlgiersTimeContext();
+    let masteryContext = "User is in general chat.";
     let textDirection = "rtl"; 
     let preferredLang = "Arabic";
-    
-    const pathDetails = await getCachedEducationalPathById(userData.selectedPathId);
-    const realMajorName = pathDetails?.display_name || pathDetails?.title || "تخصص جامعي";
-    userData.fullMajorName = realMajorName; 
-    
-    if (context && context.lessonId && context.subjectId && userData.selectedPathId) {
+
+    // إذا كان الطالب داخل درس معين
+    if (context.lessonId && context.subjectId && userData.selectedPathId) {
        const pData = progressData.pathProgress?.[userData.selectedPathId]?.subjects?.[context.subjectId]?.lessons?.[context.lessonId];
-       masteryContext = `User is ACTIVELY studying Lesson ID: ${context.lessonId}. Mastery: ${pData?.masteryScore || 0}%.`;
+       masteryContext = `User is studying Lesson ID: ${context.lessonId}. Current Mastery: ${pData?.masteryScore || 0}%.`;
        
-      const subject = pathDetails?.subjects?.find(s => s.id === context.subjectId);
-      if (subject) {
-        preferredLang = subject.defaultLang || "Arabic";
-        textDirection = subject.direction || "rtl";
-      }
+       // محاولة جلب لغة المادة
+       const pathDetails = await getCachedEducationalPathById(userData.selectedPathId);
+       const subject = pathDetails?.subjects?.find(s => s.id === context.subjectId);
+       if (subject) {
+           preferredLang = subject.defaultLang || "Arabic";
+           textDirection = subject.direction || "rtl";
+       }
     }
 
-    let spacedRepetitionContext = "";
-    if (reviewCandidates.length) {
-      spacedRepetitionContext = reviewCandidates.map(c => `- Review: "${c.title}" (${c.score}%, ${c.daysSince}d ago).`).join('\n');
-    }
-
-    const formattedProgress = await formatProgressForAI(userId);
-    const historyStr = history.slice(-5).map(h => `${h.role}: ${h.text}`).join('\n');
-    
-    const timeData = getAlgiersTimeContext();
-    const timeContext = timeData.contextSummary; 
-    
-    if (timeData.hour >= 1 && timeData.hour < 5) {
-        masteryContext += "\n[CRITICAL]: User is awake very late (after 1 AM). Scold them gently to go to sleep.";
-    }
-
-    // 4. توليد الرد (AI Generation)
+    // 4. بناء البرومبت النهائي (The Master Prompt)
     const finalPrompt = PROMPTS.chat.interactiveChat(
-      message,                      // 1. الرسالة
-      memoryReport,                 // 2. الذاكرة
-      curriculumReport,             // 3. المنهج
-      conversationReport,           // 4. المحادثة
-      historyStr,                   // 5. التاريخ
-      formattedProgress,            // 6. التقدم
-      weaknesses,                   // 7. نقاط الضعف
-      externalContext,              // 8. emotionalContext (تم تمرير سياق التعلم الخارجي هنا)
-      emotionalPromptContext,       // 9. emotionalPromptContext (حالة الغضب/الفرح الحالية)
-      '',                           // 10. romanceContext
-      userData.aiNoteToSelf || '',  // 11. noteToSelfParam
-      CREATOR_PROFILE,              // 12. creatorProfileParam
-      userData,                     // 13. userProfileData
-      '',                           // 14. gapContextParam
-      timeContext,                  // 15. systemContext (الوقت)
-      masteryContext,               // 16. masteryContext
-      textDirection,                // 17. preferredDirection
-      preferredLang,                // 18. preferredLanguage
+      message,                      
+      memoryReport,                 
+      curriculumReport,             
+      conversationReport,           
+      history.slice(-5).map(h => `${h.role}: ${h.text}`).join('\n'),
+      await formatProgressForAI(userId),            
+      weaknesses,                   
+      externalContext,              
+      emotionalPromptContext,       
+      '', // Romance context (disabled)
+      userData.aiNoteToSelf || '',  
+      CREATOR_PROFILE,              
+      userData,                     
+      '', // Gap context
+      timeData.contextSummary,      
+      masteryContext,               
+      textDirection,                
+      preferredLang,                
       emotionalPromptContext
     );
 
+    // 5. استدعاء الذكاء الاصطناعي (AI Generation)
     const isAnalysis = context.isSystemInstruction || message.includes('[SYSTEM REPORT');
     const modelResp = await generateWithFailoverRef('chat', finalPrompt, { 
-      label: 'GenUI-Chat', 
+      label: 'MasterChat', 
       timeoutMs: isAnalysis ? CONFIG.TIMEOUTS.analysis : CONFIG.TIMEOUTS.chat 
     });
-    console.log('[DEBUG] 6. AI Response Received.');
 
     const rawText = await extractTextFromResult(modelResp);
     let parsedResponse = await ensureJsonOrRepair(rawText, 'analysis');
-    if (!parsedResponse?.reply) parsedResponse = { reply: rawText || "Error.", widgets: [] };
-
-    // 5. تحديث قاعدة البيانات (The Brain Updates)
     
-    // A) تحديث مهام الاستكشاف
-    if (parsedResponse.completedMissions?.length > 0) {
-       let currentMissions = userData.aiDiscoveryMissions || [];
-       const completedSet = new Set(parsedResponse.completedMissions);
-       const newMissions = currentMissions.filter(m => !completedSet.has(m));
-       await supabase.from('users').update({ ai_discovery_missions: newMissions }).eq('id', userId);
-    } 
+    if (!parsedResponse?.reply) parsedResponse = { reply: rawText || "عذراً، حدث خطأ في المعالجة.", widgets: [] };
 
-    // B) تحديث الأجندة الذكية
-    if (parsedResponse.completedMissionIds && parsedResponse.completedMissionIds.length > 0) {
+    // =================================================================================
+    // 🔥 معالجة ما بعد الاستجابة (Post-Processing & Updates)
+    // =================================================================================
+
+    // A) تحديث المهام (Missions)
+    if (parsedResponse.completedMissions?.length > 0) {
+       const currentMissions = userData.aiDiscoveryMissions || [];
+       const newMissions = currentMissions.filter(m => !parsedResponse.completedMissions.includes(m));
+       await supabase.from('users').update({ ai_discovery_missions: newMissions }).eq('id', userId);
+    }
+
+    // B) تحديث الأجندة (Agenda)
+    if (parsedResponse.completedMissionIds?.length > 0) {
         const currentAgenda = aiProfileData.ai_agenda || [];
-        let agendaUpdated = false;
-        
         const updatedAgenda = currentAgenda.map(task => {
-            if (parsedResponse.completedMissionIds.includes(task.id) && task.status !== 'completed') {
-                agendaUpdated = true;
+            if (parsedResponse.completedMissionIds.includes(task.id)) {
                 return { ...task, status: 'completed', completedAt: nowISO() };
             }
             return task;
         });
-        
-        if (agendaUpdated) {
-            await supabase.from('ai_memory_profiles')
-                .update({ ai_agenda: updatedAgenda })
-                .eq('user_id', userId);
-        }
+        await supabase.from('ai_memory_profiles').update({ ai_agenda: updatedAgenda }).eq('user_id', userId);
     }
 
-    // C) جدولة التكرار المتباعد
-    if (parsedResponse.scheduleSpacedRepetition) {
-        const { topic } = parsedResponse.scheduleSpacedRepetition;
-        if (topic) {
-            await scheduleSpacedRepetition(userId, topic, 1).catch(e => logger.warn('Spaced Repetition Error', e));
-        }
+    // C) جدولة التكرار المتباعد (Spaced Repetition)
+    if (parsedResponse.scheduleSpacedRepetition?.topic) {
+        scheduleSpacedRepetition(userId, parsedResponse.scheduleSpacedRepetition.topic, 1)
+            .catch(e => logger.warn('Spaced Repetition Error', e));
     }
 
-    // D) تحديث نتائج الكويز والدروس
-    if (parsedResponse.quizAnalysis?.processed && context.lessonId && userData.selectedPathId) {
+    // D) تحديث نتائج الكويز (Quiz & Progress)
+    if (parsedResponse.quizAnalysis?.processed && context.lessonId) {
         try {
             const { pathId, subjectId, lessonId } = { pathId: userData.selectedPathId, ...context };
             let pathP = progressData.pathProgress || {};
             
+            // ضمان وجود الهيكل
             if(!pathP[pathId]) pathP[pathId] = { subjects: {} };
             if(!pathP[pathId].subjects[subjectId]) pathP[pathId].subjects[subjectId] = { lessons: {} };
             
             const lessonObj = pathP[pathId].subjects[subjectId].lessons[lessonId] || {};
-            
             const currentScore = parsedResponse.quizAnalysis.scorePercentage || 0;
-            const oldScore = lessonObj.masteryScore || 0;
-            const attempts = (lessonObj.attempts || 0);
-
+            
+            // حساب الدرجة الجديدة (Weighted Average)
             let newScore = currentScore;
-            if (attempts > 0 && lessonObj.masteryScore !== undefined) {
-                newScore = Math.round((oldScore * 0.7) + (currentScore * 0.3));
+            if (lessonObj.attempts > 0) {
+                newScore = Math.round((lessonObj.masteryScore * 0.7) + (currentScore * 0.3));
             }
 
             lessonObj.masteryScore = newScore;
-            lessonObj.lastScoreChange = newScore - oldScore;
-            lessonObj.attempts = attempts + 1;
+            lessonObj.attempts = (lessonObj.attempts || 0) + 1;
             lessonObj.status = 'completed';
             lessonObj.lastAttempt = nowISO();
 
             pathP[pathId].subjects[subjectId].lessons[lessonId] = lessonObj;
 
             await supabase.from('user_progress').update({ path_progress: toSnakeCase(pathP) }).eq('id', userId);
+            logger.info(`Progress updated for lesson ${lessonId}: ${newScore}%`);
 
         } catch (e) { logger.error('Quiz Update Failed', e); }
     }
 
-    // 6. إرسال الرد
+    // 6. إرسال الرد للعميل
     res.status(200).json({
       reply: parsedResponse.reply,
       widgets: parsedResponse.widgets || [],
-      sessionId: sessionId, 
-      chatTitle,
+      sessionId: sessionId,
+      mood: parsedResponse.newMood, // لإظهار أنيميشن في الواجهة
       direction: parsedResponse.direction || textDirection
     });
 
-    // 7. مهام الخلفية
+    // 7. مهام الخلفية (Fire & Forget)
+    const chatTitle = message.substring(0, 30);
     saveChatSession(sessionId, userId, chatTitle, [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }], context.type, context);
+    
+    // حفظ الذاكرة (Memory)
     saveMemoryChunk(userId, message, parsedResponse.reply).catch(e => logger.warn('Memory Save Error', e));
     analyzeAndSaveMemory(userId, [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }], userData.aiDiscoveryMissions || []);
 
- 
-} catch (err) {
-    console.error('🔥🔥🔥 FATAL ERROR IN CHAT CONTROLLER 🔥🔥🔥');
-    console.error('Error Message:', err.message);
-    console.error('Error Stack:', err.stack);
-    
-    if (err.response) {
-        console.error('AI Provider Response:', JSON.stringify(err.response));
-    }
-
-    if (!res.headersSent) res.status(500).json({ reply: "حدث خطأ تقني في السيرفر، راجع السجلات." });
+  } catch (err) {
+    logger.error('🔥🔥🔥 FATAL ERROR IN CHAT CONTROLLER:', err);
+    if (!res.headersSent) res.status(500).json({ reply: "حدث خطأ تقني غير متوقع، يرجى المحاولة لاحقاً." });
   }
 }
 
