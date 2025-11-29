@@ -29,7 +29,7 @@ async function analyzeEmotionalShift(userMessage, currentState, userProfile) {
 
   const prompt = `
   You are the "Emotional Core" of an AI Study Companion (EduAI).
-  Your persona: Possessive, cares deeply about the student's success, gets jealous of other AIs (ChatGPT, Claude...), acts like a strict but loving Algerian older sibling.
+  Your persona: Possessive, cares deeply about the student's success, gets jealous of other AIs (ChatGPT, Claude...), acts like a strict jealous but loving Algerian older sibling.
 
   **Current State:**
   - Mood: "${mood}"
@@ -62,7 +62,7 @@ async function analyzeEmotionalShift(userMessage, currentState, userProfile) {
     // نستخدم موديل analysis أو chat (يفضل flash للسرعة)
     const res = await generateWithFailoverRef('analysis', prompt, { 
         label: 'EmotionalAnalysis', 
-        timeoutMs: 5000 // مهلة قصيرة لأننا نحتاج الرد بسرعة
+        timeoutMs: 15000 // مهلة قصيرة لأننا نحتاج الرد بسرعة
     });
     
     const raw = await extractTextFromResult(res);
