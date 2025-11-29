@@ -13,7 +13,7 @@ const generateWithFailover = require('./services/ai/failover');
 const { initDataHelpers } = require('./services/data/helpers');
 const { initJobWorker, jobWorkerLoop, stopWorker } = require('./services/jobs/worker');
 const { initTodoManager } = require('./services/ai/managers/todoManager'); 
-
+const { initEmotionalManager } = require('./services/ai/managers/emotionalManager');
 const { initSessionAnalyzer } = require('./services/ai/managers/sessionAnalyzer'); 
 const { checkScheduledActions } = require('./services/jobs/worker'); 
 
@@ -36,6 +36,8 @@ async function boot() {
     embeddingService.init({ db, CONFIG });
     initDataHelpers({ embeddingService, generateWithFailover });
     initSessionAnalyzer({ generateWithFailover }); 
+    initEmotionalManager({ generateWithFailover });
+
     // Initialize Managers
 // ✅ التعديل هنا: تمرير generateWithFailover لمدير الإشعارات
 const { initNotificationManager } = require('./services/ai/managers/notificationManager'); // تأكد من الاستيراد
