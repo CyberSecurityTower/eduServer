@@ -118,7 +118,20 @@ async function chatInteractive(req, res) {
     ]);
     const aiProfileData = rawProfile || {}; 
     const progressData = rawProgress || {}; 
+  console.log('------------------------------------------------');
+    console.log(`🔍 Searching for User ID: ${userId}`);
+    
+    if (userRes.error) {
+        console.log('❌ User Table Error:', userRes.error.message);
+    } else if (!userRes.data) {
+        console.log('⚠️ User Table: No data found (User does not exist in DB).');
+    } else {
+        console.log('✅ User Table Data:', JSON.stringify(userRes.data, null, 2));
+    }
 
+    console.log('🧠 Memory Profile Data:', JSON.stringify(rawProfile, null, 2));
+    console.log('------------------------------------------------');
+    
  console.log('[DEBUG] 3. Data fetch complete.');
     console.log('[DEBUG] UserRes Error:', userRes.error); // تفقد هل هناك خطأ من سوبابيز
     // =================================================================================
