@@ -10,6 +10,7 @@ const logger = require('../utils/logger');
 const { generateSmartStudyStrategy } = require('../services/data/helpers'); 
 const embeddingService = require('../services/embeddings'); 
 const supabase = require('../services/data/supabase'); 
+const { runNightWatch } = require('../services/jobs/nightWatch'); // استيراد الدالة
 
 const db = getFirestoreInstance(); 
 let generateWithFailoverRef; 
@@ -347,11 +348,30 @@ async function triggerFullIndexing(req, res) {
   }
 }
 
+async function triggerNightWatch(req, res) {
+  try {
+    // حماية الرابط بمفتاح سري (ضعه في Environment Variables لاحقاً)
+    const secret = req.headers['x-cron-secret'];
+    if (secret !== process.env.CRON_SECRET && secret !== 'my-super-secret-cron-key') {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // تشغيل الحارس (بدون await إذا أردت استجابة سريعة، أو مع await للتقرير)
+    const report = await runNightWatch();
+    
+    res.status(200).json({ success: true, report });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+}
+
 module.exports = {
   initAdminController,
   indexSpecificLesson,
   runNightlyAnalysis,
   enqueueJobRoute,
   generateTitleRoute,
-  triggerFullIndexing 
+  triggerFullIndexing,
+  triggerNightWatch 
 };
