@@ -29,7 +29,7 @@ function initChatController(dependencies) {
   logger.info('Chat Controller initialized (One-Shot Architecture).');
 }
 
-// ✅ 1. معالجة الأسئلة العامة (للـ Worker)
+// ✅ 1. General Question Handler (Worker)
 async function handleGeneralQuestion(message, language, studentName) {
   const prompt = `You are EduAI. User: ${studentName}. Q: "${message}". Reply in ${language}. Short.`;
   if (!generateWithFailoverRef) return "Service unavailable.";
@@ -37,30 +37,30 @@ async function handleGeneralQuestion(message, language, studentName) {
   return await extractTextFromResult(modelResp);
 }
 
-// ✅ 2. توليد الاقتراحات (للـ Frontend)
+// ✅ 2. Suggestion Generator (Frontend)
 async function generateChatSuggestions(req, res) {
   try {
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId is required.' });
     
-    // نستخدم المدير الموجود أو نرجع قيم افتراضية
+    // Use the manager or fallback
     const suggestions = await runSuggestionManager(userId);
     res.status(200).json({ suggestions });
   } catch (error) {
     logger.error('Error generating suggestions:', error);
-    // Fallback سريع
+    // Fast Fallback
     res.status(200).json({ suggestions: ["لخص لي الدرس", "أعطني كويز", "ما التالي؟"] });
   }
 }
 
-// ✅ 3. الدالة الرئيسية (The Master Logic)
+// ✅ 3. Main Logic (The Master Logic)
 async function chatInteractive(req, res) {
   let { userId, message, history = [], sessionId, context = {} } = req.body;
 
   if (!sessionId) sessionId = crypto.randomUUID();
 
   try {
-    // 1. تجميع البيانات (Data Aggregation)
+    // 1. Data Aggregation
     const [
       memoryReport,
       curriculumReport,
@@ -75,24 +75,27 @@ async function chatInteractive(req, res) {
       getProgress(userId)
     ]);
 
+    // Prepare raw data
     let userData = userRes.data ? toCamelCase(userRes.data) : {};
     const aiProfileData = rawProfile || {}; 
     
-    // 🔥 دمج البيانات (The Fix) 🔥
-    // ندمج بيانات المستخدم الأساسية مع بيانات الذاكرة العميقة لضمان وجود facts
+    // 🔥 DATA MERGING FIX (The Correction) 🔥
+    // We merge basic user data with deep memory data to ensure 'facts' are accessible
     const fullUserProfile = {
         ...userData,           // (users table): id, email, first_name, selected_path_id
         ...aiProfileData,      // (ai_memory_profiles table): facts, profile_summary, ai_agenda
-        facts: aiProfileData.facts || {} // تأكيد وجود الحقائق
+        facts: aiProfileData.facts || {}, // Explicitly ensure facts object exists
+        // Fallback for name if not in facts
+        userName: aiProfileData.facts?.userName || userData.firstName || 'Student'
     };
 
-    // لوغ للتأكد (Debug)
+    // Debug Log
     console.log("🧠 Loaded Facts for AI:", Object.keys(fullUserProfile.facts).length > 0 ? fullUserProfile.facts : "NO FACTS FOUND");
 
-    // الحالة العاطفية الحالية
+    // Current Emotional State
     let currentEmotionalState = aiProfileData.emotional_state || { mood: 'happy', angerLevel: 0, reason: '' };
 
-    // حساب سياق الامتحان
+    // Exam Context Calculation
     let examContext = null;
     if (userData.nextExamDate) {
         const examDate = new Date(userData.nextExamDate);
@@ -104,15 +107,15 @@ async function chatInteractive(req, res) {
         }
     }
 
-    // 2. استدعاء الـ AI (The One Shot)
+    // 2. AI Invocation (The One Shot)
     const finalPrompt = PROMPTS.chat.interactiveChat(
       message,
       memoryReport,
       curriculumReport,
-      history.slice(-5).map(h => `${h.role}: ${h.text}`).join('\n'),
+      history.slice(-5).map(h => `${h.role}: ${h.text}`).join('\n'), // Format history as string
       await formatProgressForAI(userId),
       currentEmotionalState, 
-      fullUserProfile, // ✅ تم تمرير الكائن المدمج بدلاً من userData فقط
+      fullUserProfile, // ✅ Passing the correctly merged object
       getAlgiersTimeContext().contextSummary,
       examContext 
     );
@@ -127,9 +130,9 @@ async function chatInteractive(req, res) {
     
     if (!parsedResponse?.reply) parsedResponse = { reply: rawText || "Error.", widgets: [] };
 
-    // 3. ما بعد المعالجة (Post-Processing)
+    // 3. Post-Processing
 
-    // A) تحديث المشاعر
+    // A) Update Emotions
     if (parsedResponse.newMood || parsedResponse.newAnger !== undefined) {
         const newMood = parsedResponse.newMood || currentEmotionalState.mood;
         const newAnger = parsedResponse.newAnger !== undefined ? parsedResponse.newAnger : currentEmotionalState.angerLevel;
@@ -144,14 +147,14 @@ async function chatInteractive(req, res) {
         }
     }
 
-    // B) تسجيل التعلم الخارجي
+    // B) Record External Learning
     if (parsedResponse.externalLearning && parsedResponse.externalLearning.detected) {
         const { topic, source } = parsedResponse.externalLearning;
         logger.info(`🕵️ External Learning Detected: ${topic} via ${source}`);
         saveMemoryChunk(userId, `User claims to have learned "${topic}" from ${source} outside the app.`, "External Learning");
     }
 
-    // C) الرد على العميل
+    // C) Send Response
     res.status(200).json({
       reply: parsedResponse.reply,
       widgets: parsedResponse.widgets || [],
@@ -159,7 +162,7 @@ async function chatInteractive(req, res) {
       mood: parsedResponse.newMood 
     });
 
-    // مهام الخلفية
+    // Background Tasks
     saveChatSession(sessionId, userId, message.substring(0, 20), [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }]);
     analyzeAndSaveMemory(userId, [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }]);
 
