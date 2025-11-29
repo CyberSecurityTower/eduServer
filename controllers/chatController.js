@@ -76,6 +76,7 @@ async function chatInteractive(req, res) {
   }
 
   try {
+    console.log(`[DEBUG] 1. Request received for User: ${userId}`);
     if (!userId || !message) return res.status(400).json({ error: 'Missing userId or message' });
 
     let chatTitle = message.substring(0, 30);
@@ -106,14 +107,16 @@ async function chatInteractive(req, res) {
       reviewCandidates,
       rawProfile 
     ] = await Promise.all([
-      runMemoryAgent(userId, message).catch(() => ''),
-      runCurriculumAgent(userId, message).catch(() => ''),
-      runConversationAgent(userId, message).catch(() => ''),
+     runMemoryAgent(userId, message).catch(e => { console.error('Memory Agent Error:', e); return ''; }),
+      runCurriculumAgent(userId, message).catch(e => { console.error('Curriculum Agent Error:', e); return ''; }),
+      runConversationAgent(userId, message).catch(e => { console.error('Conversation Agent Error:', e); return ''; }),
       supabase.from('users').select('*').eq('id', userId).single(),
-      fetchUserWeaknesses(userId).catch(() => []),
-      getSpacedRepetitionCandidates(userId), getProfile(userId)
+      fetchUserWeaknesses(userId).catch(e => { console.error('Weakness Fetch Error:', e); return []; }),
+      getSpacedRepetitionCandidates(userId), 
+      getProfile(userId)
     ]);
-
+ console.log('[DEBUG] 3. Data fetch complete.');
+    console.log('[DEBUG] UserRes Error:', userRes.error); // تفقد هل هناك خطأ من سوبابيز
     // =================================================================================
     // 🔥🔥🔥 DATA PROCESSING & SAFETY NET (معالجة البيانات وشبكة الأمان) 🔥🔥🔥
     // =================================================================================
@@ -293,7 +296,8 @@ async function chatInteractive(req, res) {
       label: 'GenUI-Chat', 
       timeoutMs: isAnalysis ? CONFIG.TIMEOUTS.analysis : CONFIG.TIMEOUTS.chat 
     });
-    
+ console.log('[DEBUG] 6. AI Response Received.');
+
     const rawText = await extractTextFromResult(modelResp);
     let parsedResponse = await ensureJsonOrRepair(rawText, 'analysis');
     if (!parsedResponse?.reply) parsedResponse = { reply: rawText || "Error.", widgets: [] };
@@ -383,9 +387,19 @@ async function chatInteractive(req, res) {
     saveMemoryChunk(userId, message, parsedResponse.reply).catch(e => logger.warn('Memory Save Error', e));
     analyzeAndSaveMemory(userId, [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }], userData.aiDiscoveryMissions || []);
 
-  } catch (err) {
-    logger.error('Fatal Chat Error:', err);
-    if (!res.headersSent) res.status(500).json({ reply: "حدث خطأ غير متوقع." });
+ 
+} catch (err) {
+    // هذا هو اللوغ الذي سيخبرنا بالحقيقة
+    console.error('🔥🔥🔥 FATAL ERROR IN CHAT CONTROLLER 🔥🔥🔥');
+    console.error('Error Message:', err.message);
+    console.error('Error Stack:', err.stack);
+    
+    // إذا كان الخطأ من Google AI
+    if (err.response) {
+        console.error('AI Provider Response:', JSON.stringify(err.response));
+    }
+
+    if (!res.headersSent) res.status(500).json({ reply: "حدث خطأ تقني في السيرفر، راجع السجلات." });
   }
 }
 
