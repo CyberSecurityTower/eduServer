@@ -2,49 +2,44 @@
 // services/embeddings.js
 'use strict';
 
-const { GoogleGenAI } = require('@google/genai');
-const supabase = require('./data/supabase'); // تأكد من المسار الصحيح حسب هيكلتك
+// 👇 العودة للمكتبة القديمة
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const supabase = require('./data/supabase');
 const logger = require('../utils/logger');
 
 let CONFIG;
-let googleAiClient;
+let genAI;
 
 function init(initConfig) {
   CONFIG = initConfig.CONFIG;
 
   if (!process.env.GOOGLE_API_KEY) {
-    logger.error('Embeddings Service: Missing GOOGLE_API_KEY in environment variables.');
+    logger.error('Embeddings Service: Missing GOOGLE_API_KEY');
     return;
   }
 
   try {
-    googleAiClient = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY });
+    genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
   } catch (error) {
-    logger.error('Embeddings Service: Failed to initialize Google GenAI client:', error.message);
+    logger.error('Embeddings Service: Failed to initialize:', error.message);
   }
 }
 
 async function generateEmbedding(text) {
   try {
-    if (!googleAiClient) {
-      throw new Error('Google AI Client is not initialized. Call init() first.');
+    if (!genAI) {
+      throw new Error('Google AI Client is not initialized.');
     }
 
     if (!text || typeof text !== 'string' || text.trim().length === 0) {
       return [];
     }
 
+    const model = genAI.getGenerativeModel({ model: 'text-embedding-004' });
     const cleanText = text.replace(/\n/g, ' ');
 
-    // 🔥 التعديل هنا: استخدام contents (مصفوفة) بدلاً من content (كائن)
-    const result = await googleAiClient.models.embedContent({
-      model: 'text-embedding-004',
-      contents: [
-        {
-          parts: [{ text: cleanText }]
-        }
-      ]
-    });
+    // 👇 الطريقة القديمة البسيطة
+    const result = await model.embedContent(cleanText);
 
     if (result && result.embedding && result.embedding.values) {
       return result.embedding.values;
