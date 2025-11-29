@@ -2,7 +2,6 @@
 // services/ai/index.js
 'use strict';
 
-// 👇 استخدام المكتبة الجديدة
 const { GoogleGenAI } = require('@google/genai');
 const CONFIG = require('../../config');
 const logger = require('../../utils/logger');
@@ -24,13 +23,10 @@ function initializeModelPools() {
 
   for (const key of apiKeyCandidates) {
     try {
-      // 👇 التهيئة بالمكتبة الجديدة
       const client = new GoogleGenAI({ apiKey: key });
-      
       keyStates[key] = { fails: 0, backoffUntil: 0 };
       
       for (const pool of poolNames) {
-        // في المكتبة الجديدة، لا ننشئ "instance" للموديل، بل نحفظ الـ client واسم الموديل
         modelPools[pool].push({ 
             client: client, 
             modelName: CONFIG.MODEL[pool], 
@@ -45,28 +41,22 @@ function initializeModelPools() {
   logger.success('Model pools ready (GenAI SDK V1).');
 }
 
-// 👇 دالة الاستدعاء الجديدة المتوافقة مع Gemini 3
 async function _callModelInstance(instance, prompt, timeoutMs, label) {
   const { client, modelName } = instance;
   
   try {
-    // تحويل البرومبت إلى الصيغة التي تفهمها المكتبة الجديدة
-    // المكتبة الجديدة تتوقع contents كمصفوفة
     let contents = [];
     if (typeof prompt === 'string') {
         contents = [{ role: 'user', parts: [{ text: prompt }] }];
     } else {
-        // إذا كان البرومبت معقداً أصلاً
         contents = prompt; 
     }
 
-    // إعدادات التفكير (اختياري، يمكن تفعيلها إذا أردت ذكاءً خارقاً)
     const config = {
-        temperature: 0.3, // تقليل العشوائية لزيادة الدقة
-        // thinkingConfig: { thinkingLevel: 'HIGH' } // ⚠️ فعل هذا السطر فقط إذا كان الموديل يدعم Thinking
+        temperature: 0.4,
     };
 
-    // 👇 الاستدعاء الجديد
+    // استدعاء الموديل
     const response = await withTimeout(
         client.models.generateContent({
             model: modelName,
@@ -77,19 +67,43 @@ async function _callModelInstance(instance, prompt, timeoutMs, label) {
         `${label}:generateContent`
     );
 
-    // استخراج النص من الرد الجديد
-    if (response && response.text) {
-        return response.text();
-    } else if (response && response.candidates && response.candidates[0]) {
-         // أحياناً الرد يكون في candidates
-         const parts = response.candidates[0].content.parts;
-         return parts.map(p => p.text).join('');
-    }
+    // 🔥 التعديل الجوهري: استخراج النص بطريقة آمنة جداً 🔥
     
-    throw new Error('Empty response from GenAI');
+    // محاولة 1: الطريقة الرسمية
+    if (response && typeof response.text === 'function') {
+        try {
+            return response.text();
+        } catch (e) {
+            // تجاهل الخطأ والمحاولة بالطريقة اليدوية
+        }
+    }
+
+    // محاولة 2: الاستخراج اليدوي من candidates
+    if (response && response.candidates && response.candidates.length > 0) {
+        const firstCandidate = response.candidates[0];
+        if (firstCandidate.content && firstCandidate.content.parts && firstCandidate.content.parts.length > 0) {
+            return firstCandidate.content.parts.map(p => p.text).join('');
+        }
+    }
+
+    // محاولة 3: فحص الهيكل العام (للموديلات التجريبية أحياناً)
+    if (response && response.text) {
+        return response.text; // أحياناً تكون خاصية وليست دالة
+    }
+
+    throw new Error('Empty response structure from GenAI');
 
   } catch (err) {
-    logger.warn(`GenAI call failed for ${modelName} (key ending ${instance.key.slice(-4)}):`, err.message);
+    // تحسين رسالة الخطأ لمعرفة السبب
+    let errMsg = err.message;
+    if (err.body) {
+        try {
+            const body = JSON.parse(err.body);
+            if (body.error) errMsg = JSON.stringify(body.error);
+        } catch(e) {}
+    }
+    
+    logger.warn(`GenAI call failed for ${modelName} (key ending ${instance.key.slice(-4)}):`, errMsg);
     throw err;
   }
 }
