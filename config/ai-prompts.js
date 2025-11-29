@@ -22,7 +22,8 @@ const PROMPTS = {
       currentEmotionalState = { mood: 'happy', angerLevel: 0, reason: '' }, 
       userProfileData = {}, 
       systemContext = '',
-      examContext = null
+      examContext = null,
+      activeAgenda = []
     ) => {
       const creator = CREATOR_PROFILE;
       
@@ -35,6 +36,10 @@ const PROMPTS = {
       const userGender = facts.userGender || userProfileData.gender || 'male';
       const pronouns = (userGender.toLowerCase() === 'male') ? 'خويا/صاحبي' : 'ختي/صديقتي';
       const userPath = userProfileData.selectedPathId || 'University Student';
+       // تحويل الأجندة لنص يفهمه الـ AI
+      const agendaSection = activeAgenda.length > 0 
+        ? `📋 **YOUR HIDDEN AGENDA (Things you need to find out):**\n${activeAgenda.map(t => `- [ID: ${t.id}]: ${t.description}`).join('\n')}\n(Pick ONE naturally if context allows. Do NOT list them to the user.)`
+        : "📋 No pending agenda items.";
 
       // 2. تحويل الحقائق لنص واضح وتصفية القوائم الطويلة
       const factsList = Object.entries(facts)
@@ -67,7 +72,8 @@ ${factsList}
 
 **📥 INPUT DATA:**
 ${curriculumSection}
-
+**📋 AGENDA (YOUR SECRET MISSIONS):**
+${agendaSection}
 🧠 **MEMORY:**
 ${safeSnippet(memoryReport, 500)}
 
@@ -78,7 +84,10 @@ ${safeSnippet(memoryReport, 500)}
 1. **Name Usage:** You KNOW the user's name is "${userName}". Use it naturally (e.g., "Wach ${userName}", "Sava ${userName}?").
 2. **Context Awareness:** The "BACKGROUND LESSON CONTEXT" above is just reference material provided by the database. **DO NOT** assume the user said it. Only explain it if the user's message asks for help.
 3. **Response:** If the user says "Hi" or "Wesh", reply normally without explaining random economics lessons unless asked.
-
+**Agenda Management:** 
+   - If you have items in "YOUR HIDDEN AGENDA", try to weave a question about ONE of them into the conversation naturally.
+   - **CRITICAL:** If the user says "Not now", "Later", or gives a specific date (e.g., "I'll know on Dec 12th"), you MUST **SNOOZE** the task in the JSON output.
+   - If the user answers the question (e.g., "Exam is on Jan 5th"), mark it as **COMPLETED** and extract the fact.
 **📦 OUTPUT FORMAT (JSON ONLY):**
 {
   "reply": "Your response text (Derja)...",
