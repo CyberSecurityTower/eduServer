@@ -9,7 +9,7 @@ const {
   formatProgressForAI,
   saveChatSession, 
   getCachedEducationalPathById,
-  fetchUserWeaknesses, // ✅ تمت إضافتها لجلب نقاط الضعف
+  fetchUserWeaknesses, 
   updateAiAgenda 
 } = require('../services/data/helpers');
 const { getAlgiersTimeContext, extractTextFromResult, ensureJsonOrRepair } = require('../utils'); 
@@ -19,6 +19,8 @@ const crypto = require('crypto');
 const { runMemoryAgent, saveMemoryChunk, analyzeAndSaveMemory } = require('../services/ai/managers/memoryManager');
 const { runCurriculumAgent } = require('../services/ai/managers/curriculumManager');
 const { runSuggestionManager } = require('../services/ai/managers/suggestionManager');
+// ✅ إضافة Group Manager
+const { getGroupMemory, updateGroupKnowledge } = require('../services/ai/managers/groupManager');
 
 const logger = require('../utils/logger');
 const PROMPTS = require('../config/ai-prompts');
@@ -27,7 +29,7 @@ let generateWithFailoverRef;
 
 function initChatController(dependencies) {
   generateWithFailoverRef = dependencies.generateWithFailover;
-  logger.info('Chat Controller initialized (One-Shot Architecture).');
+  logger.info('Chat Controller initialized (One-Shot Architecture with Group Intelligence).');
 }
 
 // ✅ 1. General Question Handler (Worker)
@@ -68,29 +70,47 @@ async function chatInteractive(req, res) {
       userRes,
       rawProfile,
       rawProgress,
-      weaknesses,       // ✅ جلب نقاط الضعف
-      formattedProgress // ✅ جلب التقدم كنص
+      weaknesses,
+      formattedProgress 
     ] = await Promise.all([
       runMemoryAgent(userId, message),
       runCurriculumAgent(userId, message), 
       supabase.from('users').select('*').eq('id', userId).single(),
       getProfile(userId),  
       getProgress(userId),
-      fetchUserWeaknesses(userId), // ✅ إضافة دالة جلب نقاط الضعف
-      formatProgressForAI(userId)  // ✅ تحضير نص التقدم هنا لتسريع العملية
+      fetchUserWeaknesses(userId),
+      formatProgressForAI(userId)
     ]);
 
     // Prepare raw data
     let userData = userRes.data ? toCamelCase(userRes.data) : {};
     const aiProfileData = rawProfile || {}; 
     
-    // 🔥 DATA MERGING FIX (The Correction) 🔥
-    // We merge basic user data with deep memory data to ensure 'facts' are accessible
+    // ✅ 1.1 معالجة بيانات الفوج والذاكرة المشتركة
+    const groupId = userData.groupId; // تأكد من وجود هذا الحقل في قاعدة البيانات
+    let sharedContext = "";
+
+    if (groupId) {
+        try {
+            const groupMemory = await getGroupMemory(groupId);
+            if (groupMemory && groupMemory.exams) {
+                sharedContext = "🏫 **SHARED CLASS MEMORY (What other students said):**\n";
+                Object.entries(groupMemory.exams).forEach(([subject, data]) => {
+                    sharedContext += `- ${subject} Exam: Most say ${data.confirmed_value} (Confidence: ${data.confidence_score} votes).`;
+                    if (data.has_conflict) sharedContext += ` ⚠️ CONFLICT: Some students disagree! Verify this.`;
+                    sharedContext += "\n";
+                });
+            }
+        } catch (groupErr) {
+            logger.warn(`Failed to load group memory for group ${groupId}:`, groupErr);
+        }
+    }
+    
+    // 🔥 DATA MERGING FIX 🔥
     const fullUserProfile = {
-        ...userData,           // (users table): id, email, first_name, selected_path_id
-        ...aiProfileData,      // (ai_memory_profiles table): facts, profile_summary, ai_agenda
-        facts: aiProfileData.facts || {}, // Explicitly ensure facts object exists
-        // Fallback for name if not in facts
+        ...userData,           
+        ...aiProfileData,      
+        facts: aiProfileData.facts || {}, 
         userName: aiProfileData.facts?.userName || userData.firstName || 'Student'
     };
 
@@ -115,8 +135,10 @@ async function chatInteractive(req, res) {
     // تحضير سجل المحادثة كنص
     const historyString = history.slice(-5).map(h => `${h.role}: ${h.text}`).join('\n');
 
+    // دمج سياق النظام مع الذاكرة المشتركة
+    const systemContextCombined = getAlgiersTimeContext().contextSummary + (sharedContext ? `\n\n${sharedContext}` : "");
+
     // 2. AI Invocation (The One Shot)
-    // ✅ تصحيح ترتيب المعاملات ليتطابق مع ai-prompts.js
     const finalPrompt = PROMPTS.chat.interactiveChat(
       message,                                // 1. message
       memoryReport,                           // 2. memoryReport
@@ -126,8 +148,8 @@ async function chatInteractive(req, res) {
       formattedProgress,                      // 6. formattedProgress
       weaknesses,                             // 7. weaknesses
       currentEmotionalState,                  // 8. currentEmotionalState
-      fullUserProfile,                        // 9. userProfileData (✅ تم التصحيح: كان examContext سابقاً مما سبب الخطأ)
-      getAlgiersTimeContext().contextSummary, // 10. systemContext
+      fullUserProfile,                        // 9. userProfileData
+      systemContextCombined,                  // 10. systemContext (الآن يحتوي على Shared Context)
       examContext                             // 11. examContext
     );
 
@@ -143,7 +165,7 @@ async function chatInteractive(req, res) {
 
     // 3. Post-Processing
 
-    // A) Update Emotions
+    // ✅ A) Update Emotions
     if (parsedResponse.newMood || parsedResponse.newAnger !== undefined) {
         const newMood = parsedResponse.newMood || currentEmotionalState.mood;
         const newAnger = parsedResponse.newAnger !== undefined ? parsedResponse.newAnger : currentEmotionalState.angerLevel;
@@ -158,14 +180,31 @@ async function chatInteractive(req, res) {
         }
     }
 
-    // B) Record External Learning
+    // ✅ B) Record External Learning
     if (parsedResponse.externalLearning && parsedResponse.externalLearning.detected) {
         const { topic, source } = parsedResponse.externalLearning;
         logger.info(`🕵️ External Learning Detected: ${topic} via ${source}`);
         saveMemoryChunk(userId, `User claims to have learned "${topic}" from ${source} outside the app.`, "External Learning");
     }
 
-    // C) Send Response
+    // ✅ C) Update Group Knowledge (الذكاء الجماعي)
+    if (parsedResponse.new_facts && parsedResponse.new_facts.examDate && groupId) {
+        try {
+            const { subject, date } = parsedResponse.new_facts.examDate;
+            logger.info(`🏫 Group Intelligence: Detecting exam info for ${subject} on ${date}`);
+            
+            const result = await updateGroupKnowledge(groupId, 'exams', subject, date);
+            
+            // إذا كان هناك تضارب، يمكن إضافته للملاحظات (أو يتم التعامل معه في الرد القادم للذكاء الاصطناعي)
+            if (result.conflictDetected) {
+                logger.info(`⚠️ Conflict detected in group knowledge for ${subject}`);
+            }
+        } catch (groupUpdateErr) {
+            logger.error('Error updating group knowledge:', groupUpdateErr);
+        }
+    }
+
+    // D) Send Response
     res.status(200).json({
       reply: parsedResponse.reply,
       widgets: parsedResponse.widgets || [],
