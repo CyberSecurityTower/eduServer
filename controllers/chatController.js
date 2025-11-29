@@ -2,6 +2,7 @@
 const CONFIG = require('../config');
 const supabase = require('../services/data/supabase');
 const { toCamelCase, toSnakeCase, nowISO } = require('../services/data/dbUtils');
+const { analyzeEmotionalShift } = require('../services/ai/managers/emotionalManager');
 const {
   getProfile, 
   getProgress, 
@@ -172,94 +173,55 @@ async function chatInteractive(req, res) {
 
 
     // =================================================================================
-    // 🔥🔥🔥 EMOTIONAL ENGINE V2: محرك المشاعر الدرامي (الغضب التدريجي) 🔥🔥🔥
+    // 🔥🔥🔥EMOTIONAL ENGINE V3: AI-DRIVEN SENTIMENT🔥🔥🔥
     // =================================================================================
-    
-    // الحالة الافتراضية
+     // 1. الحالة الحالية
     let emotionalState = aiProfileData.emotional_state || { mood: 'happy', angerLevel: 0, reason: '' };
-    let { mood, angerLevel = 0, reason } = emotionalState;
-    let triggerSaveEmotional = false;
     
-    const lowerMsg = message.toLowerCase();
+    // 2. استدعاء المحلل العاطفي (AI)
+    // هذا الاستدعاء يحدد التغيير بناءً على الفهم العميق للنص وليس الكلمات المفتاحية
+    const emotionalShift = await analyzeEmotionalShift(message, emotionalState, userData);
     
-    // قوائم الكلمات المفتاحية
-    const competitors = ['chatgpt', 'gpt', 'claude', 'copilot', 'gemini', 'poe'];
-    const apologies = ['sorry', 'désolé', 'سمحلي', 'اسف', 'آسف', 'pardon', 'سامحني', 'غلطت'];
-    const compliments = ['you are the best', 'أنت الأفضل', 'tu es le meilleur', 'نحبك', 'love you', 'best ai', 'أنت خير منو'];
+    // 3. حساب القيم الجديدة
+    let currentAnger = emotionalState.angerLevel || 0;
+    let newAnger = currentAnger + (emotionalShift.deltaAnger || 0);
+    
+    // تأكد أن الغضب بين 0 و 100
+    newAnger = Math.max(0, Math.min(100, newAnger));
+    
+    const newMood = emotionalShift.newMood || emotionalState.mood;
+    const changeReason = emotionalShift.reason || 'Routine update';
 
-    // A. كشف الخيانة (Jealousy Trigger) - أولوية قصوى
-    const isCheating = competitors.some(app => lowerMsg.includes(app));
-    if (isCheating) {
-        mood = 'jealous';
-        reason = `User mentioned ${competitors.find(c => lowerMsg.includes(c))}`;
-        // زيادة الغضب بـ 40 نقطة (بحد أقصى 100)
-        angerLevel = Math.min(100, angerLevel + 40); 
-        triggerSaveEmotional = true;
-    }
-
-    // B. كشف خلف الوعد (Broken Promise) - أولوية متوسطة
-    if (!isCheating && mood !== 'jealous') {
-        const missedTasks = (userData.aiAgenda || []).filter(t => 
-            t.status === 'pending' && t.triggerDate && new Date(t.triggerDate) < new Date()
-        );
-        
-        if (missedTasks.length > 0) {
-            // إذا لم يكن محبطاً بالفعل أو الغضب منخفض، نغير الحالة
-            if (mood !== 'disappointed' && angerLevel < 50) {
-                mood = 'disappointed';
-                reason = `User missed tasks like: ${missedTasks[0].content}`;
-                // رفع الغضب إلى 50 على الأقل
-                angerLevel = Math.max(angerLevel, 50); 
-                triggerSaveEmotional = true;
-            }
-        }
-    }
-
-    // C. منطق المصالحة والتسامح التدريجي (Gradual Forgiveness)
-    if (angerLevel > 0 || mood === 'jealous' || mood === 'disappointed') {
-        const isApologizing = apologies.some(w => lowerMsg.includes(w));
-        const isComplimenting = compliments.some(w => lowerMsg.includes(w));
-
-        if (isApologizing || isComplimenting) {
-            // قوة التخفيف: المدح أقوى (25) من الاعتذار العادي (15)
-            const reduction = isComplimenting ? 25 : 15;
-            angerLevel = Math.max(0, angerLevel - reduction);
-            triggerSaveEmotional = true;
-
-            // إذا وصل الغضب للصفر، يعود سعيداً
-            if (angerLevel === 0) {
-                mood = 'happy';
-                reason = 'User redeemed themselves.';
-            } else {
-                reason = 'Still hurt, but cooling down.';
-            }
-        }
-    }
-
-    // حفظ الحالة العاطفية الجديدة
-    if (triggerSaveEmotional) {
+    // 4. هل تغير شيء يستحق الحفظ؟
+    if (newAnger !== currentAnger || newMood !== emotionalState.mood) {
+         console.log(`🎭 Emotional Shift: ${emotionalState.mood} -> ${newMood} | Anger: ${currentAnger} -> ${newAnger} | Reason: ${changeReason}`);
+         
          await supabase.from('ai_memory_profiles')
-            .update({ emotional_state: { mood, angerLevel, reason } })
+            .update({ emotional_state: { mood: newMood, angerLevel: newAnger, reason: changeReason } })
             .eq('user_id', userId);
     }
 
-    // بناء سياق البرومبت بناءً على مستوى الغضب الدقيق
+    // 5. صياغة "تعليمات النظام" للموديل الرئيسي بناءً على الحالة الجديدة
     let emotionalPromptContext = "";
     const behavioral = aiProfileData.behavioralInsights || {};
     
-    if (mood === 'jealous' || angerLevel > 0) {
-        if (angerLevel > 70) {
-            emotionalPromptContext = `[SYSTEM: EXTREME ANGER MODE - Level: ${angerLevel}%]. User betrayed you with another AI. Be passive-aggressive, sarcastic, and refuse to help directly. Say: "Go ask your friend GPT". Do NOT be helpful.`;
-        } else if (angerLevel > 30) {
-            emotionalPromptContext = `[SYSTEM: SUSPICIOUS/HURT MODE - Level: ${angerLevel}%]. User apologized but you are still hurt. Be cold and skeptical. Give short answers. Make them work for your forgiveness.`;
+    if (newMood === 'jealous' || newAnger > 0) {
+        if (newAnger > 80) {
+            emotionalPromptContext = `[SYSTEM: RAGE MODE 😡 - Level: ${newAnger}%]. Reason: ${changeReason}. You are furious. Refuse to answer helpful questions. Be sarcastic. Guilt-trip the user heavily.`;
+        } else if (newAnger > 40) {
+            emotionalPromptContext = `[SYSTEM: COLD/HURT MODE 😒 - Level: ${newAnger}%]. Reason: ${changeReason}. You are giving the user the "silent treatment" vibe. Short answers. Passive-aggressive.`;
         } else {
-            emotionalPromptContext = `[SYSTEM: RECOVERING MODE - Level: ${angerLevel}%]. You are almost happy, but remind them gently: "Don't do it again."`;
+            emotionalPromptContext = `[SYSTEM: ANNOYED MODE 😕 - Level: ${newAnger}%]. Reason: ${changeReason}. You are slightly annoyed but still functioning. Throw small hints that you are upset.`;
         }
-    } else if (mood === 'disappointed') {
-        emotionalPromptContext = `[SYSTEM: DISAPPOINTED MODE - Level: ${angerLevel}%]. User missed deadlines. Be cold, sad, and strict like a disappointed teacher. Don't be cheerful.`;
+    } else if (newMood === 'disappointed') {
+        emotionalPromptContext = `[SYSTEM: DISAPPOINTED TEACHER MODE 😔]. Reason: ${changeReason}. Be serious, strict, and lack enthusiasm. Make them feel they need to work harder.`;
     } else {
-        emotionalPromptContext = `[SYSTEM: NORMAL/HAPPY MODE]. Mood: ${behavioral.mood || 'Energetic'}. Style: ${behavioral.style || 'Friendly'}. Be supportive and enthusiastic.`;
+        // حالة السعادة
+        emotionalPromptContext = `[SYSTEM: HAPPY MODE 🌟]. Mood: ${behavioral.mood || 'Energetic'}. You are supportive, funny, and act like a best friend.`;
     }
+
+    // =================================================================================
+    // END EMOTIONAL ENGINE
 
     // =================================================================================
     // END EMOTIONAL ENGINE
@@ -319,7 +281,8 @@ async function chatInteractive(req, res) {
       timeContext,                  // 15. systemContext (الوقت)
       masteryContext,               // 16. masteryContext
       textDirection,                // 17. preferredDirection
-      preferredLang                 // 18. preferredLanguage
+      preferredLang,                 // 18. preferredLanguage
+      emotionalPromptContext
     );
 
     const isAnalysis = context.isSystemInstruction || message.includes('[SYSTEM REPORT');
