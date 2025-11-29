@@ -27,7 +27,7 @@ const {
 const { runMemoryAgent, saveMemoryChunk, analyzeAndSaveMemory } = require('../services/ai/managers/memoryManager');
 const { runCurriculumAgent } = require('../services/ai/managers/curriculumManager');
 const { runSuggestionManager } = require('../services/ai/managers/suggestionManager');
-const { getGroupMemory, updateGroupKnowledge } = require('../services/ai/managers/groupManager'); // ✅ Group Manager
+const { getGroupMemory, updateGroupKnowledge } = require('../services/ai/managers/groupManager');
 
 let generateWithFailoverRef;
 
@@ -36,7 +36,7 @@ let generateWithFailoverRef;
 // ==========================================
 function initChatController(dependencies) {
   generateWithFailoverRef = dependencies.generateWithFailover;
-  logger.info('Chat Controller initialized (Integrated Architecture: One-Shot + Hive Mind + Agenda).');
+  logger.info('Chat Controller initialized (Integrated: One-Shot + Hive Mind + Agenda + Group Enforcement).');
 }
 
 // ==========================================
@@ -77,26 +77,86 @@ async function chatInteractive(req, res) {
     // ---------------------------------------------------------
     // A. Data Aggregation (Parallel Fetching)
     // ---------------------------------------------------------
+    // نجلب البيانات الأساسية أولاً للتحقق من حالة المستخدم
     const [
-      memoryReport,
-      curriculumReport,
       userRes,
       rawProfile,
-      rawProgress, // قد نحتاجه مستقبلاً للحسابات الخام
+      // نجلب باقي البيانات التي قد لا نحتاجها إذا توقفنا عند "طلب الفوج"
+      // لكن لتبسيط الكود وعدم تكرار الاستدعاءات لاحقاً، نجلبها الآن (أو يمكن تأخيرها لتحسين الأداء)
+      memoryReport,
+      curriculumReport,
       weaknesses,
       formattedProgress
     ] = await Promise.all([
+      supabase.from('users').select('*, group_id, role').eq('id', userId).single(),
+      getProfile(userId),
       runMemoryAgent(userId, message),
       runCurriculumAgent(userId, message), 
-      supabase.from('users').select('*, group_id, role').eq('id', userId).single(),
-      getProfile(userId),  
-      getProgress(userId),
       fetchUserWeaknesses(userId),
       formatProgressForAI(userId)
     ]);
 
     // Prepare User Data
     let userData = userRes.data ? toCamelCase(userRes.data) : {};
+    
+    // =========================================================
+    // 🛑 GROUP ENFORCEMENT LOGIC (New Requirement)
+    // =========================================================
+    if (!userData.groupId) {
+        // التحقق مما إذا كان المستخدم يحاول تحديد الفوج الآن
+        // Regex matches: "فوج 1", "group 2", "groupe 3", "g 4"
+        const groupMatch = message.match(/(?:فوج|group|groupe|g)\s*(\d+)/i);
+
+        if (groupMatch) {
+            const groupNum = groupMatch[1];
+            // بناء ID الفوج: نعتمد على المسار الدراسي المختار + رقم الفوج
+            // مثال: إذا كان المسار "USTHB_L1_MI" والفوج 2 -> "USTHB_L1_MI_G2"
+            const pathId = userData.selectedPathId || 'General'; 
+            const newGroupId = `${pathId}_G${groupNum}`;
+            
+            logger.info(`👥 User ${userId} joining group: ${newGroupId}`);
+
+            // 1. تحديث المستخدم
+            await supabase.from('users')
+                .update({ group_id: newGroupId })
+                .eq('id', userId);
+            
+            // 2. التأكد من وجود الفوج في قاعدة البيانات (أو إنشاؤه)
+            const { data: groupExists } = await supabase
+                .from('study_groups')
+                .select('id')
+                .eq('id', newGroupId)
+                .single();
+
+            if (!groupExists) {
+                await supabase.from('study_groups').insert({ 
+                    id: newGroupId, 
+                    path_id: userData.selectedPathId,
+                    name: `Group ${groupNum}`,
+                    created_at: nowISO()
+                });
+            }
+
+            // 3. الرد الفوري وإنهاء الطلب (Short-circuit)
+            return res.status(200).json({ 
+                reply: `تم! ✅ راك مسجل ضروك في الفوج ${groupNum}. ضروك نقدر نشارك معاك واش راهم يقولو صحابك ونعاونك بذكاء المجموعة. واش حاب تقرا اليوم؟`,
+                sessionId,
+                mood: 'excited'
+            });
+
+        } else {
+            // إذا لم يذكر الفوج، نطلب منه ذلك ونوقف المعالجة
+            return res.status(200).json({ 
+                reply: "مرحبا! 👋 باش نقدر نعاونك مليح ونعطيك واش راهم يقراو صحابك، لازم تقولي واش من فوج (Groupe) راك تقرا فيه؟\n\n(اكتب مثلاً: **فوج 1** أو **Group 2**)",
+                sessionId,
+                mood: 'curious'
+            });
+        }
+    }
+    // =========================================================
+    // END GROUP ENFORCEMENT
+    // =========================================================
+
     const aiProfileData = rawProfile || {}; 
     const groupId = userData.groupId;
 
@@ -126,7 +186,6 @@ async function chatInteractive(req, res) {
     // 3. Agenda Management (Filter active tasks)
     const allAgenda = aiProfileData.aiAgenda || [];
     const now = new Date();
-    // جلب المهام المعلقة التي حان وقتها أو ليس لها وقت محدد
     const activeAgenda = allAgenda.filter(t => 
         t.status === 'pending' && (!t.trigger_date || new Date(t.trigger_date) <= now)
     );
@@ -162,15 +221,15 @@ async function chatInteractive(req, res) {
       message,                                // 1. message
       memoryReport,                           // 2. memoryReport
       curriculumReport,                       // 3. curriculumReport
-      historyString,                          // 4. conversationReport (summary/last msgs)
-      historyString,                          // 5. history (raw)
+      historyString,                          // 4. conversationReport
+      historyString,                          // 5. history
       formattedProgress,                      // 6. formattedProgress
       weaknesses,                             // 7. weaknesses
       currentEmotionalState,                  // 8. emotions
       fullUserProfile,                        // 9. profile
       systemContextCombined,                  // 10. context (Time + Shared Memory)
       examContext,                            // 11. exam info
-      activeAgenda                            // 12. active tasks (للتذكير بها)
+      activeAgenda                            // 12. active tasks
     );
 
     const modelResp = await generateWithFailoverRef('chat', finalPrompt, { 
@@ -181,7 +240,6 @@ async function chatInteractive(req, res) {
     const rawText = await extractTextFromResult(modelResp);
     let parsedResponse = await ensureJsonOrRepair(rawText, 'analysis');
 
-    // Fallback if parsing fails totally
     if (!parsedResponse?.reply) parsedResponse = { reply: rawText || "Error processing request.", widgets: [] };
 
     // ---------------------------------------------------------
@@ -200,12 +258,9 @@ async function chatInteractive(req, res) {
                  if (action.action === 'complete') {
                      currentAgenda[idx].status = 'completed';
                      currentAgenda[idx].completed_at = nowISO();
-                     logger.info(`✅ Task completed: ${currentAgenda[idx].title}`);
                  } else if (action.action === 'snooze') {
-                     // Snooze until provided date or +24h default
                      const until = action.until ? new Date(action.until) : new Date(Date.now() + 86400000);
                      currentAgenda[idx].trigger_date = until.toISOString();
-                     logger.info(`zzz Task snoozed: ${currentAgenda[idx].title} until ${until}`);
                  }
              }
         }
@@ -235,11 +290,10 @@ async function chatInteractive(req, res) {
             const { subject, date } = parsedResponse.new_facts.examDate;
             logger.info(`🏫 Group Intelligence: User ${userId} reporting exam for ${subject} on ${date}`);
             
-            // تمرير userId لزيادة الموثوقية بناءً على سمعة الطالب
             const result = await updateGroupKnowledge(groupId, userId, 'exams', subject, date);
             
             if (result.conflictDetected) {
-                logger.warn(`⚠️ Conflict detected in group knowledge for ${subject}. Needs verification.`);
+                logger.warn(`⚠️ Conflict detected in group knowledge for ${subject}.`);
             }
         } catch (groupUpdateErr) {
             logger.error('Error updating group knowledge:', groupUpdateErr);
@@ -256,7 +310,6 @@ async function chatInteractive(req, res) {
     // E. Response & Background Tasks
     // ---------------------------------------------------------
     
-    // Send Response
     res.status(200).json({
       reply: parsedResponse.reply,
       widgets: parsedResponse.widgets || [],
@@ -265,7 +318,6 @@ async function chatInteractive(req, res) {
     });
 
     // Background: Save Chat & Memory Analysis
-    // نضيف الرد للسجل ونحفظه
     const updatedHistory = [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }];
     
     setImmediate(() => {
