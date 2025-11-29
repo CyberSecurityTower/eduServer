@@ -17,6 +17,8 @@ const crypto = require('crypto');
 // Managers
 const { runMemoryAgent, saveMemoryChunk, analyzeAndSaveMemory } = require('../services/ai/managers/memoryManager');
 const { runCurriculumAgent } = require('../services/ai/managers/curriculumManager');
+// 👇 نحتاج هذا المدير لأن هناك Route خاص به
+const { runSuggestionManager } = require('../services/ai/managers/suggestionManager');
 
 const logger = require('../utils/logger');
 const PROMPTS = require('../config/ai-prompts');
@@ -28,13 +30,38 @@ function initChatController(dependencies) {
   logger.info('Chat Controller initialized (One-Shot Architecture).');
 }
 
+// ✅ 1. تمت إعادة هذه الدالة لأن الـ Worker يستخدمها
+async function handleGeneralQuestion(message, language, studentName) {
+  const prompt = `You are EduAI. User: ${studentName}. Q: "${message}". Reply in ${language}. Short.`;
+  if (!generateWithFailoverRef) return "Service unavailable.";
+  const modelResp = await generateWithFailoverRef('chat', prompt, { label: 'GeneralQuestion' });
+  return await extractTextFromResult(modelResp);
+}
+
+// ✅ 2. تمت إعادة هذه الدالة لأن routes/index.js يطلبها
+async function generateChatSuggestions(req, res) {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId is required.' });
+    
+    // نستخدم المدير الموجود أو نرجع قيم افتراضية
+    const suggestions = await runSuggestionManager(userId);
+    res.status(200).json({ suggestions });
+  } catch (error) {
+    logger.error('Error generating suggestions:', error);
+    // Fallback سريع
+    res.status(200).json({ suggestions: ["لخص لي الدرس", "أعطني كويز", "ما التالي؟"] });
+  }
+}
+
+// ✅ 3. الدالة الرئيسية (The Master Logic)
 async function chatInteractive(req, res) {
   let { userId, message, history = [], sessionId, context = {} } = req.body;
 
   if (!sessionId) sessionId = crypto.randomUUID();
 
   try {
-    // 1. تجميع البيانات (Data Aggregation) - خطوة واحدة سريعة
+    // 1. تجميع البيانات (Data Aggregation)
     const [
       memoryReport,
       curriculumReport,
@@ -43,7 +70,7 @@ async function chatInteractive(req, res) {
       rawProgress
     ] = await Promise.all([
       runMemoryAgent(userId, message),
-      runCurriculumAgent(userId, message), // فقط RAG (بحث)، لا تحليل
+      runCurriculumAgent(userId, message), 
       supabase.from('users').select('*').eq('id', userId).single(),
       getProfile(userId),  
       getProgress(userId)
@@ -55,8 +82,7 @@ async function chatInteractive(req, res) {
     // الحالة العاطفية الحالية
     let currentEmotionalState = aiProfileData.emotional_state || { mood: 'happy', angerLevel: 0, reason: '' };
 
-    // حساب سياق الامتحان (JS Logic Simple)
-    // نفترض أننا أضفنا عمود exams أو نأخذه من الميتاداتا
+    // حساب سياق الامتحان
     let examContext = null;
     if (userData.nextExamDate) {
         const examDate = new Date(userData.nextExamDate);
@@ -75,10 +101,10 @@ async function chatInteractive(req, res) {
       curriculumReport,
       history.slice(-5).map(h => `${h.role}: ${h.text}`).join('\n'),
       await formatProgressForAI(userId),
-      currentEmotionalState, // نمرر الحالة الحالية
+      currentEmotionalState, 
       userData,
       getAlgiersTimeContext().contextSummary,
-      examContext // نمرر سياق الامتحان المحسوب
+      examContext 
     );
 
     const modelResp = await generateWithFailoverRef('chat', finalPrompt, { 
@@ -93,12 +119,11 @@ async function chatInteractive(req, res) {
 
     // 3. ما بعد المعالجة (Post-Processing)
 
-    // A) تحديث المشاعر (إذا تغيرت)
+    // A) تحديث المشاعر
     if (parsedResponse.newMood || parsedResponse.newAnger !== undefined) {
         const newMood = parsedResponse.newMood || currentEmotionalState.mood;
         const newAnger = parsedResponse.newAnger !== undefined ? parsedResponse.newAnger : currentEmotionalState.angerLevel;
         
-        // نحدث فقط إذا كان هناك تغيير فعلي لتقليل الكتابة في الداتابيز
         if (newMood !== currentEmotionalState.mood || Math.abs(newAnger - currentEmotionalState.angerLevel) > 5) {
             await supabase.from('ai_memory_profiles')
                 .update({ 
@@ -109,15 +134,11 @@ async function chatInteractive(req, res) {
         }
     }
 
-    // B) تسجيل التعلم الخارجي (إذا اكتشفه الـ AI)
+    // B) تسجيل التعلم الخارجي
     if (parsedResponse.externalLearning && parsedResponse.externalLearning.detected) {
         const { topic, source } = parsedResponse.externalLearning;
         logger.info(`🕵️ External Learning Detected: ${topic} via ${source}`);
-        
-        // نحفظها كذاكرة خاصة
         saveMemoryChunk(userId, `User claims to have learned "${topic}" from ${source} outside the app.`, "External Learning");
-        
-        // (اختياري) يمكن إرسال إشعار للمستخدم لاحقاً: "هل تريد إضافة هذا الدرس لتقدمك؟"
     }
 
     // C) الرد على العميل
@@ -125,10 +146,10 @@ async function chatInteractive(req, res) {
       reply: parsedResponse.reply,
       widgets: parsedResponse.widgets || [],
       sessionId: sessionId,
-      mood: parsedResponse.newMood // للفرونت إند (الأنيميشن)
+      mood: parsedResponse.newMood 
     });
 
-    // مهام الخلفية (لا تعطل الرد)
+    // مهام الخلفية
     saveChatSession(sessionId, userId, message.substring(0, 20), [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }]);
     analyzeAndSaveMemory(userId, [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }]);
 
@@ -140,5 +161,7 @@ async function chatInteractive(req, res) {
 
 module.exports = {
   initChatController,
-  chatInteractive
+  chatInteractive,
+  generateChatSuggestions, // ✅ تمت إضافتها للتصدير
+  handleGeneralQuestion    // ✅ تمت إضافتها للتصدير
 };
