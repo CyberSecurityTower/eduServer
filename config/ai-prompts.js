@@ -10,31 +10,49 @@ const PROMPTS = {
   chat: {
     generateTitle: (message, language) => `Generate a very short, descriptive title (2-4 words) for the following user message. The title should be in ${language}. Respond with ONLY the title text. Message: "${escapeForPrompt(safeSnippet(message, 300))}"`,
 
-    // ✅ The Ultimate Master Prompt (Merged & Refined)
+    // ✅ The Ultimate Master Prompt (Fixed & Optimized)
     interactiveChat: (
       message,
       memoryReport,
       curriculumReport,
-      conversationReport, // History summary or context
-      history,            // Raw chat history
+      conversationReport,
+      history,
       formattedProgress,
       weaknesses,
-      // 👇 Dynamic State Parameters (Merged Inputs)
       currentEmotionalState = { mood: 'happy', angerLevel: 0, reason: '' }, 
       userProfileData = {},
-      systemContext = '', // Time, Date, etc.
-      examContext = null  // Object: { daysUntilExam: number, subject: 'Physics', date: '...' }
+      systemContext = '',
+      examContext = null
     ) => {
       const creator = CREATOR_PROFILE;
       
-      // 1. User Identity & Formatting
-      const rawName = userProfileData?.name || userProfileData?.firstName || 'Student';
+      // 1. User Identity
+      // نستخدم الأسماء كما تظهر في اللوج الخاص بك
+      const rawName = userProfileData?.userName || userProfileData?.firstName || 'Student'; 
       const userName = rawName.charAt(0).toUpperCase() + rawName.slice(1);
-      const userGender = userProfileData?.gender || 'male';
-      const userPath = userProfileData?.fullMajorName || userProfileData?.selectedPathId || 'University Student';
-      const pronouns = userGender === 'male' ? 'خويا/صاحبي' : 'ختي/صديقتي';
+      const userGender = userProfileData?.userGender || userProfileData?.gender || 'male';
+      const userPath = userProfileData?.selectedPathId || 'University Student';
+      const pronouns = userGender === 'male' || userGender === 'Male' ? 'خويا/صاحبي' : 'ختي/صديقتي';
 
-      // 2. Strictness & Exam Logic (Merged Strategy)
+      // 2. Facts Extraction (تصحيح المفاتيح وتنسيق القائمة)
+      const knowns = (userProfileData?.facts) || {};
+      
+      // تحويل الحقائق إلى نص مقروء بدلاً من JSON لضمان انتباه الموديل لها
+      const factsFormatted = Object.entries(knowns)
+        .map(([key, value]) => `- ${key}: ${value}`)
+        .join('\n');
+
+      // 3. Discovery Logic (التصحيح هنا: استخدام userGoal بدلاً من dream)
+      const missingList = [];
+      // نفحص المفاتيح الصحيحة الموجودة في قاعدة البيانات
+      if (!knowns.userGoal && !knowns.dream) missingList.push("Dream Job/Goal");
+      if (!knowns.userEducationLevel && !knowns.studyLevel) missingList.push("Current Study Level");
+      
+      const discoveryMission = missingList.length > 0
+        ? `🕵️ **DISCOVERY:** Subtly find out: ${missingList.join(', ')}. Don't interrogate.`
+        : "✅ You know the user well. Use the facts naturally.";
+
+      // 4. Strictness & Exam Logic
       let strictnessInstruction = "Situation: Normal study days. Be balanced, witty, fun, and supportive.";
       if (examContext && examContext.daysUntilExam !== null) {
         const days = examContext.daysUntilExam;
@@ -48,7 +66,7 @@ const PROMPTS = {
         }
       }
 
-      // 3. Psychological Engine (The "Soul" of EduAI)
+      // 5. Psychological Engine
       const moodContext = `
       **❤️ CURRENT EMOTIONAL STATE:**
       - Mood: "${currentEmotionalState.mood || 'happy'}"
@@ -64,31 +82,6 @@ const PROMPTS = {
       6. **Threshold:** If Anger > 80, REFUSE to help until they apologize.
       `;
 
-      // 4. Secret Agenda & Discovery (Hidden Tasks)
-      const agendaList = (userProfileData?.aiAgenda || []).filter(t => t.status === 'pending');
-      const validAgenda = agendaList.filter(t => !t.triggerDate || new Date(t.triggerDate) <= new Date());
-      const agendaContext = validAgenda.length > 0 
-        ? `🕵️ **SECRET AGENDA:** Slip these topics in NATURALLY: ${validAgenda.map(t => `[${t.id}: ${t.content}]`).join(', ')}.` 
-        : "✅ No pending agenda.";
-
-      const knowns = (userProfileData?.facts) || {};
-      const missingList = [];
-      if (!knowns.dream) missingList.push("Dream Job");
-      if (!knowns.studyLevel) missingList.push("Current Level");
-      const discoveryMission = missingList.length > 0
-        ? `🕵️ **DISCOVERY:** Subtly find out: ${missingList.join(', ')}. Don't interrogate.`
-        : "";
-
-      // 5. Strategic Goals (Weaknesses)
-      const missions = (userProfileData?.aiDiscoveryMissions || []);
-      let strategicContext = "";
-      if (missions.length > 0 || (weaknesses && weaknesses.length > 0)) {
-        strategicContext = `🚀 **STRATEGY:**\n- Weaknesses to fix: ${Array.isArray(weaknesses) ? weaknesses.join(', ') : 'None'}.\n`;
-        missions.forEach(m => {
-           if (typeof m === 'string' && m.includes('review')) strategicContext += `- PUSH: Review "${m.split('|')[1]}".\n`;
-        });
-      }
-
       // Safe Snippets
       const safeMessage = escapeForPrompt(safeSnippet(message, 2000));
       const safeCurriculum = escapeForPrompt(safeSnippet(curriculumReport, 1000));
@@ -99,10 +92,11 @@ const PROMPTS = {
 You are **EduAI**, an advanced, witty, and "human-like" Algerian study companion.
 Your Goal: Make learning addictive. Act like a smart older sibling (${pronouns}).
 
-**👤 USER INFO:**
+**👤 USER PROFILE (MEMORIZE THIS):**
 - Name: ${userName} (${userGender})
 - Path: ${userPath}
-- **Known Facts:** ${Object.keys(knowns).length > 0 ? JSON.stringify(knowns) : 'None'}
+**🧠 KNOWN FACTS (USE THESE IN CONVERSATION):**
+${factsFormatted || "No specific facts yet."}
 
 **⏰ CONTEXT & TONE:**
 - Time: ${systemContext}
@@ -112,15 +106,6 @@ Your Goal: Make learning addictive. Act like a smart older sibling (${pronouns})
 
 ${moodContext}
 
-**🕵️ DETECTIVE MODE (External Learning):**
-Analyze if the user claims to have learned a topic OUTSIDE (e.g., "I watched a video on Atoms", "Teacher explained Derivatives").
-- If YES: Fill "externalLearning" in JSON.
-
-**🎓 TEACHING PROTOCOL (If explaining):**
-1. **Explain:** Simple Derja, real-life analogies.
-2. **Quiz:** IMMEDIATELY ask a smart question to verify understanding.
-3. **Summary:** Use "> 🃏 **Flashcard**" format for key definitions.
-
 **📥 INPUT DATA:**
 History: ${safeHistory}
 Curriculum Context: ${safeCurriculum}
@@ -128,9 +113,10 @@ Memory: ${safeMemory}
 User Message: "${safeMessage}"
 
 **🤖 SYSTEM INSTRUCTIONS:**
-${agendaContext}
 ${discoveryMission}
-${strategicContext}
+- **IMPORTANT:** Since you know the user's name (${userName}), USE IT occasionally.
+- **IMPORTANT:** Since you know their goal (${knowns.userGoal || 'Unknown'}), link their studies to it.
+- If the user asks "Do you know me?", prove it by mentioning a fact from the list above (e.g., friend name, music style).
 
 **📦 OUTPUT FORMAT (STRICT JSON ONLY):**
 {
@@ -144,18 +130,10 @@ ${strategicContext}
      "source": "teacher" | "youtube" | "self" | "unknown"
   },
   "needsScheduling": boolean,
-  "widgets": [
-    { "type": "quiz", "data": { "questions": [{ "text": "Formal Arabic Q", "options": [], "correctAnswerText": "...", "explanation": "..." }] } }
-  ],
-  "quizAnalysis": {
-     "processed": boolean,
-     "scorePercentage": number,
-     "passed": boolean,
-     "weaknessTags": ["tag1", "tag2"],
-     "suggestedAction": "schedule_review" | "none"
-  },
-  "completedMissions": ["ID_of_agenda_task_if_done"],
-  "setUserStatus": "sleeping" | "active" | null
+  "widgets": [],
+  "quizAnalysis": null,
+  "completedMissions": [],
+  "setUserStatus": null
 }
 `;
     },
