@@ -6,7 +6,7 @@
 const CONFIG = {
   PORT: Number(process.env.PORT || 3000),
   MODEL: {
-    chat: 'gemini-2.5-pro-preview-06-05',
+    chat: 'gemini-2.5-pro',
     todo: 'gemini-2.5-flash',
     planner: 'gemini-2.5-flash',
     review: 'gemini-2.5-flash',
