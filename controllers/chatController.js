@@ -9,7 +9,8 @@ const {
   formatProgressForAI,
   saveChatSession, 
   getCachedEducationalPathById,
-  fetchUserWeaknesses // ✅ تمت إضافتها لجلب نقاط الضعف
+  fetchUserWeaknesses, // ✅ تمت إضافتها لجلب نقاط الضعف
+  updateAiAgenda 
 } = require('../services/data/helpers');
 const { getAlgiersTimeContext, extractTextFromResult, ensureJsonOrRepair } = require('../utils'); 
 const crypto = require('crypto');
