@@ -17,7 +17,6 @@ const crypto = require('crypto');
 // Managers
 const { runMemoryAgent, saveMemoryChunk, analyzeAndSaveMemory } = require('../services/ai/managers/memoryManager');
 const { runCurriculumAgent } = require('../services/ai/managers/curriculumManager');
-// 👇 نحتاج هذا المدير لأن هناك Route خاص به
 const { runSuggestionManager } = require('../services/ai/managers/suggestionManager');
 
 const logger = require('../utils/logger');
@@ -30,7 +29,7 @@ function initChatController(dependencies) {
   logger.info('Chat Controller initialized (One-Shot Architecture).');
 }
 
-// ✅ 1. تمت إعادة هذه الدالة لأن الـ Worker يستخدمها
+// ✅ 1. معالجة الأسئلة العامة (للـ Worker)
 async function handleGeneralQuestion(message, language, studentName) {
   const prompt = `You are EduAI. User: ${studentName}. Q: "${message}". Reply in ${language}. Short.`;
   if (!generateWithFailoverRef) return "Service unavailable.";
@@ -38,7 +37,7 @@ async function handleGeneralQuestion(message, language, studentName) {
   return await extractTextFromResult(modelResp);
 }
 
-// ✅ 2. تمت إعادة هذه الدالة لأن routes/index.js يطلبها
+// ✅ 2. توليد الاقتراحات (للـ Frontend)
 async function generateChatSuggestions(req, res) {
   try {
     const { userId } = req.body;
@@ -79,6 +78,17 @@ async function chatInteractive(req, res) {
     let userData = userRes.data ? toCamelCase(userRes.data) : {};
     const aiProfileData = rawProfile || {}; 
     
+    // 🔥 دمج البيانات (The Fix) 🔥
+    // ندمج بيانات المستخدم الأساسية مع بيانات الذاكرة العميقة لضمان وجود facts
+    const fullUserProfile = {
+        ...userData,           // (users table): id, email, first_name, selected_path_id
+        ...aiProfileData,      // (ai_memory_profiles table): facts, profile_summary, ai_agenda
+        facts: aiProfileData.facts || {} // تأكيد وجود الحقائق
+    };
+
+    // لوغ للتأكد (Debug)
+    console.log("🧠 Loaded Facts for AI:", Object.keys(fullUserProfile.facts).length > 0 ? fullUserProfile.facts : "NO FACTS FOUND");
+
     // الحالة العاطفية الحالية
     let currentEmotionalState = aiProfileData.emotional_state || { mood: 'happy', angerLevel: 0, reason: '' };
 
@@ -102,7 +112,7 @@ async function chatInteractive(req, res) {
       history.slice(-5).map(h => `${h.role}: ${h.text}`).join('\n'),
       await formatProgressForAI(userId),
       currentEmotionalState, 
-      userData,
+      fullUserProfile, // ✅ تم تمرير الكائن المدمج بدلاً من userData فقط
       getAlgiersTimeContext().contextSummary,
       examContext 
     );
@@ -162,6 +172,6 @@ async function chatInteractive(req, res) {
 module.exports = {
   initChatController,
   chatInteractive,
-  generateChatSuggestions, // ✅ تمت إضافتها للتصدير
-  handleGeneralQuestion    // ✅ تمت إضافتها للتصدير
+  generateChatSuggestions,
+  handleGeneralQuestion
 };
