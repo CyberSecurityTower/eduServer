@@ -161,18 +161,25 @@ async function chatInteractive(req, res) {
         }
     }
 
-    // EduNexus
+    // EduNexus Logic
     let sharedContext = "";
     if (groupId) {
-        try {
-            const nexusMemory = await getNexusMemory(groupId);
-            if (nexusMemory && nexusMemory.exams) {
-                sharedContext = "🏫 **HIVE MIND:**\n";
-                Object.entries(nexusMemory.exams).forEach(([subject, data]) => {
-                    sharedContext += `- ${subject}: ${data.confirmed_value}\n`;
-                });
-            }
-        } catch (e) { /* ignore */ }
+        // أزلنا الـ try/catch الصامت لنرى الأخطاء في الكونسول
+        const nexusMemory = await getNexusMemory(groupId);
+        
+        if (nexusMemory && nexusMemory.exams) {
+            sharedContext = "🏫 **HIVE MIND (معلومات الفوج المؤكدة):**\n";
+            Object.entries(nexusMemory.exams).forEach(([subject, data]) => {
+                // نضيف فقط المعلومات التي لها قيمة مؤكدة
+                if (data.confirmed_value) {
+                    const status = data.is_verified ? "(مؤكد من الإدارة ✅)" : "(شائعة قوية ⚠️)";
+                    sharedContext += `- امتحان ${subject}: ${data.confirmed_value} ${status}\n`;
+                }
+            });
+            console.log("📢 Context injected into AI:", sharedContext); // LOG
+        } else {
+            console.log("ℹ️ EduNexus: No exams data to inject.");
+        }
     }
 
     const identityContext = `User Identity: Name=${fullUserProfile.firstName}, Group=${groupId}, Role=${fullUserProfile.role}.`;
