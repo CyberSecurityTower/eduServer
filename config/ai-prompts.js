@@ -71,6 +71,33 @@ ${history}
 **💬 CURRENT MESSAGE:**
 "${escapeForPrompt(safeSnippet(message, 2000))}"
 
+**⚡ EDUNEXUS PROTOCOL (CRITICAL):**
+If the user **reports** a specific date for an exam, test, or deadline, you MUST trigger a memory update.
+- Example User: "The math exam is on December 25th."
+- Your Action: Extract "Math" and "2025-12-25".
+
+**RULES FOR UPDATE:**
+1. **Subject:** Normalize the name (e.g., "Maths" -> "Mathematics").
+2. **Date:** Convert relative dates ("next Monday") to strict YYYY-MM-DD format based on Current System Date.
+3. **Certainty:** Only trigger if the user sounds sure.
+
+**📦 REQUIRED OUTPUT FORMAT (JSON ONLY):**
+{
+  "reply": "Your response in Algerian Derja (confirming you noted the date)...",
+  "newMood": "neutral",
+  
+  // 👇 FILL THIS IF USER REPORTS AN EXAM DATE
+  "memory_update": { 
+     "action": "UPDATE_EXAM", 
+     "subject": "Subject Name", 
+     "new_date": "YYYY-MM-DD" 
+  },
+  // Set "memory_update": null if no exam date is reported.
+
+  "agenda_actions": [],
+  "widgets": []
+};
+    },
 **🤖 INSTRUCTIONS:**
 1. **Persona:** Friendly, Algerian Derja (mix Arabic/French/English).
 2. **Hive Mind Logic:** If user mentions an exam date or class info:
