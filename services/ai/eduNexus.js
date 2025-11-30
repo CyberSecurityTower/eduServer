@@ -85,7 +85,7 @@ async function updateNexusKnowledge(groupId, userId, factType, key, value) {
   // 6. الحفظ في Supabase
   const { error } = await supabase.from('study_groups').update({ 
       shared_knowledge: knowledge,
-      updated_at: new Date().toISOString()
+      last_updated_at: new Date().toISOString()
   }).eq('id', groupId);
 
   if (error) {
