@@ -28,7 +28,7 @@ const { runMemoryAgent, saveMemoryChunk, analyzeAndSaveMemory } = require('../se
 const { runCurriculumAgent } = require('../services/ai/managers/curriculumManager');
 const { runSuggestionManager } = require('../services/ai/managers/suggestionManager');
 
-// ✅ NEW: EduNexus (Hive Mind Manager)
+// ✅ EduNexus (Hive Mind Manager)
 const { getNexusMemory, updateNexusKnowledge } = require('../services/ai/eduNexus');
 
 let generateWithFailoverRef;
@@ -79,67 +79,75 @@ async function chatInteractive(req, res) {
     // ---------------------------------------------------------
     // A. Data Aggregation (Parallel Fetching)
     // ---------------------------------------------------------
-    const [
-      userRes,
-      rawProfile,
-      memoryReport,
-      curriculumReport,
-      weaknesses,
-      formattedProgress
-    ] = await Promise.all([
-      supabase.from('users').select('*, group_id, role').eq('id', userId).single(),
-      getProfile(userId),
-      runMemoryAgent(userId, message),
-      runCurriculumAgent(userId, message), 
-      fetchUserWeaknesses(userId),
-      formatProgressForAI(userId)
-    ]);
-
-    // Prepare User Data
-    let userData = userRes.data ? toCamelCase(userRes.data) : {};
+    // نجلب بيانات المستخدم أولاً للتحقق من حالته
+    const { data: userRaw, error: userError } = await supabase.from('users').select('*, group_id, role').eq('id', userId).single();
     
+    if (userError || !userRaw) {
+        return res.status(404).json({ reply: "عذراً، لم أتمكن من العثور على حسابك. حاول إعادة تسجيل الدخول." });
+    }
+
+    let userData = toCamelCase(userRaw);
+
     // =========================================================
-    // 🛑 GROUP ENFORCEMENT LOGIC
+    // 🛑 GROUP ENFORCEMENT LOGIC (المنطق الصارم للفوج)
     // =========================================================
     if (!userData.groupId) {
-        // Regex matches: "فوج 1", "group 2", "groupe 3", "g 4"
+        // Regex ذكي يدعم (فوج، group، groupe، g) ويستخرج الرقم
         const groupMatch = message.match(/(?:فوج|group|groupe|g)\s*(\d+)/i);
 
         if (groupMatch) {
-            const groupNum = groupMatch[1];
+            // ✅ FIX 1: استخراج الرقم فقط (وليس المصفوفة كاملة)
+            const groupNum = groupMatch[1]; 
             const pathId = userData.selectedPathId || 'General'; 
+            
+            // ✅ FIX 2: بناء ID نظيف ومتوافق مع الداتابيز
             const newGroupId = `${pathId}_G${groupNum}`;
             
-            logger.info(`👥 User ${userId} joining group: ${newGroupId}`);
+            logger.info(`👥 Onboarding: User ${userId} attempting to join ${newGroupId}`);
 
-            // 1. Update User
-            await supabase.from('users')
-                .update({ group_id: newGroupId })
-                .eq('id', userId);
-            
-            // 2. Ensure Group Exists
-            const { data: groupExists } = await supabase
-                .from('study_groups')
-                .select('id')
-                .eq('id', newGroupId)
-                .single();
-
-            if (!groupExists) {
-                await supabase.from('study_groups').insert({ 
+            try {
+                // ✅ FIX 3: إنشاء الفوج أولاً إذا لم يكن موجوداً (Upsert)
+                // هذا يمنع خطأ Foreign Key Constraint عند تحديث المستخدم
+                const { error: groupUpsertError } = await supabase.from('study_groups').upsert({ 
                     id: newGroupId, 
-                    path_id: userData.selectedPathId,
+                    path_id: pathId,
                     name: `Group ${groupNum}`,
-                    created_at: nowISO()
+                    created_at: nowISO() // في حال كان جديداً
+                }, { onConflict: 'id' }).select();
+
+                if (groupUpsertError) {
+                    logger.error(`Group upsert failed: ${groupUpsertError.message}`);
+                    throw new Error("فشل إنشاء الفوج");
+                }
+
+                // ✅ FIX 4: تحديث المستخدم الآن بأمان
+                const { error: userUpdateError } = await supabase.from('users')
+                    .update({ group_id: newGroupId })
+                    .eq('id', userId);
+                
+                if (userUpdateError) {
+                    logger.error(`User update failed: ${userUpdateError.message}`);
+                    throw new Error("فشل تحديث بيانات المستخدم");
+                }
+
+                // الرد المباشر وإنهاء الطلب (لا داعي لإكمال دورة الـ AI)
+                return res.status(200).json({ 
+                    reply: `تم! ✅ راك مسجل ضروك في الفوج ${groupNum}. ضروك نقدر نشارك معاك واش راهم يقولو صحابك ونعاونك بذكاء المجموعة. واش حاب تقرا اليوم؟`,
+                    sessionId,
+                    mood: 'excited'
+                });
+
+            } catch (err) {
+                logger.error('Onboarding Logic Error:', err.message);
+                return res.status(200).json({ 
+                    reply: "حدث خطأ تقني أثناء تسجيل الفوج. يرجى المحاولة مرة أخرى أو التأكد من كتابة الرقم بشكل صحيح (مثال: فوج 1).",
+                    sessionId,
+                    mood: 'confused'
                 });
             }
 
-            return res.status(200).json({ 
-                reply: `تم! ✅ راك مسجل ضروك في الفوج ${groupNum}. ضروك نقدر نشارك معاك واش راهم يقولو صحابك ونعاونك بذكاء المجموعة. واش حاب تقرا اليوم؟`,
-                sessionId,
-                mood: 'excited'
-            });
-
         } else {
+            // 🛑 BLOCKING STATE: إذا لم يذكر رقم الفوج، نطلب منه ذلك ونوقف المحادثة
             return res.status(200).json({ 
                 reply: "مرحبا! 👋 باش نقدر نعاونك مليح ونعطيك واش راهم يقراو صحابك، لازم تقولي واش من فوج (Groupe) راك تقرا فيه؟\n\n(اكتب مثلاً: **فوج 1** أو **Group 2**)",
                 sessionId,
@@ -150,6 +158,22 @@ async function chatInteractive(req, res) {
     // =========================================================
     // END GROUP ENFORCEMENT
     // =========================================================
+
+    // إذا وصلنا هنا، فالمستخدم لديه Group ID، نكمل بشكل طبيعي
+    
+    const [
+      rawProfile,
+      memoryReport,
+      curriculumReport,
+      weaknesses,
+      formattedProgress
+    ] = await Promise.all([
+      getProfile(userId),
+      runMemoryAgent(userId, message),
+      runCurriculumAgent(userId, message), 
+      fetchUserWeaknesses(userId),
+      formatProgressForAI(userId)
+    ]);
 
     const aiProfileData = rawProfile || {}; 
     const groupId = userData.groupId;
@@ -184,11 +208,10 @@ async function chatInteractive(req, res) {
         t.status === 'pending' && (!t.trigger_date || new Date(t.trigger_date) <= now)
     );
 
-    // 4. EduNexus (Hive Mind) Context ✅ UPDATED
+    // 4. EduNexus (Hive Mind) Context
     let sharedContext = "";
     if (groupId) {
         try {
-            // استخدام EduNexus بدلاً من groupManager
             const nexusMemory = await getNexusMemory(groupId);
             
             if (nexusMemory && nexusMemory.exams) {
@@ -280,13 +303,12 @@ async function chatInteractive(req, res) {
         }
     }
 
-    // 3. Update EduNexus Knowledge ✅ UPDATED
+    // 3. Update EduNexus Knowledge
     if (parsedResponse.new_facts && parsedResponse.new_facts.examDate && groupId) {
         try {
             const { subject, date } = parsedResponse.new_facts.examDate;
             logger.info(`🏫 EduNexus: User ${userId} reporting exam for ${subject} on ${date}`);
             
-            // استخدام EduNexus للتحديث
             const result = await updateNexusKnowledge(groupId, userId, 'exams', subject, date);
             
             if (result.conflictDetected) {
