@@ -152,6 +152,15 @@ async function chatInteractive(req, res) {
     const allAgenda = Array.isArray(aiProfileData.aiAgenda) ? aiProfileData.aiAgenda : [];
     const activeAgenda = allAgenda.filter(t => t.status === 'pending');
 
+    // Exam Context Calculation (Default to empty object, NOT NULL)
+    let examContext = {}; 
+    if (userData.nextExamDate) {
+        const diffDays = Math.ceil((new Date(userData.nextExamDate) - new Date()) / (1000 * 60 * 60 * 24));
+        if (diffDays >= 0 && diffDays < 30) {
+            examContext = { daysUntilExam: diffDays, subject: userData.nextExamSubject || 'General' };
+        }
+    }
+
     // EduNexus
     let sharedContext = "";
     if (groupId) {
@@ -181,7 +190,7 @@ async function chatInteractive(req, res) {
     const safeFormattedProgress = formattedProgress || '';
     const safeWeaknesses = Array.isArray(weaknessesRaw) ? weaknessesRaw : [];
     const safeSystemContext = systemContextCombined || '';
-    const safeExamContext = null; // Or calculate if needed, but ensure it's not undefined if prompt expects it
+    const safeExamContext = examContext; // Now guaranteed to be {} at minimum, never null
 
     const finalPrompt = PROMPTS.chat.interactiveChat(
       safeMessage, 
