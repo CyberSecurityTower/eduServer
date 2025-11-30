@@ -70,6 +70,7 @@ async function generateChatSuggestions(req, res) {
 async function chatInteractive(req, res) {
   let { userId, message, history = [], sessionId } = req.body;
 
+  // Safety check for history
   if (!Array.isArray(history)) history = [];
   if (!sessionId) sessionId = crypto.randomUUID();
 
@@ -115,7 +116,7 @@ async function chatInteractive(req, res) {
     }
     // --- END ENFORCEMENT ---
 
-    // Fetch Context Data
+    // Fetch Context Data (Parallel with Error Handling)
     const [rawProfile, memoryReport, curriculumReport, weaknessesRaw, formattedProgress] = await Promise.all([
       getProfile(userId).catch(() => ({})),
       runMemoryAgent(userId, message).catch(() => ''),
@@ -127,26 +128,27 @@ async function chatInteractive(req, res) {
     const aiProfileData = rawProfile || {}; 
     const groupId = userData.groupId;
 
-    // 🔥 FIX: دمج البيانات الأساسية بقوة لضمان معرفة الـ AI بالمستخدم
+    // 🔥 Identity Injection (System Context)
     const fullUserProfile = { 
         userId: userId,
-        firstName: userData.firstName || 'Student', // الاسم من جدول المستخدمين
+        firstName: userData.firstName || 'Student', 
         lastName: userData.lastName || '',
         group: groupId,
         role: userData.role || 'student',
-        ...aiProfileData, // بيانات الذاكرة (قد تكون فارغة)
+        ...aiProfileData, 
         facts: {
             ...(aiProfileData.facts || {}),
-            // نؤكد على الاسم هنا أيضاً
             userName: userData.firstName || 'Student',
             userGroup: groupId
         }
     };
 
     // ---------------------------------------------------------
-    // B. Context Preparation
+    // B. Context Preparation & Sanitization
     // ---------------------------------------------------------
     let currentEmotionalState = aiProfileData.emotional_state || { mood: 'happy', angerLevel: 0, reason: '' };
+    
+    // Agenda Filtering
     const allAgenda = Array.isArray(aiProfileData.aiAgenda) ? aiProfileData.aiAgenda : [];
     const activeAgenda = allAgenda.filter(t => t.status === 'pending');
 
@@ -164,29 +166,35 @@ async function chatInteractive(req, res) {
         } catch (e) { /* ignore */ }
     }
 
-    // 🔥 FIX: حقن الهوية مباشرة في سياق النظام (System Context)
-    // هذا يضمن أن الـ AI يقرأ الاسم والفوج حتى لو تجاهل البروفايل
     const identityContext = `User Identity: Name=${fullUserProfile.firstName}, Group=${groupId}, Role=${fullUserProfile.role}.`;
     const systemContextCombined = `${identityContext}\n${getAlgiersTimeContext().contextSummary}\n${sharedContext}`;
 
     // ---------------------------------------------------------
-    // C. AI Generation
+    // C. AI Generation (With Strict Sanitization)
     // ---------------------------------------------------------
+    
+    // 🔥 SANITIZATION LAYER: Ensure NO NULLs are passed to prompts
+    const safeMessage = message || '';
+    const safeMemoryReport = memoryReport || '';
+    const safeCurriculumReport = curriculumReport || '';
     const safeHistoryStr = history.slice(-5).map(h => `${h.role}: ${h.text}`).join('\n') || '';
+    const safeFormattedProgress = formattedProgress || '';
     const safeWeaknesses = Array.isArray(weaknessesRaw) ? weaknessesRaw : [];
+    const safeSystemContext = systemContextCombined || '';
+    const safeExamContext = null; // Or calculate if needed, but ensure it's not undefined if prompt expects it
 
     const finalPrompt = PROMPTS.chat.interactiveChat(
-      message || '', 
-      memoryReport || '', 
-      curriculumReport || '', 
+      safeMessage, 
+      safeMemoryReport, 
+      safeCurriculumReport, 
       safeHistoryStr, 
       safeHistoryStr, 
-      formattedProgress || '', 
+      safeFormattedProgress, 
       safeWeaknesses, 
       currentEmotionalState, 
-      fullUserProfile, // البروفايل المعزز
-      systemContextCombined || '', // السياق المعزز بالهوية
-      null, 
+      fullUserProfile, 
+      safeSystemContext, 
+      safeExamContext, 
       activeAgenda
     );
 
@@ -207,7 +215,22 @@ async function chatInteractive(req, res) {
     }
 
     if (parsedResponse.agenda_actions && Array.isArray(parsedResponse.agenda_actions)) {
-        // ... (Agenda logic same as before)
+        let currentAgenda = [...allAgenda];
+        let agendaUpdated = false;
+        for (const act of parsedResponse.agenda_actions) {
+             const idx = currentAgenda.findIndex(t => t.id === act.id);
+             if (idx !== -1) {
+                 agendaUpdated = true;
+                 if (act.action === 'complete') {
+                     currentAgenda[idx].status = 'completed';
+                     currentAgenda[idx].completed_at = nowISO();
+                 } else if (act.action === 'snooze') {
+                     const until = act.until ? new Date(act.until) : new Date(Date.now() + 86400000);
+                     currentAgenda[idx].trigger_date = until.toISOString();
+                 }
+             }
+        }
+        if (agendaUpdated) await updateAiAgenda(userId, currentAgenda);
     }
 
     if (parsedResponse.newMood) {
