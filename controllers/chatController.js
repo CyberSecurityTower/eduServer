@@ -99,18 +99,17 @@ async function chatInteractive(req, res) {
             
             logger.info(`👥 Onboarding: User ${userId} joining ${newGroupId}`);
 
-            try {
-                // 1. إنشاء الفوج إذا لم يكن موجوداً (Upsert) لمنع أخطاء الربط
+           try {
                 await supabase.from('study_groups').upsert({ 
                     id: newGroupId, 
                     path_id: pathId,
-                    name: `Group ${groupNum}`,
-                    created_at: nowISO()
+                    name: `Group ${groupNum}`
                 }, { onConflict: 'id' });
 
-                // 2. تحديث المستخدم
+                // تحديث المستخدم
                 await supabase.from('users').update({ group_id: newGroupId }).eq('id', userId);
                 
+              
                 return res.status(200).json({ 
                     reply: `تم! ✅ راك مسجل ضروك في الفوج ${groupNum}. EduNexus راهو يجمع في المعلومات من صحابك باش يعاونك. واش حاب تقرا اليوم؟`,
                     sessionId, 
