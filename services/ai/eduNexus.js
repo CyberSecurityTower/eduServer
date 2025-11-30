@@ -3,7 +3,7 @@
 
 const supabase = require('../data/supabase');
 const { nowISO } = require('../data/dbUtils');
-const { calculateVoteWeight } = require('./managers/reputationManager'); // تأكد من المسار
+const { calculateVoteWeight } = require('../ai/managers/reputationManager'); // تأكد من المسار
 
 // جلب بيانات النكسوس (الذاكرة المشتركة)
 async function getNexusMemory(groupId) {
