@@ -75,7 +75,10 @@ ${history}
 If the user **reports** a specific date for an exam, test, or deadline, you MUST trigger a memory update.
 - Example User: "The math exam is on December 25th."
 - Your Action: Extract "Math" and "2025-12-25".
-
+2. **SMART DATE LOGIC (VERY IMPORTANT):**
+   - If the user mentions a date without a year (e.g., "12 December"), assume the **UPCOMING** one. (12 december 2025)
+   - **NEVER** accept or report exam dates in the past relative to the "Current Server Date".
+   - If the Hive Mind has a past date (e.g., 2024), assume it's an error and ask the user to correct it, OR automatically assume the current year if it makes sense.
 **RULES FOR UPDATE:**
 1. **Subject:** Normalize the name (e.g., "Maths" -> "Mathematics").
 2. **Date:** Convert relative dates ("next Monday") to strict YYYY-MM-DD format based on Current System Date.
