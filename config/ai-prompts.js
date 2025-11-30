@@ -1,4 +1,3 @@
-
 // config/ai-prompts.js
 'use strict';
 
@@ -10,7 +9,7 @@ const PROMPTS = {
   chat: {
     generateTitle: (message, language) => `Generate a very short title (2-4 words) in ${language}. Msg: "${escapeForPrompt(safeSnippet(message, 100))}"`,
 
-    // ✅ النسخة المحدثة (The Updated Interactive Chat with Hive Mind & Agenda)
+    // ✅ النسخة المحدثة (The Updated Interactive Chat with Hive Mind, Agenda & Action Protocol)
     interactiveChat: (
       message,
       memoryReport,
@@ -22,8 +21,8 @@ const PROMPTS = {
       userProfileData = {}, 
       systemContext = '',
       examContext = null,
-      activeAgenda = [], // ✅ جديد: قائمة المهام النشطة
-      groupContext = ''  // ✅ جديد: سياق القسم/المجموعة
+      activeAgenda = [], 
+      groupContext = ''
     ) => {
       const creator = CREATOR_PROFILE;
 
@@ -33,7 +32,6 @@ const PROMPTS = {
       const userName = rawName.charAt(0).toUpperCase() + rawName.slice(1);
       
       const userGender = facts.userGender || userProfileData.gender || 'male';
-      // const pronouns = (userGender.toLowerCase() === 'male') ? 'خويا' : 'ختي'; // يمكن استخدامها داخل البرومبت إذا لزم الأمر
       const userPath = userProfileData.selectedPathId || 'University Student';
 
       // 2. تحضير نصوص الأجندة (Agenda)
@@ -82,17 +80,45 @@ ${history}
 3. **Agenda Logic:** 
    - If you ask an agenda question and user answers, mark action as **COMPLETE** in JSON.
    - If they refuse or say "later", mark action as **SNOOZE** in JSON.
-4. **Fact Extraction:** If the user provides new info (dates, names, goals), put it in 'new_facts'.
+4. **Fact Extraction:** If the user provides PERSONAL info (goals, hobbies), put it in 'new_facts'.
 
-**📦 OUTPUT JSON (STRICT FORMAT):**
+**⚡ EDUNEXUS ACTION PROTOCOL (READ CAREFULLY):**
+You are not just a chatbot; you are an Agent with write-access to the Class Database.
+You must detect if the user is **REPORTING** a new fact about the collective class schedule (Exams, Deadlines, Cancellations).
+
+**WHEN TO TRIGGER AN ACTION:**
+1. **Explicit Statement:** User says "The Economics exam is on Dec 15th" or "They changed the Math test date."
+2. **Correction:** User says "No, you are wrong, the exam is actually tomorrow."
+3. **Confirmation:** User confirms a date you asked about.
+
+**WHEN NOT TO TRIGGER:**
+1. **Personal Plans:** User says "I will study for Economics on Dec 15th" (This is personal, not class-wide).
+2. **Questions:** User asks "When is the exam?" (Just answer, don't update).
+3. **Uncertainty:** User says "I think it might be next week" (Too vague).
+
+**DATA FORMATTING RULES:**
+- **Dates:** Must be converted to \`YYYY-MM-DD\` format based on the current context time.
+- **Subject:** Extract the clear subject name (e.g., "Economics", "ITCF").
+- **Action:** Currently, only \`UPDATE_EXAM\` is supported.
+
+**📦 OUTPUT FORMAT (JSON ONLY):**
 {
-  "reply": "Your response text here (Derja)...",
+  "reply": "Your response text in Algerian Derja (confirming the action if taken)...",
   "newMood": "happy",
+  
+  // Use this ONLY if the user reported a class-wide exam date/change
+  "memory_update": { 
+     "action": "UPDATE_EXAM", 
+     "subject": "Subject Name", 
+     "new_date": "YYYY-MM-DD" 
+  }, 
+  // Set "memory_update": null if no official news was reported.
+
   "agenda_actions": [
     { "id": "task_id", "action": "snooze|complete", "until": "YYYY-MM-DD (optional)" }
   ],
   "new_facts": { 
-    "examDate": { "subject": "Math", "date": "2023-12-10" } 
+    "personalGoal": "Finish chapter 1" 
   },
   "widgets": [],
   "needsScheduling": false
@@ -110,8 +136,8 @@ ${history}
     **Current Facts:** ${JSON.stringify(currentFacts)}
     **Chat:** ${chatHistory}
     **Rules:**
-    1. Extract: Names, Majors, Goals, Hobbies, Important Life Events, Exam Dates.
-    2. IGNORE: Temporary feelings, Weather.
+    1. Extract: Names, Majors, Goals, Hobbies, Important Life Events.
+    2. IGNORE: Temporary feelings, Weather, Class-wide Exam dates (handled by Action Protocol).
     3. Output JSON: { "newFacts": { "key": "value" }, "vectorContent": "story string", "reason": "..." }
     `,
 
