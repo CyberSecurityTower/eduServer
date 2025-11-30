@@ -1,7 +1,7 @@
 // services/jobs/nightWatch.js
 'use strict';
 
-const supabase = require('../../data/supabase');
+const supabase = require('../data/supabase');
 const { sendUserNotification } = require('../../data/helpers');
 
 async function runNightWatch() {
