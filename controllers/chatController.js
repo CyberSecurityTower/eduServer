@@ -27,7 +27,9 @@ const {
 const { runMemoryAgent, saveMemoryChunk, analyzeAndSaveMemory } = require('../services/ai/managers/memoryManager');
 const { runCurriculumAgent } = require('../services/ai/managers/curriculumManager');
 const { runSuggestionManager } = require('../services/ai/managers/suggestionManager');
-const { getGroupMemory, updateGroupKnowledge } = require('../services/ai/managers/groupManager');
+
+// ✅ NEW: EduNexus (Hive Mind Manager)
+const { getNexusMemory, updateNexusKnowledge } = require('../services/ai/eduNexus');
 
 let generateWithFailoverRef;
 
@@ -36,7 +38,7 @@ let generateWithFailoverRef;
 // ==========================================
 function initChatController(dependencies) {
   generateWithFailoverRef = dependencies.generateWithFailover;
-  logger.info('Chat Controller initialized (Integrated: One-Shot + Hive Mind + Agenda + Group Enforcement).');
+  logger.info('Chat Controller initialized (Integrated: One-Shot + EduNexus + Agenda + Group Enforcement).');
 }
 
 // ==========================================
@@ -77,12 +79,9 @@ async function chatInteractive(req, res) {
     // ---------------------------------------------------------
     // A. Data Aggregation (Parallel Fetching)
     // ---------------------------------------------------------
-    // نجلب البيانات الأساسية أولاً للتحقق من حالة المستخدم
     const [
       userRes,
       rawProfile,
-      // نجلب باقي البيانات التي قد لا نحتاجها إذا توقفنا عند "طلب الفوج"
-      // لكن لتبسيط الكود وعدم تكرار الاستدعاءات لاحقاً، نجلبها الآن (أو يمكن تأخيرها لتحسين الأداء)
       memoryReport,
       curriculumReport,
       weaknesses,
@@ -100,28 +99,25 @@ async function chatInteractive(req, res) {
     let userData = userRes.data ? toCamelCase(userRes.data) : {};
     
     // =========================================================
-    // 🛑 GROUP ENFORCEMENT LOGIC (New Requirement)
+    // 🛑 GROUP ENFORCEMENT LOGIC
     // =========================================================
     if (!userData.groupId) {
-        // التحقق مما إذا كان المستخدم يحاول تحديد الفوج الآن
         // Regex matches: "فوج 1", "group 2", "groupe 3", "g 4"
         const groupMatch = message.match(/(?:فوج|group|groupe|g)\s*(\d+)/i);
 
         if (groupMatch) {
             const groupNum = groupMatch[1];
-            // بناء ID الفوج: نعتمد على المسار الدراسي المختار + رقم الفوج
-            // مثال: إذا كان المسار "USTHB_L1_MI" والفوج 2 -> "USTHB_L1_MI_G2"
             const pathId = userData.selectedPathId || 'General'; 
             const newGroupId = `${pathId}_G${groupNum}`;
             
             logger.info(`👥 User ${userId} joining group: ${newGroupId}`);
 
-            // 1. تحديث المستخدم
+            // 1. Update User
             await supabase.from('users')
                 .update({ group_id: newGroupId })
                 .eq('id', userId);
             
-            // 2. التأكد من وجود الفوج في قاعدة البيانات (أو إنشاؤه)
+            // 2. Ensure Group Exists
             const { data: groupExists } = await supabase
                 .from('study_groups')
                 .select('id')
@@ -137,7 +133,6 @@ async function chatInteractive(req, res) {
                 });
             }
 
-            // 3. الرد الفوري وإنهاء الطلب (Short-circuit)
             return res.status(200).json({ 
                 reply: `تم! ✅ راك مسجل ضروك في الفوج ${groupNum}. ضروك نقدر نشارك معاك واش راهم يقولو صحابك ونعاونك بذكاء المجموعة. واش حاب تقرا اليوم؟`,
                 sessionId,
@@ -145,7 +140,6 @@ async function chatInteractive(req, res) {
             });
 
         } else {
-            // إذا لم يذكر الفوج، نطلب منه ذلك ونوقف المعالجة
             return res.status(200).json({ 
                 reply: "مرحبا! 👋 باش نقدر نعاونك مليح ونعطيك واش راهم يقراو صحابك، لازم تقولي واش من فوج (Groupe) راك تقرا فيه؟\n\n(اكتب مثلاً: **فوج 1** أو **Group 2**)",
                 sessionId,
@@ -183,21 +177,23 @@ async function chatInteractive(req, res) {
         }
     }
 
-    // 3. Agenda Management (Filter active tasks)
+    // 3. Agenda Management
     const allAgenda = aiProfileData.aiAgenda || [];
     const now = new Date();
     const activeAgenda = allAgenda.filter(t => 
         t.status === 'pending' && (!t.trigger_date || new Date(t.trigger_date) <= now)
     );
 
-    // 4. Group Intelligence (Hive Mind)
+    // 4. EduNexus (Hive Mind) Context ✅ UPDATED
     let sharedContext = "";
     if (groupId) {
         try {
-            const groupMemory = await getGroupMemory(groupId);
-            if (groupMemory && groupMemory.exams) {
-                sharedContext = "🏫 **SHARED CLASS KNOWLEDGE (Hive Mind):**\n";
-                Object.entries(groupMemory.exams).forEach(([subject, data]) => {
+            // استخدام EduNexus بدلاً من groupManager
+            const nexusMemory = await getNexusMemory(groupId);
+            
+            if (nexusMemory && nexusMemory.exams) {
+                sharedContext = "🏫 **SHARED CLASS KNOWLEDGE (EduNexus):**\n";
+                Object.entries(nexusMemory.exams).forEach(([subject, data]) => {
                     sharedContext += `- ${subject} Exam: "${data.confirmed_value}" (Confidence: ${data.confidence_score})`;
                     if (data.is_verified) sharedContext += " [VERIFIED ✅]";
                     else if (data.confidence_score < 3) sharedContext += " [Uncertain ⚠️]";
@@ -205,8 +201,8 @@ async function chatInteractive(req, res) {
                     sharedContext += "\n";
                 });
             }
-        } catch (groupErr) {
-            logger.warn(`Failed to load group memory for group ${groupId}:`, groupErr);
+        } catch (nexusErr) {
+            logger.warn(`Failed to load Nexus memory for group ${groupId}:`, nexusErr);
         }
     }
 
@@ -227,7 +223,7 @@ async function chatInteractive(req, res) {
       weaknesses,                             // 7. weaknesses
       currentEmotionalState,                  // 8. emotions
       fullUserProfile,                        // 9. profile
-      systemContextCombined,                  // 10. context (Time + Shared Memory)
+      systemContextCombined,                  // 10. context (Time + EduNexus)
       examContext,                            // 11. exam info
       activeAgenda                            // 12. active tasks
     );
@@ -246,7 +242,7 @@ async function chatInteractive(req, res) {
     // D. Post-Processing & Actions (Side Effects)
     // ---------------------------------------------------------
 
-    // 1. Update Agenda (Snooze/Complete)
+    // 1. Update Agenda
     if (parsedResponse.agenda_actions && Array.isArray(parsedResponse.agenda_actions) && parsedResponse.agenda_actions.length > 0) {
         let currentAgenda = [...allAgenda];
         let agendaUpdated = false;
@@ -284,19 +280,20 @@ async function chatInteractive(req, res) {
         }
     }
 
-    // 3. Update Group Knowledge (Hive Mind Input)
+    // 3. Update EduNexus Knowledge ✅ UPDATED
     if (parsedResponse.new_facts && parsedResponse.new_facts.examDate && groupId) {
         try {
             const { subject, date } = parsedResponse.new_facts.examDate;
-            logger.info(`🏫 Group Intelligence: User ${userId} reporting exam for ${subject} on ${date}`);
+            logger.info(`🏫 EduNexus: User ${userId} reporting exam for ${subject} on ${date}`);
             
-            const result = await updateGroupKnowledge(groupId, userId, 'exams', subject, date);
+            // استخدام EduNexus للتحديث
+            const result = await updateNexusKnowledge(groupId, userId, 'exams', subject, date);
             
             if (result.conflictDetected) {
-                logger.warn(`⚠️ Conflict detected in group knowledge for ${subject}.`);
+                logger.warn(`⚠️ Conflict detected in EduNexus for ${subject}.`);
             }
-        } catch (groupUpdateErr) {
-            logger.error('Error updating group knowledge:', groupUpdateErr);
+        } catch (nexusUpdateErr) {
+            logger.error('Error updating EduNexus knowledge:', nexusUpdateErr);
         }
     }
 
