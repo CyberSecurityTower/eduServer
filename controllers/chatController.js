@@ -89,10 +89,12 @@ async function chatInteractive(req, res) {
     if (!userData.groupId) {
         // Regex لاستخراج الرقم فقط (يدعم العربية واللاتينية)
         const groupMatch = message.match(/(?:فوج|group|groupe|g)\s*(\d+)/i);
-        
         if (groupMatch) {
             const groupNum = groupMatch[1]; 
-            const pathId = userData.selectedPathId || 'General'; 
+            
+            // 👇 التعديل هنا: إذا لم يجد المسار، يستخدم المسار الافتراضي الخاص بك
+            const pathId = userData.selectedPathId || 'UAlger3_L1_ITCF'; 
+            
             const newGroupId = `${pathId}_G${groupNum}`;
             
             logger.info(`👥 Onboarding: User ${userId} joining ${newGroupId}`);
