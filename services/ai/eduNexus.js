@@ -1,8 +1,8 @@
 // services/ai/eduNexus.js
 'use strict';
 
-const supabase = require('../../data/supabase');
-const { nowISO } = require('../../data/dbUtils');
+const supabase = require('../data/supabase');
+const { nowISO } = require('../data/dbUtils');
 const { calculateVoteWeight } = require('./managers/reputationManager'); // تأكد من المسار
 
 // جلب بيانات النكسوس (الذاكرة المشتركة)
