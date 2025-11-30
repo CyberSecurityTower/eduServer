@@ -1,4 +1,3 @@
-// services/jobs/nightWatch.js
 'use strict';
 
 const supabase = require('../data/supabase');
@@ -9,72 +8,79 @@ async function runNightWatch() {
   const results = { groupsChecked: 0, notificationsSent: 0 };
 
   try {
-    // 1. جلب الأفواج التي لديها معلومات مشتركة
+    // 1. جلب البيانات
     const { data: groups, error } = await supabase
       .from('study_groups')
       .select('id, shared_knowledge');
 
-    if (error || !groups) return results;
+    // 🔍 DEBUG: لنرى هل هناك خطأ أو هل المصفوفة فارغة
+    if (error) console.error('❌ Supabase Error:', error);
+    console.log(`🔍 Found ${groups ? groups.length : 0} groups in DB.`);
+
+    if (!groups) return results;
 
     const now = new Date();
-    // تصفير الوقت للمقارنة العادلة بالأيام
     now.setHours(0, 0, 0, 0);
 
     for (const group of groups) {
       const knowledge = group.shared_knowledge;
-      if (!knowledge || !knowledge.exams) continue;
+      
+      // 🔍 DEBUG: لنرى ماذا يوجد داخل كل فوج
+      // console.log(`Checking Group: ${group.id}`, JSON.stringify(knowledge));
 
-      results.groupsChecked++;
+      if (!knowledge || !knowledge.exams) {
+          console.log(`⚠️ Group ${group.id} has no exams data.`);
+          continue;
+      }
 
-      // 2. فحص الامتحانات داخل الفوج
+      results.groupsChecked++; // ✅ هنا يزيد العداد
+
       for (const [subject, info] of Object.entries(knowledge.exams)) {
-        // الشروط: قيمة مؤكدة + ثقة عالية (أكثر من 3 أصوات مثلاً)
+        // 🔍 DEBUG: لنرى تفاصيل الامتحان
+        // console.log(`   - Subject: ${subject}, Date: ${info.confirmed_value}`);
+
         if (!info.confirmed_value || info.confidence_score < 3) continue;
 
         const examDate = new Date(info.confirmed_value);
         examDate.setHours(0, 0, 0, 0);
 
-        // حساب الفرق بالأيام
         const diffTime = examDate - now;
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-        // 3. التنبيه إذا كان الامتحان قريباً (غداً أو بعد يومين أو 3)
+        console.log(`   -> Diff Days: ${diffDays}`); // 🔍 هل الحساب صحيح؟
+
         if (diffDays > 0 && diffDays <= 3) {
-          
-          // جلب طلاب الفوج
+          // ... (باقي كود الإرسال كما هو)
           const { data: students } = await supabase
             .from('users')
             .select('id')
             .eq('group_id', group.id);
 
-          if (!students || students.length === 0) continue;
+          if (!students || students.length === 0) {
+              console.log(`⚠️ No students found in group ${group.id}`);
+              continue;
+          }
 
-          console.log(`📢 Alerting Group ${group.id}: ${subject} exam in ${diffDays} days.`);
+          console.log(`📢 Sending to ${students.length} students...`);
           
-          let message = "";
-          if (diffDays === 1) message = `🚨 غدوة امتحان ${subject}! بالتوفيق، راجع مليح.`;
-          else message = `⚠️ تذكير للفوج: امتحان ${subject} ما بقالوش (بعد ${diffDays} أيام).`;
-
-          // إرسال الإشعارات
+          // ... (كود الإرسال)
           const notifications = students.map(student => 
             sendUserNotification(student.id, {
               title: "تنبيه الفوج 📢",
-              message: message,
-              type: "group_alert",
-              meta: { subject, date: info.confirmed_value }
+              message: `⚠️ تذكير: امتحان ${subject} بعد ${diffDays} أيام.`,
+              type: "group_alert"
             })
           );
-
           await Promise.all(notifications);
           results.notificationsSent += students.length;
         }
       }
     }
   } catch (err) {
-    console.error('Night Watch Error:', err);
+    console.error('Night Watch Critical Error:', err);
   }
   
-  console.log('🌙 Night Watch finished:', results);
+  console.log('🌙 Finished:', results);
   return results;
 }
 
