@@ -2,7 +2,7 @@
 'use strict';
 
 const supabase = require('../data/supabase');
-const { sendUserNotification } = require('../../data/helpers');
+const { sendUserNotification } = require('../data/helpers');
 
 async function runNightWatch() {
   console.log('🌙 Night Watch started...');
