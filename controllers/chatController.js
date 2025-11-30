@@ -223,10 +223,22 @@ async function chatInteractive(req, res) {
     // ---------------------------------------------------------
     // D. Action Layer
     // ---------------------------------------------------------
-    if (parsedResponse.memory_update && groupId) {
+     if (parsedResponse.memory_update && groupId) {
         const action = parsedResponse.memory_update;
+        
+        console.log("🚨 AI DETECTED AN EXAM UPDATE:", action); // 👈 LOG هام جداً
+
         if (action.action === 'UPDATE_EXAM' && action.subject && action.new_date) {
-            updateNexusKnowledge(groupId, userId, 'exams', action.subject, action.new_date).catch(e => logger.error(e));
+            // استدعاء دالة التحديث
+            const updateResult = await updateNexusKnowledge(groupId, userId, 'exams', action.subject, action.new_date);
+            
+            console.log("✅ Database Update Result:", updateResult); // 👈 LOG نتيجة الداتابيز
+            
+            // تحسين الرد إذا تم التحديث بنجاح
+            if (updateResult && updateResult.success) {
+                // يمكننا إضافة جملة صغيرة للرد لنؤكد للمستخدم
+                // parsedResponse.reply += " (تم تسجيل المعلومة في النظام ✅)";
+            }
         }
     }
 
