@@ -1,15 +1,35 @@
+
 // services/ai/eduNexus.js
 'use strict';
 
 const supabase = require('../data/supabase');
 const { nowISO } = require('../data/dbUtils');
-const { calculateVoteWeight } = require('../ai/managers/reputationManager'); // تأكد من المسار
+const { calculateVoteWeight } = require('../ai/managers/reputationManager');
 
-// جلب بيانات النكسوس (الذاكرة المشتركة)
+// جلب بيانات النكسوس
 async function getNexusMemory(groupId) {
   if (!groupId) return null;
-  const { data } = await supabase.from('study_groups').select('shared_knowledge').eq('id', groupId).single();
-  return data?.shared_knowledge || {};
+  
+  console.log(`🔍 EduNexus: Fetching memory for group ${groupId}...`); // LOG
+
+  const { data, error } = await supabase
+    .from('study_groups')
+    .select('shared_knowledge')
+    .eq('id', groupId)
+    .single();
+
+  if (error) {
+    console.error('❌ EduNexus Error:', error.message);
+    return {};
+  }
+
+  if (!data || !data.shared_knowledge) {
+    console.warn('⚠️ EduNexus: No shared knowledge found (Empty).');
+    return {};
+  }
+
+  console.log('✅ EduNexus Data Found:', JSON.stringify(data.shared_knowledge).substring(0, 100)); // LOG
+  return data.shared_knowledge;
 }
 
 // تحديث النكسوس (مع منطق التصويت)
