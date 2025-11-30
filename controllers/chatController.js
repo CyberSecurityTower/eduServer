@@ -69,6 +69,9 @@ async function generateChatSuggestions(req, res) {
 async function chatInteractive(req, res) {
   let { userId, message, history = [], sessionId } = req.body;
 
+  // Safety check for history
+  if (!Array.isArray(history)) history = [];
+
   if (!sessionId) sessionId = crypto.randomUUID();
 
   try {
@@ -84,32 +87,29 @@ async function chatInteractive(req, res) {
     let userData = toCamelCase(userRaw);
 
     // =========================================================
-    // 🛑 STRICT ONBOARDING GATE (بوابة الانضمام الصارمة)
+    // 🛑 STRICT ONBOARDING GATE
     // =========================================================
     if (!userData.groupId) {
-        // Regex لاستخراج الرقم فقط (يدعم العربية واللاتينية)
         const groupMatch = message.match(/(?:فوج|group|groupe|g)\s*(\d+)/i);
+        
         if (groupMatch) {
             const groupNum = groupMatch[1]; 
-            
-            // 👇 التعديل هنا: إذا لم يجد المسار، يستخدم المسار الافتراضي الخاص بك
-            const pathId = userData.selectedPathId || 'UAlger3_L1_ITCF'; 
-            
+            const pathId = userData.selectedPathId || 'UAlger3_L1_ITCF'; // Fallback to avoid null
             const newGroupId = `${pathId}_G${groupNum}`;
             
             logger.info(`👥 Onboarding: User ${userId} joining ${newGroupId}`);
 
-           try {
+            try {
+                // 1. Create Group if not exists (No created_at to avoid error)
                 await supabase.from('study_groups').upsert({ 
                     id: newGroupId, 
                     path_id: pathId,
                     name: `Group ${groupNum}`
                 }, { onConflict: 'id' });
 
-                // تحديث المستخدم
+                // 2. Update User
                 await supabase.from('users').update({ group_id: newGroupId }).eq('id', userId);
                 
-              
                 return res.status(200).json({ 
                     reply: `تم! ✅ راك مسجل ضروك في الفوج ${groupNum}. EduNexus راهو يجمع في المعلومات من صحابك باش يعاونك. واش حاب تقرا اليوم؟`,
                     sessionId, 
@@ -117,11 +117,10 @@ async function chatInteractive(req, res) {
                 });
 
             } catch (err) {
-                logger.error('Onboarding Error:', err);
+                logger.error('Onboarding Error:', err.message);
                 return res.status(200).json({ reply: "حدث خطأ تقني أثناء التسجيل، حاول مرة أخرى.", sessionId });
             }
         } else {
-            // ⛔ BLOCKING STATE: نطلب الفوج ولا نكمل المعالجة
             return res.status(200).json({ 
                 reply: "مرحبا! 👋 باش نقدر نعاونك بذكاء المجموعة، لازم تقولي واش من فوج (Groupe) راك تقرا فيه؟\n(اكتب مثلاً: **فوج 1**)", 
                 sessionId,
@@ -134,12 +133,12 @@ async function chatInteractive(req, res) {
     // =========================================================
 
     // Fetch Context Data (Parallel)
-    const [rawProfile, memoryReport, curriculumReport, weaknesses, formattedProgress] = await Promise.all([
-      getProfile(userId),
-      runMemoryAgent(userId, message),
-      runCurriculumAgent(userId, message), 
-      fetchUserWeaknesses(userId),
-      formatProgressForAI(userId)
+    const [rawProfile, memoryReport, curriculumReport, weaknessesRaw, formattedProgress] = await Promise.all([
+      getProfile(userId).catch(() => ({})),
+      runMemoryAgent(userId, message).catch(() => ''),
+      runCurriculumAgent(userId, message).catch(() => ''), 
+      fetchUserWeaknesses(userId).catch(() => []),
+      formatProgressForAI(userId).catch(() => '')
     ]);
 
     const aiProfileData = rawProfile || {}; 
@@ -147,15 +146,24 @@ async function chatInteractive(req, res) {
     const fullUserProfile = { ...userData, ...aiProfileData, facts: aiProfileData.facts || {}, userName: aiProfileData.facts?.userName || userData.firstName || 'Student' };
 
     // ---------------------------------------------------------
-    // B. Context Preparation
+    // B. Context Preparation & Sanitization
     // ---------------------------------------------------------
     let currentEmotionalState = aiProfileData.emotional_state || { mood: 'happy', angerLevel: 0, reason: '' };
     
     // Agenda Filtering
-    const allAgenda = aiProfileData.aiAgenda || [];
+    const allAgenda = Array.isArray(aiProfileData.aiAgenda) ? aiProfileData.aiAgenda : [];
     const activeAgenda = allAgenda.filter(t => t.status === 'pending' && (!t.trigger_date || new Date(t.trigger_date) <= new Date()));
 
-    // 🏫 EduNexus Context (The Hive Mind)
+    // Exam Context Calculation
+    let examContext = null;
+    if (userData.nextExamDate) {
+        const diffDays = Math.ceil((new Date(userData.nextExamDate) - new Date()) / (1000 * 60 * 60 * 24));
+        if (diffDays >= 0 && diffDays < 30) {
+            examContext = { daysUntilExam: diffDays, subject: userData.nextExamSubject || 'General' };
+        }
+    }
+
+    // EduNexus Context
     let sharedContext = "";
     if (groupId) {
         try {
@@ -170,27 +178,32 @@ async function chatInteractive(req, res) {
                     sharedContext += "\n";
                 });
             }
-        } catch (e) { logger.warn('Nexus Load Error', e); }
+        } catch (e) { logger.warn('Nexus Load Error', e.message); }
     }
 
     const systemContextCombined = getAlgiersTimeContext().contextSummary + (sharedContext ? `\n\n${sharedContext}` : "");
 
     // ---------------------------------------------------------
-    // C. AI Generation
+    // C. AI Generation (With Strict Sanitization)
     // ---------------------------------------------------------
-    // نمرر الوسائط بالترتيب الصحيح المتوقع في PROMPTS.chat.interactiveChat
+    
+    // 🔥 SANITIZATION LAYER: Ensure no NULLs are passed to prompts
+    const safeWeaknesses = Array.isArray(weaknessesRaw) ? weaknessesRaw : [];
+    const safeHistoryStr = history.slice(-5).map(h => `${h.role}: ${h.text}`).join('\n') || '';
+    const safeExamContext = examContext || {}; // Pass empty object instead of null if prompt expects object
+    
     const finalPrompt = PROMPTS.chat.interactiveChat(
-      message, 
-      memoryReport, 
-      curriculumReport, 
-      history.slice(-5).map(h => `${h.role}: ${h.text}`).join('\n'), // conversationReport
-      history.slice(-5).map(h => `${h.role}: ${h.text}`).join('\n'), // history
-      formattedProgress, 
-      weaknesses, 
+      message || '', 
+      memoryReport || '', 
+      curriculumReport || '', 
+      safeHistoryStr, // conversationReport
+      safeHistoryStr, // history
+      formattedProgress || '', 
+      safeWeaknesses, 
       currentEmotionalState, 
       fullUserProfile, 
-      systemContextCombined, 
-      null, // examContext (يمكن حسابه إذا لزم الأمر)
+      systemContextCombined || '', 
+      safeExamContext, 
       activeAgenda
     );
 
@@ -201,38 +214,23 @@ async function chatInteractive(req, res) {
     if (!parsedResponse?.reply) parsedResponse = { reply: rawText || "Error processing request.", widgets: [] };
 
     // ---------------------------------------------------------
-    // D. ACTION LAYER (تنفيذ الأوامر) ⚡
+    // D. ACTION LAYER
     // ---------------------------------------------------------
 
-    // 1. Handle "Memory Updates" (EduNexus Updates)
-    // إذا قرر الـ AI أن المستخدم قدم معلومة جديدة تستحق التحديث
+    // 1. EduNexus Updates
     if (parsedResponse.memory_update && groupId) {
         const action = parsedResponse.memory_update;
-        
         if (action.action === 'UPDATE_EXAM' && action.subject && action.new_date) {
             logger.info(`⚡ ACTION: User ${userId} updating exam for ${action.subject}`);
             try {
-                const result = await updateNexusKnowledge(
-                    groupId, 
-                    userId, 
-                    'exams', 
-                    action.subject, 
-                    action.new_date
-                );
-
-                if (result.blocked) {
-                    logger.warn(`🛡️ Action Blocked: User ${userId} tried to overwrite Admin verified data.`);
-                } else if (result.success) {
-                    logger.success(`✅ EduNexus Updated: ${action.subject} -> ${action.new_date}`);
-                }
-            } catch (err) {
-                logger.error('Failed to execute UPDATE_EXAM:', err);
-            }
+                const result = await updateNexusKnowledge(groupId, userId, 'exams', action.subject, action.new_date);
+                if (result.success) logger.success(`✅ EduNexus Updated: ${action.subject} -> ${action.new_date}`);
+            } catch (err) { logger.error('Failed to execute UPDATE_EXAM:', err.message); }
         }
     }
 
-    // 2. Handle Agenda Actions (Snooze/Complete)
-    if (parsedResponse.agenda_actions && parsedResponse.agenda_actions.length > 0) {
+    // 2. Agenda Actions
+    if (parsedResponse.agenda_actions && Array.isArray(parsedResponse.agenda_actions)) {
         let currentAgenda = [...allAgenda];
         let agendaUpdated = false;
         for (const act of parsedResponse.agenda_actions) {
@@ -269,11 +267,11 @@ async function chatInteractive(req, res) {
       mood: parsedResponse.newMood 
     });
 
-    // Background Tasks (Fire & Forget)
+    // Background Tasks
     setImmediate(() => {
         const updatedHistory = [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }];
-        saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory).catch(e => logger.error('Bg Save Error', e));
-        analyzeAndSaveMemory(userId, updatedHistory).catch(e => logger.error('Bg Memory Error', e));
+        saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory).catch(e => logger.error('Bg Save Error', e.message));
+        analyzeAndSaveMemory(userId, updatedHistory).catch(e => logger.error('Bg Memory Error', e.message));
     });
 
   } catch (err) {
