@@ -33,24 +33,37 @@ async function getNexusMemory(groupId) {
 }
 
 // تحديث النكسوس (مع منطق التصويت)
+
 async function updateNexusKnowledge(groupId, userId, factType, key, value) {
   if (!groupId || !userId) return;
 
+  console.log(`📝 EduNexus Update: Group=${groupId}, Type=${factType}, Key=${key}, Value=${value}`);
+
+  // 1. جلب البيانات الحالية
   const { data } = await supabase.from('study_groups').select('shared_knowledge').eq('id', groupId).single();
   let knowledge = data?.shared_knowledge || {};
 
+  // 2. تهيئة الهيكل إذا كان فارغاً
   if (!knowledge[factType]) knowledge[factType] = {};
-  if (!knowledge[factType][key]) knowledge[factType][key] = { candidates: {}, is_verified: false };
+  if (!knowledge[factType][key]) {
+      knowledge[factType][key] = { 
+          candidates: {}, 
+          confirmed_value: null,
+          confidence_score: 0,
+          is_verified: false 
+      };
+  }
 
   const entry = knowledge[factType][key];
+  
+  // 3. حساب قوة الصوت
   const voteWeight = await calculateVoteWeight(userId);
-  const isGod = voteWeight >= 1000;
-
-  if (entry.is_verified && !isGod) return { blocked: true };
-
+  
+  // 4. إضافة الصوت
   if (!entry.candidates[value]) entry.candidates[value] = 0;
   entry.candidates[value] += voteWeight;
 
+  // 5. تحديد الفائز (الأكثر تصويتاً)
   let winnerValue = null;
   let maxVotes = 0;
   Object.entries(entry.candidates).forEach(([val, votes]) => {
@@ -60,19 +73,27 @@ async function updateNexusKnowledge(groupId, userId, factType, key, value) {
       }
   });
 
+  // تحديث القيمة المعتمدة
   entry.confirmed_value = winnerValue;
   entry.confidence_score = maxVotes;
   
-  if (isGod) {
+  // إذا كان المستخدم Admin، يتم التوثيق فوراً
+  if (voteWeight >= 1000) {
       entry.is_verified = true;
-      entry.candidates = { [value]: 1000 };
   }
 
-  await supabase.from('study_groups').update({ 
+  // 6. الحفظ في Supabase
+  const { error } = await supabase.from('study_groups').update({ 
       shared_knowledge: knowledge,
-      updated_at: nowISO()
+      updated_at: new Date().toISOString()
   }).eq('id', groupId);
 
+  if (error) {
+      console.error("❌ Failed to update EduNexus:", error.message);
+      return { success: false };
+  }
+
+  console.log("✅ EduNexus Updated Successfully!");
   return { success: true, winnerValue, isVerified: entry.is_verified };
 }
 
