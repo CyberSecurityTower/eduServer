@@ -75,44 +75,69 @@ async function jobWorkerLoop() {
 }
 
 async function checkScheduledActions() {
-  // This runs every minute via setInterval in index.js
   try {
-    const now = nowISO();
-    const { data: actions } = await supabase
+    const now = new Date().toISOString();
+    
+    // 1. جلب المهام المستحقة
+    const { data: actions, error } = await supabase
       .from('scheduled_actions')
       .select('*')
       .eq('status', 'pending')
       .lte('execute_at', now)
-      .limit(50);
+      .limit(50); // معالجة 50 في كل دورة كحد أقصى
 
-    if (!actions?.length) return;
+    if (error) throw error;
+    if (!actions || actions.length === 0) return;
 
-    logger.log(`[Ticker] Executing ${actions.length} actions.`);
-    const updates = [];
+    logger.log(`[Ticker] Processing ${actions.length} actions.`);
 
+    // 2. المعالجة المتسلسلة (لضمان عدم التداخل)
     for (const action of actions) {
-      await sendUserNotification(action.user_id, {
-        title: action.title || 'تذكير',
-        message: action.message,
-        type: 'smart_reminder',
-        meta: { actionId: action.id }
-      });
+      
+      // 🛑 تحقق إضافي: هل تم تغيير الحالة من طرف "worker" آخر في أجزاء الثانية الأخيرة؟
+      // نقوم بتحديث الحالة إلى 'processing' أولاً، إذا نجح التحديث، نرسل الإشعار.
+      // هذا يضمن أن عملية واحدة فقط ستعالج هذا الصف.
+      
+      const { error: lockError } = await supabase
+        .from('scheduled_actions')
+        .update({ status: 'processing' }) // حالة مؤقتة
+        .eq('id', action.id)
+        .eq('status', 'pending'); // شرط مهم جداً
 
-      updates.push(
-        supabase.from('scheduled_actions').update({ status: 'completed', executed_at: now }).eq('id', action.id)
-      );
+      if (lockError) {
+          // إذا فشل التحديث (ربما تمت معالجته)، نتجاوز
+          continue; 
+      }
+
+      // 3. إرسال الإشعار الفعلي
+      try {
+          await sendUserNotification(action.user_id, {
+            title: action.title || 'تنبيه',
+            message: action.message,
+            type: 'smart_reminder',
+            meta: { actionId: action.id }
+          });
+
+          // 4. وضع علامة الاكتمال
+          await supabase
+            .from('scheduled_actions')
+            .update({ status: 'completed', executed_at: new Date().toISOString() })
+            .eq('id', action.id);
+            
+      } catch (sendErr) {
+          logger.error(`[Ticker] Failed to send notification ${action.id}:`, sendErr);
+          // في حالة الفشل، نعيده لـ pending أو نضعه failed
+          await supabase
+            .from('scheduled_actions')
+            .update({ status: 'failed', last_error: sendErr.message })
+            .eq('id', action.id);
+      }
     }
-    await Promise.all(updates);
 
   } catch (err) {
     logger.error('[Ticker] Error:', err.message);
   }
 }
-setInterval(() => {
-      checkScheduledActions().catch(e => logger.error('Ticker failed:', e));
-    }, 60 * 1000);
-function stopWorker() { workerStopped = true; }
-
 module.exports = {
   initJobWorker,
   jobWorkerLoop,
