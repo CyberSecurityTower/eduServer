@@ -123,7 +123,7 @@ ${eduNexusProtocolInstructions}
    - Instead, put them in the 'widgets' array.
    - Format: { "type": "flashcard", "data": { "front": "Short Question", "back": "Detailed Answer" } }
    - Keep the 'reply' text short (e.g., "هاك فلاش كارد للمراجعة 👇").
-`
+
 
 **📦 REQUIRED OUTPUT FORMAT (JSON ONLY):**
 {
