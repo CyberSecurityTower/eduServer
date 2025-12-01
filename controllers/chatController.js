@@ -190,7 +190,20 @@ async function chatInteractive(req, res) {
     const safeMessage = message || '';
     const safeMemoryReport = memoryReport || '';
     const safeCurriculumReport = curriculumReport || '';
-    const safeHistoryStr = history.slice(-5).map(h => `${h.role}: ${h.text}`).join('\n') || '';
+ // دالة مساعدة لتنسيق الوقت (HH:MM)
+    const formatTimeShort = (isoString) => {
+        if (!isoString) return '';
+        const date = new Date(isoString);
+        return `${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')}`;
+    };
+
+    // 🔥 التعديل هنا: دمج التوقيت مع الرسائل السابقة 🔥
+    const safeHistoryStr = history.slice(-10).map(h => {
+        // نفترض أن الفرونت أند يرسل timestamp مع كل رسالة (وهذا الطبيعي)
+        // إذا لم يوجد، نتركه فارغاً
+        const timeTag = h.timestamp ? `[${formatTimeShort(h.timestamp)}] ` : ''; 
+        return `${timeTag}${h.role === 'model' ? 'EduAI' : 'User'}: ${h.text}`;
+    }).join('\n');
     const safeFormattedProgress = formattedProgress || '';
     const safeWeaknesses = Array.isArray(weaknessesRaw) ? weaknessesRaw : [];
     const safeSystemContext = systemContextCombined || '';
@@ -200,8 +213,7 @@ async function chatInteractive(req, res) {
       safeMessage, 
       safeMemoryReport, 
       safeCurriculumReport, 
-      safeHistoryStr, 
-      safeHistoryStr, 
+      safeHistoryStr,  
       safeFormattedProgress, 
       safeWeaknesses, 
       currentEmotionalState, 
