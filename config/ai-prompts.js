@@ -214,7 +214,7 @@ ${eduNexusProtocolInstructions}
   "agenda_actions": [
     { "id": "task_id", "action": "snooze|complete", "until": "YYYY-MM-DD (optional)" }
   ],
-  "widgets":  { "type": "flashcard", "data": { "front": "...", "back": "..." } }
+  "widgets":  [{ "type": "flashcard", "data": { "front": "...", "back": "..." } }]
 }`;
     },
   },
