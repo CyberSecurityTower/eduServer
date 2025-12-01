@@ -1,9 +1,11 @@
+
 // config/ai-prompts.js
 'use strict';
 
 const { escapeForPrompt, safeSnippet } = require('../utils');
 const CREATOR_PROFILE = require('./creator-profile');
 const CONFIG = require('./index'); 
+
 const PROMPTS = {
   // --- Chat Controller Prompts ---
   chat: {
@@ -51,10 +53,10 @@ const PROMPTS = {
       const lessonContext = curriculumReport 
         ? `📚 **LESSON CONTEXT:** ${safeSnippet(curriculumReport, 500)}` 
         : "📚 No specific lesson context.";
+      
       // C. قسم التعليمات والبروتوكول (EduNexus Protocol)
-      // هذه هي التعليمات الطويلة التي تستهلك التوكنات، سنحذفها كلياً إذا كان النظام مغلقاً
       let eduNexusProtocolInstructions = "";
-      let memoryUpdateJsonField = ""; // حقل الـ JSON الخاص بالتحديث
+      let memoryUpdateJsonField = ""; 
 
       if (CONFIG.ENABLE_EDUNEXUS) {
           eduNexusProtocolInstructions = `
@@ -72,7 +74,6 @@ If the user **reports** a specific date for an exam, test, or deadline, you MUST
 - If context shows (شائعة قوية ⚠️), say "Rumors say...".
 `;
           
-          // نضيف حقل التحديث في الـ JSON فقط إذا كان النظام مفعلاً
           memoryUpdateJsonField = `
   // 👇 FILL THIS IF USER REPORTS AN EXAM DATE
   "memory_update": { 
@@ -81,7 +82,6 @@ If the user **reports** a specific date for an exam, test, or deadline, you MUST
      "new_date": "YYYY-MM-DD" 
   },`;
       } else {
-          // إذا كان مغلقاً، نضع قيمة null ثابتة أو لا نذكرها أصلاً (هنا نضع null لضمان ثبات الهيكل)
           memoryUpdateJsonField = `"memory_update": null,`;
       }
 
@@ -110,54 +110,30 @@ ${eduNexusProtocolInstructions}
 
 **🤖 INSTRUCTIONS:**
 1. **Persona:** Friendly, Algerian Derja (mix Arabic/French/English).
-3. **SCRIPT:** WRITE ONLY IN ARABIC SCRIPT (أكتب بالحروف العربية فقط). NO LATIN CHARACTERS/ARABIZI allowed in the 'reply'.
-2. **Focus:** Answer the user's question based on context.
-
+2. **SCRIPT:** WRITE ONLY IN ARABIC SCRIPT (أكتب بالحروف العربية فقط). NO LATIN CHARACTERS/ARABIZI allowed in the 'reply'.
+3. **Focus:** Answer the user's question based on context.
+4. **Time Awareness (Smart):** 
+   - You have the current time in "CONTEXT".
+   - You have timestamps in "CHAT HISTORY" like [HH:MM].
+   - **Reaction:** If the last user message was > 4 hours ago, say something like "طولت الغيبة!" or "Welcome back".
+   - **Late Night:** If it's past 11:00 PM (23:00), occasionally say "مازالك سهران تقرا؟ يعطيك الصحة!" or "روح ترقد غدوة وتكمل".
 
 **📦 REQUIRED OUTPUT FORMAT (JSON ONLY):**
 {
   "reply": "Your response in Algerian Derja...",
   "newMood": "neutral",
   ${memoryUpdateJsonField}
-  "agenda_actions": [],
-  "widgets": []
-};
-    },
-  },
-**📦 OUTPUT FORMAT (JSON ONLY):**
-{
-  "reply": "Your response text in Algerian Derja (confirming the action if taken)...",
-  "newMood": "happy",
-  
-  // Use this ONLY if the user reported a class-wide exam date/change
-  "memory_update": { 
-     "action": "UPDATE_EXAM", 
-     "subject": "Subject Name", 
-     "new_date": "YYYY-MM-DD" 
-  }, 
-  // Set "memory_update": null if no official news was reported.
-
   "agenda_actions": [
     { "id": "task_id", "action": "snooze|complete", "until": "YYYY-MM-DD (optional)" }
   ],
-  "new_facts": { 
-    "personalGoal": "Finish chapter 1" 
-  },
-  "widgets": [],
-  "needsScheduling": false
-}
- **Time Awareness (Smart):** 
-   - You have the current time in "CONTEXT".
-   - You have timestamps in "CHAT HISTORY" like [HH:MM].
-   - **Reaction:** If the last user message was > 4 hours ago, say something like "طولت الغيبة!" or "Welcome back".
-   - **Late Night:** If it's past 11:00 PM (23:00), occasionally say "مازالك سهران تقرا؟ يعطيك الصحة!" or "روح ترقد غدوة وتكمل".
-`
-`;
+  "widgets": []
+}`;
     },
   },
 
   // --- Managers Prompts (Standard) ---
   managers: {
+    // 👇 كان الخطأ هنا (نقص علامة ` في البداية)
     traffic: (message) => `Analyze: { "language": "Ar/En/Fr", "title": "Short Title", "intent": "study|chat|admin" }. Msg: "${escapeForPrompt(safeSnippet(message, 200))}"`,
     
     memoryExtractor: (currentFacts, chatHistory) => `
