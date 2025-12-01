@@ -124,6 +124,92 @@ ${eduNexusProtocolInstructions}
    - Format: { "type": "flashcard", "data": { "front": "Short Question", "back": "Detailed Answer" } }
    - Keep the 'reply' text short (e.g., "هاك فلاش كارد للمراجعة 👇").
 
+### 1. الفلاش كارد (Flashcard)
+يستخدم لعرض مصطلح وتعريفه، أو سؤال وجواب سريع.
+
+**هيكل JSON:**
+```json
+{
+  "type": "flashcard",
+  "data": {
+    "front": "What is the Virtual DOM?",
+    "back": "A lightweight copy of the real DOM used by React to optimize rendering."
+  }
+}
+```
+
+**شرح الحقول:**
+*   `type`: يجب أن يكون `"flashcard"`.
+*   `front`: النص الذي يظهر على الوجه الأمامي (السؤال أو المصطلح).
+*   `back`: النص الذي يظهر عند قلب البطاقة (الإجابة أو التعريف).
+
+---
+
+### 2. الكويز (Quiz)
+يستخدم لعرض سؤال أو مجموعة أسئلة متعددة الخيارات مع تصحيح تلقائي.
+
+**هيكل JSON:**
+```json
+{
+  "type": "quiz",
+  "data": {
+    "questions": [
+      {
+        "text": "Which hook is used for side effects in React?",
+        "options": ["useState", "useEffect", "useContext", "useReducer"],
+        "correctAnswer": "useEffect",
+        "explanation": "useEffect runs after the render and is used for data fetching, subscriptions, etc."
+      }
+    ]
+  }
+}
+```
+
+**شرح الحقول:**
+*   `type`: يجب أن يكون `"quiz"`.
+*   `questions`: مصفوفة تحتوي على الأسئلة.
+*   `text`: نص السؤال.
+*   `options`: مصفوفة نصوص تحتوي على الخيارات (يجب أن تكون 3 أو 4 خيارات).
+*   `correctAnswer`: نص الإجابة الصحيحة (يجب أن يطابق حرفياً أحد الخيارات في `options`).
+*   `explanation`: (اختياري) نص يظهر بعد الإجابة لشرح السبب.
+
+---
+
+### 3. الملخص (Summary)
+يستخدم لعرض تلخيص للنقاط الأساسية بشكل منظم.
+
+**هيكل JSON (الخيار الأفضل - نقاط):**
+```json
+{
+  "type": "summary",
+  "data": {
+    "title": "Key Takeaways: React Hooks",
+    "points": [
+      "Hooks allow you to use state without writing a class.",
+      "useState returns a stateful value and a function to update it.",
+      "Custom hooks let you reuse stateful logic between components."
+    ]
+  }
+}
+```
+
+**أو (خيار نصي):**
+```json
+{
+  "type": "summary",
+  "data": {
+    "title": "Lesson Summary",
+    "summary": "React Hooks are functions that let you 'hook into' React state and lifecycle features from function components. They were introduced in React 16.8."
+  }
+}
+```
+
+**شرح الحقول:**
+*   `type`: يجب أن يكون `"summary"`.
+*   `title`: عنوان الملخص.
+*   `points`: مصفوفة نصوص، كل نص يمثل نقطة (Bullet point). هذا الشكل يظهر بشكل أجمل في التصميم الخاص بك.
+*   `summary`: (بديل لـ points) نص فقرة كاملة.
+
 
 **📦 REQUIRED OUTPUT FORMAT (JSON ONLY):**
 {
