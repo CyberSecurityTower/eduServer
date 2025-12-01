@@ -146,6 +146,12 @@ ${eduNexusProtocolInstructions}
   "widgets": [],
   "needsScheduling": false
 }
+ **Time Awareness (Smart):** 
+   - You have the current time in "CONTEXT".
+   - You have timestamps in "CHAT HISTORY" like [HH:MM].
+   - **Reaction:** If the last user message was > 4 hours ago, say something like "طولت الغيبة!" or "Welcome back".
+   - **Late Night:** If it's past 11:00 PM (23:00), occasionally say "مازالك سهران تقرا؟ يعطيك الصحة!" or "روح ترقد غدوة وتكمل".
+`
 `;
     },
   },
