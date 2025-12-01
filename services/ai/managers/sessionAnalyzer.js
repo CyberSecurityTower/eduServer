@@ -2,7 +2,7 @@
 // services/ai/managers/sessionAnalyzer.js
 'use strict';
 
-const { getFirestoreInstance, admin } = require('../../data/firestore');
+const supabase = require('../../data/supabase'); // 👈 نستخدم Supabase مباشرة
 const { extractTextFromResult, ensureJsonOrRepair } = require('../../../utils');
 const logger = require('../../../utils/logger');
 
@@ -24,25 +24,25 @@ const db = getFirestoreInstance();
  */
 async function analyzeSessionForEvents(userId, history) {
   try {
-    // نأخذ آخر 20 رسالة فقط لتوفير التوكنز، فهي تحتوي عادة على السياق الأحدث
-    const recentTranscript = history.slice(-20).map(m => `${m.role}: ${m.text}`).join('\n');
+    // نأخذ آخر رسالتين فقط (طلب المستخدم ورد البوت) للسرعة والدقة
+    const recentTranscript = history.slice(-2).map(m => `${m.role}: ${m.text}`).join('\n');
     
-    // الوقت الحالي للسيرفر هو المرجع للـ AI
+    // الوقت الحالي (UTC)
     const now = new Date();
-    const serverTimeISO = now.toISOString();
-    const dayName = now.toLocaleDateString('en-US', { weekday: 'long' });
-
+    
     const prompt = `
     **System Task:** You are a Scheduler Agent.
-    **Current Server Time:** ${serverTimeISO} (Today is ${dayName}).
+    **Current Server Time (UTC):** ${now.toISOString()}
     
     **Instructions:**
-    Analyze the conversation below. Did the user agree to a reminder, mention an exam date, or accept a study session proposal?
+    Analyze the conversation. Did the user ask for a reminder?
+    If yes, calculate the EXACT ISO timestamp for the reminder based on Current Server Time.
     
-    1. If user said "Remind me tomorrow at 5 PM", calculate the EXACT ISO date for tomorrow 17:00 based on Current Server Time.
-    2. If user mentioned "Exam next Sunday", calculate the date.
-    3. **Crucial:** Write the notification message NOW, referencing the context (e.g., "Time to review Physics!").
-
+    **Example:**
+    User: "Remind me in 2 minutes"
+    Current Time: 12:00:00
+    Execute At: 12:02:00
+    
     **Conversation:**
     ${recentTranscript}
 
@@ -50,48 +50,86 @@ async function analyzeSessionForEvents(userId, history) {
     {
       "events": [
         {
-          "type": "reminder", // or "exam_prep", "study_session"
-          "title": "مراجعة الفيزياء",
-          "message": "حان الموعد! اتفقنا أمس أن تراجع درس السرعة. هل أنت جاهز؟",
-          "executeAt": "2023-10-27T17:00:00.000Z" // MUST be valid ISO string
+          "type": "reminder", 
+          "title": "تذكير",
+          "message": "حان الوقت! طلبت مني نذكرك: [summary of request]",
+          "executeAt": "ISO_DATE_STRING" 
         }
       ]
     }
-    If no events found, return { "events": [] }.
+    If no events, return { "events": [] }.
     `;
 
-    // نستخدم 'analysis' (يفضل Gemini 1.5 Pro إن وجد، أو Flash يكفي حالياً)
-    const res = await generateWithFailoverRef('analysis', prompt, { label: 'SessionAnalyzer', timeoutMs: 15000 });
+    if (!generateWithFailoverRef) return;
+
+    // نستخدم موديل سريع (Flash)
+    const res = await generateWithFailoverRef('analysis', prompt, { label: 'SessionAnalyzer', timeoutMs: 10000 });
     const raw = await extractTextFromResult(res);
     const data = await ensureJsonOrRepair(raw, 'analysis');
 
     if (data && Array.isArray(data.events) && data.events.length > 0) {
-      const batch = db.batch();
       
-      data.events.forEach(event => {
-        if (!event.executeAt) return;
-        
-        const docRef = db.collection('scheduledActions').doc();
-        batch.set(docRef, {
-          userId,
+      const eventsToInsert = data.events.map(event => ({
+          user_id: userId,
           type: event.type || 'reminder',
-          title: event.title || 'تذكير',
+          title: event.title || 'تذكير ذكي',
           message: event.message,
-          // تحويل النص إلى Timestamp الخاص بفايربيس
-          executeAt: admin.firestore.Timestamp.fromDate(new Date(event.executeAt)), 
+          execute_at: event.executeAt, // 👈 هذا هو العمود المهم
           status: 'pending',
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          source: 'ai_auto_scheduler'
-        });
-      });
+          created_at: new Date().toISOString()
+      }));
 
-      await batch.commit();
-      logger.success(`[SessionAnalyzer] Scheduled ${data.events.length} smart events for user ${userId}`);
+      // الحفظ في Supabase
+      const { error } = await supabase.from('scheduled_actions').insert(eventsToInsert);
+
+      if (error) {
+          logger.error('[SessionAnalyzer] DB Error:', error.message);
+      } else {
+          logger.success(`[SessionAnalyzer] Scheduled ${eventsToInsert.length} events for user ${userId}`);
+      }
     }
 
   } catch (error) {
-    logger.error(`[SessionAnalyzer] Error for user ${userId}:`, error.message);
+    logger.error(`[SessionAnalyzer] Error:`, error.message);
   }
 }
 
 module.exports = { initSessionAnalyzer, analyzeSessionForEvents };
+```
+
+---
+
+### 3. ربط المحلل بـ Chat Controller (الحلقة المفقودة)
+في الكود السابق، لم نكن نستدعي `analyzeSessionForEvents` أبداً! يجب إضافتها.
+
+**ملف:** `controllers/chatController.js`
+
+```javascript
+// ... في الأعلى مع الاستيرادات
+const { initSessionAnalyzer, analyzeSessionForEvents } = require('../services/ai/managers/sessionAnalyzer');
+
+// ... داخل دالة chatInteractive (في النهاية) ...
+
+    // ---------------------------------------------------------
+    // E. Response
+    // ---------------------------------------------------------
+    res.status(200).json({
+      reply: parsedResponse.reply,
+      widgets: parsedResponse.widgets || [],
+      sessionId: sessionId,
+      mood: parsedResponse.newMood 
+    });
+
+    // 👇👇👇 هذا هو الجزء الناقص الذي يجب إضافته 👇👇👇
+    setImmediate(() => {
+        const updatedHistory = [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }];
+        
+        // حفظ الشات
+        saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory).catch(e => logger.error(e));
+        
+        // تحليل الذاكرة (حقائق)
+        analyzeAndSaveMemory(userId, updatedHistory).catch(e => logger.error(e));
+        
+        // 🔥 تحليل التذكيرات (هنا يتم اكتشاف "بعد دقيقتين")
+        analyzeSessionForEvents(userId, updatedHistory).catch(e => logger.error('SessionAnalyzer Fail:', e));
+    });
