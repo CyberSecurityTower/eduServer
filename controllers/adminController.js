@@ -350,6 +350,10 @@ async function triggerFullIndexing(req, res) {
 
 async function triggerNightWatch(req, res) {
   try {
+    // 👇 إضافة الشرط هنا
+    if (!CONFIG.ENABLE_EDUNEXUS) {
+        return res.status(200).json({ message: 'EduNexus Night Watch is currently disabled.' });
+    }
     // حماية الرابط بمفتاح سري (ضعه في Environment Variables لاحقاً)
     const secret = req.headers['x-cron-secret'];
     if (secret !== process.env.CRON_SECRET && secret !== 'my-super-secret-cron-key') {
