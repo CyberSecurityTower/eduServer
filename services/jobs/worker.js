@@ -142,5 +142,5 @@ module.exports = {
   initJobWorker,
   jobWorkerLoop,
   checkScheduledActions,
-  stopWorker
+  
 };
