@@ -108,7 +108,9 @@ async function checkScheduledActions() {
     logger.error('[Ticker] Error:', err.message);
   }
 }
-
+setInterval(() => {
+      checkScheduledActions().catch(e => logger.error('Ticker failed:', e));
+    }, 60 * 1000);
 function stopWorker() { workerStopped = true; }
 
 module.exports = {
