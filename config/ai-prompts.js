@@ -127,8 +127,6 @@ ${eduNexusProtocolInstructions}
 ### 1. الفلاش كارد (Flashcard)
 يستخدم لعرض مصطلح وتعريفه، أو سؤال وجواب سريع.
 
-**هيكل JSON:**
-```json
 {
   "type": "flashcard",
   "data": {
@@ -136,7 +134,7 @@ ${eduNexusProtocolInstructions}
     "back": "A lightweight copy of the real DOM used by React to optimize rendering."
   }
 }
-```
+
 
 **شرح الحقول:**
 *   `type`: يجب أن يكون `"flashcard"`.
@@ -148,8 +146,6 @@ ${eduNexusProtocolInstructions}
 ### 2. الكويز (Quiz)
 يستخدم لعرض سؤال أو مجموعة أسئلة متعددة الخيارات مع تصحيح تلقائي.
 
-**هيكل JSON:**
-```json
 {
   "type": "quiz",
   "data": {
@@ -163,7 +159,7 @@ ${eduNexusProtocolInstructions}
     ]
   }
 }
-```
+
 
 **شرح الحقول:**
 *   `type`: يجب أن يكون `"quiz"`.
@@ -179,7 +175,6 @@ ${eduNexusProtocolInstructions}
 يستخدم لعرض تلخيص للنقاط الأساسية بشكل منظم.
 
 **هيكل JSON (الخيار الأفضل - نقاط):**
-```json
 {
   "type": "summary",
   "data": {
@@ -191,10 +186,10 @@ ${eduNexusProtocolInstructions}
     ]
   }
 }
-```
+
 
 **أو (خيار نصي):**
-```json
+
 {
   "type": "summary",
   "data": {
@@ -202,7 +197,7 @@ ${eduNexusProtocolInstructions}
     "summary": "React Hooks are functions that let you 'hook into' React state and lifecycle features from function components. They were introduced in React 16.8."
   }
 }
-```
+
 
 **شرح الحقول:**
 *   `type`: يجب أن يكون `"summary"`.
