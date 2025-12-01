@@ -17,7 +17,6 @@ function initSessionAnalyzer(dependencies) {
   logger.info('Session Analyzer Initialized.');
 }
 
-const db = getFirestoreInstance();
 
 /**
  * يحلل جلسة المحادثة لاستخراج أي تذكيرات أو مواعيد تم الاتفاق عليها
