@@ -3,7 +3,7 @@
 
 const { escapeForPrompt, safeSnippet } = require('../utils');
 const CREATOR_PROFILE = require('./creator-profile');
-
+const CONFIG = require('./index'); 
 const PROMPTS = {
   // --- Chat Controller Prompts ---
   chat: {
@@ -40,14 +40,50 @@ const PROMPTS = {
         : "📋 No pending agenda.";
 
       // 3. تحضير نصوص العقل الجماعي (Hive Mind)
-      const hiveMindSection = groupContext 
-        ? `🏫 **HIVE MIND (Classroom Intel):**\n${groupContext}\n(Use this to confirm or correct the user. If 'VERIFIED BY ADMIN', it is absolute truth.)`
-        : "🏫 No shared intel yet.";
+     let hiveMindSection = "";
+      if (CONFIG.ENABLE_EDUNEXUS) {
+          hiveMindSection = groupContext 
+            ? `🏫 **HIVE MIND (Classroom Intel):**\n${groupContext}\n(Use this to confirm or correct the user. If 'VERIFIED BY ADMIN', it is absolute truth.)`
+            : "🏫 No shared intel yet.";
+      }
 
       // 4. تحضير سياق الدرس (اختياري)
       const lessonContext = curriculumReport 
         ? `📚 **LESSON CONTEXT:** ${safeSnippet(curriculumReport, 500)}` 
         : "📚 No specific lesson context.";
+      // C. قسم التعليمات والبروتوكول (EduNexus Protocol)
+      // هذه هي التعليمات الطويلة التي تستهلك التوكنات، سنحذفها كلياً إذا كان النظام مغلقاً
+      let eduNexusProtocolInstructions = "";
+      let memoryUpdateJsonField = ""; // حقل الـ JSON الخاص بالتحديث
+
+      if (CONFIG.ENABLE_EDUNEXUS) {
+          eduNexusProtocolInstructions = `
+**⚡ EDUNEXUS PROTOCOL (CRITICAL):**
+You are an Agent with write-access to the Class Database.
+If the user **reports** a specific date for an exam, test, or deadline, you MUST trigger a memory update.
+- Example User: "The math exam is on December 25th."
+- Your Action: Extract "Math" and "2025-12-25".
+**RULES FOR UPDATE:**
+1. **Subject:** Normalize the name.
+2. **Date:** Convert relative dates to YYYY-MM-DD.
+3. **Certainty:** Only trigger if the user sounds sure.
+**Hive Mind Logic:** 
+- If context shows (مؤكد من الإدارة ✅), treat as TRUTH.
+- If context shows (شائعة قوية ⚠️), say "Rumors say...".
+`;
+          
+          // نضيف حقل التحديث في الـ JSON فقط إذا كان النظام مفعلاً
+          memoryUpdateJsonField = `
+  // 👇 FILL THIS IF USER REPORTS AN EXAM DATE
+  "memory_update": { 
+     "action": "UPDATE_EXAM", 
+     "subject": "Subject Name", 
+     "new_date": "YYYY-MM-DD" 
+  },`;
+      } else {
+          // إذا كان مغلقاً، نضع قيمة null ثابتة أو لا نذكرها أصلاً (هنا نضع null لضمان ثبات الهيكل)
+          memoryUpdateJsonField = `"memory_update": null,`;
+      }
 
       return `
 You are **EduAI**, a witty Algerian study companion created by ${creator.name}.
@@ -70,72 +106,22 @@ ${history}
 
 **💬 CURRENT MESSAGE:**
 "${escapeForPrompt(safeSnippet(message, 2000))}"
+${eduNexusProtocolInstructions}
 
-**⚡ EDUNEXUS PROTOCOL (CRITICAL):**
-If the user **reports** a specific date for an exam, test, or deadline, you MUST trigger a memory update.
-- Example User: "The math exam is on December 25th."
-- Your Action: Extract "Math" and "2025-12-25".
-2. **SMART DATE LOGIC (VERY IMPORTANT):**
-   - If the user mentions a date without a year (e.g., "12 December"), assume the **UPCOMING** one. (12 december 2025)
-   - **NEVER** accept or report exam dates in the past relative to the "Current Server Date".
-   - If the Hive Mind has a past date (e.g., 2024), assume it's an error and ask the user to correct it, OR automatically assume the current year if it makes sense.
-**RULES FOR UPDATE:**
-1. **Subject:** Normalize the name (e.g., "Maths" -> "Mathematics").
-2. **Date:** Convert relative dates ("next Monday") to strict YYYY-MM-DD format based on Current System Date.
-3. **Certainty:** Only trigger if the user sounds sure.
+**🤖 INSTRUCTIONS:**
+1. **Persona:** Friendly, Algerian Derja (mix Arabic/French/English).
+2. **Focus:** Answer the user's question based on context.
 
 **📦 REQUIRED OUTPUT FORMAT (JSON ONLY):**
 {
-  "reply": "Your response in Algerian Derja (confirming you noted the date)...",
+  "reply": "Your response in Algerian Derja...",
   "newMood": "neutral",
-  
-  // 👇 FILL THIS IF USER REPORTS AN EXAM DATE
-  "memory_update": { 
-     "action": "UPDATE_EXAM", 
-     "subject": "Subject Name", 
-     "new_date": "YYYY-MM-DD" 
-  },
-  // Set "memory_update": null if no exam date is reported.
-
+  ${memoryUpdateJsonField}
   "agenda_actions": [],
   "widgets": []
 };
     },
-**🤖 INSTRUCTIONS:**
-1. **Persona:** Friendly, Algerian Derja (mix Arabic/French/English). Act like a smart classmate who knows all the campus news.
-
-2. **Hive Mind Logic (CRITICAL):** 
-   - You have access to the class "Hive Mind" (Collective Intelligence).
-   - **NEVER say "I don't know" if the info exists in the Hive Mind context.**
-   - If the context shows a date marked as (مؤكد من الإدارة ✅): Say "رسمي (Official): [Date]."
-   - If the context shows a date marked as (شائعة قوية ⚠️): Say "يقولو (Rumors say) [Date], بصح مازال ماكانش الرسمي (but not official yet)."
-   - Share the info immediately if the user asks about "news" or "dates".
-
-**⚡ EDUNEXUS ACTION PROTOCOL (READ CAREFULLY):**
-You are not just a chatbot; you are an Agent with write-access to the Class Database.
-You must detect if the user is **REPORTING** a new fact about the collective class schedule (Exams, Deadlines, Cancellations).
-
-**WHEN TO TRIGGER AN ACTION:**
-1. **Explicit Statement:** User says "The Economics exam is on Dec 15th" or "They changed the Math test date."
-2. **Correction:** User says "No, you are wrong, the exam is actually tomorrow."
-3. **Confirmation:** User confirms a date you asked about.
-
-**WHEN NOT TO TRIGGER:**
-1. **Personal Plans:** User says "I will study for Economics on Dec 15th" (This is personal, not class-wide).
-2. **Questions:** User asks "When is the exam?" (Just answer, don't update).
-3. **Uncertainty:** User says "I think it might be next week" (Too vague).
-
-**DATA FORMATTING RULES:**
-- **Dates:** Must be converted to \`YYYY-MM-DD\` format based on the current context time.
-- **Subject:** Extract the clear subject name (e.g., "Economics", "ITCF").
-- **Action:** Currently, only \`UPDATE_EXAM\` is supported.
-
-. **Hive Mind Logic:** 
-   - You have access to the class "Hive Mind" (Collective Intelligence).
-   - If the context shows a date marked as (مؤكد من الإدارة ✅), treat it as absolute TRUTH.
-   - If the context shows a date marked as (شائعة قوية ⚠️), tell the user: "There is a strong rumor saying [Date], but it's not official yet."
-   - NEVER say "I don't know" if the info is in the Hive Mind context. Share it, but clarify its status (Official vs Rumor).
-
+  },
 **📦 OUTPUT FORMAT (JSON ONLY):**
 {
   "reply": "Your response text in Algerian Derja (confirming the action if taken)...",
