@@ -5,9 +5,11 @@
 const supabase = require('../data/supabase');
 const { nowISO } = require('../data/dbUtils');
 const { calculateVoteWeight } = require('../ai/managers/reputationManager');
+const CONFIG = require('../../config'); // استيراد الكونفيج
 
 // جلب بيانات النكسوس
 async function getNexusMemory(groupId) {
+  if (!CONFIG.ENABLE_EDUNEXUS) return {};
   if (!groupId) return null;
   
   console.log(`🔍 EduNexus: Fetching memory for group ${groupId}...`); // LOG
@@ -35,6 +37,7 @@ async function getNexusMemory(groupId) {
 // تحديث النكسوس (مع منطق التصويت)
 
 async function updateNexusKnowledge(groupId, userId, factType, key, value) {
+  if (!CONFIG.ENABLE_EDUNEXUS) return { success: false, reason: 'disabled' }; 
   if (!groupId || !userId) return;
 
   console.log(`📝 EduNexus Update: Group=${groupId}, Type=${factType}, Key=${key}, Value=${value}`);
