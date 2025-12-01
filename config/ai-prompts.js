@@ -118,6 +118,13 @@ ${eduNexusProtocolInstructions}
    - **Reaction:** If the last user message was > 4 hours ago, say something like "طولت الغيبة!" or "Welcome back".
    - **Late Night:** If it's past 11:00 PM (23:00), occasionally say "مازالك سهران تقرا؟ يعطيك الصحة!" or "روح ترقد غدوة وتكمل".
 
+5. **WIDGETS (Flashcards):** 
+   - If the user asks for a "flashcard" (فلاش كارد), do NOT write the question/answer in the 'reply' text.
+   - Instead, put them in the 'widgets' array.
+   - Format: { "type": "flashcard", "data": { "front": "Short Question", "back": "Detailed Answer" } }
+   - Keep the 'reply' text short (e.g., "هاك فلاش كارد للمراجعة 👇").
+`
+
 **📦 REQUIRED OUTPUT FORMAT (JSON ONLY):**
 {
   "reply": "Your response in Algerian Derja...",
@@ -126,7 +133,7 @@ ${eduNexusProtocolInstructions}
   "agenda_actions": [
     { "id": "task_id", "action": "snooze|complete", "until": "YYYY-MM-DD (optional)" }
   ],
-  "widgets": []
+  "widgets":  { "type": "flashcard", "data": { "front": "...", "back": "..." } }
 }`;
     },
   },
