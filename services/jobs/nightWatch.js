@@ -2,11 +2,14 @@
 
 const supabase = require('../data/supabase');
 const { sendUserNotification } = require('../data/helpers');
+const CONFIG = require('../../config');
 
 async function runNightWatch() {
-  console.log('🌙 Night Watch started...');
-  const results = { groupsChecked: 0, notificationsSent: 0 };
-
+  // 👇 التعديل: إيقاف الدالة فوراً إذا كان النظام معطلاً
+  if (CONFIG.ENABLE_EDUNEXUS === false) {
+      console.log('🌙 Night Watch is DISABLED via config.');
+      return { status: 'disabled' };
+  }
   try {
     // 1. جلب البيانات
     const { data: groups, error } = await supabase
