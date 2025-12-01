@@ -152,7 +152,7 @@ async function chatInteractive(req, res) {
     const allAgenda = Array.isArray(aiProfileData.aiAgenda) ? aiProfileData.aiAgenda : [];
     const activeAgenda = allAgenda.filter(t => t.status === 'pending');
 
-    // Exam Context Calculation (Default to empty object, NOT NULL)
+    // Exam Context Calculation
     let examContext = {}; 
     if (userData.nextExamDate) {
         const diffDays = Math.ceil((new Date(userData.nextExamDate) - new Date()) / (1000 * 60 * 60 * 24));
@@ -163,10 +163,8 @@ async function chatInteractive(req, res) {
 
     // EduNexus Logic
     let sharedContext = "";
-     // 👇 التعديل 1: منع قراءة الذاكرة الجماعية
     if (CONFIG.ENABLE_EDUNEXUS && groupId) {
         const nexusMemory = await getNexusMemory(groupId);
-        
         if (nexusMemory && nexusMemory.exams) {
             sharedContext = "🏫 **HIVE MIND (معلومات الفوج المؤكدة):**\n";
             Object.entries(nexusMemory.exams).forEach(([subject, data]) => {
@@ -175,7 +173,6 @@ async function chatInteractive(req, res) {
                     sharedContext += `- امتحان ${subject}: ${data.confirmed_value} ${status}\n`;
                 }
             });
-            console.log("📢 Context injected into AI:", sharedContext);
         }
     }
    
@@ -186,41 +183,42 @@ async function chatInteractive(req, res) {
     // C. AI Generation (With Strict Sanitization)
     // ---------------------------------------------------------
     
-    // 🔥 SANITIZATION LAYER: Ensure NO NULLs are passed to prompts
     const safeMessage = message || '';
     const safeMemoryReport = memoryReport || '';
     const safeCurriculumReport = curriculumReport || '';
- // دالة مساعدة لتنسيق الوقت (HH:MM)
+
+    // 🔥 دالة تنسيق الوقت (HH:MM)
     const formatTimeShort = (isoString) => {
         if (!isoString) return '';
         const date = new Date(isoString);
         return `${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')}`;
     };
 
-    // 🔥 التعديل هنا: دمج التوقيت مع الرسائل السابقة 🔥
+    // 🔥 دمج التوقيت مع الرسائل السابقة
     const safeHistoryStr = history.slice(-10).map(h => {
-        // نفترض أن الفرونت أند يرسل timestamp مع كل رسالة (وهذا الطبيعي)
-        // إذا لم يوجد، نتركه فارغاً
         const timeTag = h.timestamp ? `[${formatTimeShort(h.timestamp)}] ` : ''; 
         return `${timeTag}${h.role === 'model' ? 'EduAI' : 'User'}: ${h.text}`;
     }).join('\n');
+
     const safeFormattedProgress = formattedProgress || '';
     const safeWeaknesses = Array.isArray(weaknessesRaw) ? weaknessesRaw : [];
     const safeSystemContext = systemContextCombined || '';
-    const safeExamContext = examContext; // Now guaranteed to be {} at minimum, never null
+    const safeExamContext = examContext; 
 
+    // ✅ تم تصحيح الاستدعاء هنا (إزالة التكرار)
     const finalPrompt = PROMPTS.chat.interactiveChat(
       safeMessage, 
       safeMemoryReport, 
       safeCurriculumReport, 
-      safeHistoryStr,  
+      safeHistoryStr,  // ✅ مرة واحدة فقط
       safeFormattedProgress, 
       safeWeaknesses, 
       currentEmotionalState, 
       fullUserProfile, 
       safeSystemContext, 
       safeExamContext, 
-      activeAgenda
+      activeAgenda,
+      sharedContext // تمرير سياق الفوج إذا لزم الأمر
     );
 
     const modelResp = await generateWithFailoverRef('chat', finalPrompt, { label: 'MasterChat', timeoutMs: CONFIG.TIMEOUTS.chat });
@@ -229,20 +227,14 @@ async function chatInteractive(req, res) {
 
     if (!parsedResponse?.reply) parsedResponse = { reply: rawText || "Error.", widgets: [] };
 
-    
     // ---------------------------------------------------------
     // D. Action Layer
     // ---------------------------------------------------------
     
-    // 👇 التعديل 2: منع تحديث قاعدة البيانات (Action Protocol)
      if (CONFIG.ENABLE_EDUNEXUS && parsedResponse.memory_update && groupId) {
         const action = parsedResponse.memory_update;
-        
-        console.log("🚨 AI DETECTED AN EXAM UPDATE:", action);
-
         if (action.action === 'UPDATE_EXAM' && action.subject && action.new_date) {
-            const updateResult = await updateNexusKnowledge(groupId, userId, 'exams', action.subject, action.new_date);
-            console.log("✅ Database Update Result:", updateResult);
+            await updateNexusKnowledge(groupId, userId, 'exams', action.subject, action.new_date);
         }
     }
 
@@ -282,12 +274,12 @@ async function chatInteractive(req, res) {
       mood: parsedResponse.newMood 
     });
 
-       // Background processing
+    // Background processing
     setImmediate(() => {
         const updatedHistory = [
             ...history,
-            { role: 'user', text: message },
-            { role: 'model', text: parsedResponse.reply }
+            { role: 'user', text: message, timestamp: nowISO() }, // إضافة التوقيت هنا للحفظ
+            { role: 'model', text: parsedResponse.reply, timestamp: nowISO() }
         ];
 
         saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory)
@@ -306,10 +298,6 @@ async function chatInteractive(req, res) {
   }
 } 
 
-
-// ==========================================
-// 5. Module Exports
-// ==========================================
 module.exports = {
   initChatController,
   chatInteractive,
