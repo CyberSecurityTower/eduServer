@@ -163,25 +163,22 @@ async function chatInteractive(req, res) {
 
     // EduNexus Logic
     let sharedContext = "";
-    if (groupId) {
-        // أزلنا الـ try/catch الصامت لنرى الأخطاء في الكونسول
+     // 👇 التعديل 1: منع قراءة الذاكرة الجماعية
+    if (CONFIG.ENABLE_EDUNEXUS && groupId) {
         const nexusMemory = await getNexusMemory(groupId);
         
         if (nexusMemory && nexusMemory.exams) {
             sharedContext = "🏫 **HIVE MIND (معلومات الفوج المؤكدة):**\n";
             Object.entries(nexusMemory.exams).forEach(([subject, data]) => {
-                // نضيف فقط المعلومات التي لها قيمة مؤكدة
                 if (data.confirmed_value) {
                     const status = data.is_verified ? "(مؤكد من الإدارة ✅)" : "(شائعة قوية ⚠️)";
                     sharedContext += `- امتحان ${subject}: ${data.confirmed_value} ${status}\n`;
                 }
             });
-            console.log("📢 Context injected into AI:", sharedContext); // LOG
-        } else {
-            console.log("ℹ️ EduNexus: No exams data to inject.");
+            console.log("📢 Context injected into AI:", sharedContext);
         }
     }
-
+   
     const identityContext = `User Identity: Name=${fullUserProfile.firstName}, Group=${groupId}, Role=${fullUserProfile.role}.`;
     const systemContextCombined = `${identityContext}\n${getAlgiersTimeContext().contextSummary}\n${sharedContext}`;
 
@@ -220,25 +217,20 @@ async function chatInteractive(req, res) {
 
     if (!parsedResponse?.reply) parsedResponse = { reply: rawText || "Error.", widgets: [] };
 
+    
     // ---------------------------------------------------------
     // D. Action Layer
     // ---------------------------------------------------------
-     if (parsedResponse.memory_update && groupId) {
+    
+    // 👇 التعديل 2: منع تحديث قاعدة البيانات (Action Protocol)
+     if (CONFIG.ENABLE_EDUNEXUS && parsedResponse.memory_update && groupId) {
         const action = parsedResponse.memory_update;
         
-        console.log("🚨 AI DETECTED AN EXAM UPDATE:", action); // 👈 LOG هام جداً
+        console.log("🚨 AI DETECTED AN EXAM UPDATE:", action);
 
         if (action.action === 'UPDATE_EXAM' && action.subject && action.new_date) {
-            // استدعاء دالة التحديث
             const updateResult = await updateNexusKnowledge(groupId, userId, 'exams', action.subject, action.new_date);
-            
-            console.log("✅ Database Update Result:", updateResult); // 👈 LOG نتيجة الداتابيز
-            
-            // تحسين الرد إذا تم التحديث بنجاح
-            if (updateResult && updateResult.success) {
-                // يمكننا إضافة جملة صغيرة للرد لنؤكد للمستخدم
-                // parsedResponse.reply += " (تم تسجيل المعلومة في النظام ✅)";
-            }
+            console.log("✅ Database Update Result:", updateResult);
         }
     }
 
