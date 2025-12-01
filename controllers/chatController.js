@@ -270,19 +270,34 @@ async function chatInteractive(req, res) {
       mood: parsedResponse.newMood 
     });
 
-    // 👇👇👇 هذا هو الجزء الناقص الذي يجب إضافته 👇👇👇
+       // Background processing
     setImmediate(() => {
-        const updatedHistory = [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }];
-        
-        // حفظ الشات
-        saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory).catch(e => logger.error(e));
-        
-        // تحليل الذاكرة (حقائق)
-        analyzeAndSaveMemory(userId, updatedHistory).catch(e => logger.error(e));
-        
-        // 🔥 تحليل التذكيرات (هنا يتم اكتشاف "بعد دقيقتين")
-        analyzeSessionForEvents(userId, updatedHistory).catch(e => logger.error('SessionAnalyzer Fail:', e));
+        const updatedHistory = [
+            ...history,
+            { role: 'user', text: message },
+            { role: 'model', text: parsedResponse.reply }
+        ];
+
+        saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory)
+            .catch(e => logger.error(e));
+
+        analyzeAndSaveMemory(userId, updatedHistory)
+            .catch(e => logger.error(e));
+
+        analyzeSessionForEvents(userId, updatedHistory)
+            .catch(e => logger.error('SessionAnalyzer Fail:', e));
     });
+
+  } catch (err) {
+      logger.error("ChatInteractive ERR:", err);
+      return res.status(500).json({ reply: "حدث خطأ في الخادم." });
+  }
+} 
+
+
+// ==========================================
+// 5. Module Exports
+// ==========================================
 module.exports = {
   initChatController,
   chatInteractive,
