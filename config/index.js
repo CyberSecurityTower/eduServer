@@ -5,6 +5,8 @@
 
 const CONFIG = {
   PORT: Number(process.env.PORT || 3000),
+  ENABLE_EDUNEXUS: false, 
+
   MODEL: {
     chat: 'gemini-2.5-pro',
     todo: 'gemini-2.5-flash',
