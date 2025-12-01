@@ -9,7 +9,7 @@ const CONFIG = require('../config');
 const supabase = require('../services/data/supabase');
 const logger = require('../utils/logger');
 const PROMPTS = require('../config/ai-prompts');
-
+const { initSessionAnalyzer, analyzeSessionForEvents } = require('../services/ai/managers/sessionAnalyzer');
 // Utilities
 const { toCamelCase, nowISO } = require('../services/data/dbUtils');
 const { getAlgiersTimeContext, extractTextFromResult, ensureJsonOrRepair } = require('../utils');
@@ -260,7 +260,7 @@ async function chatInteractive(req, res) {
         }).eq('user_id', userId).then();
     }
 
-    // ---------------------------------------------------------
+     // ---------------------------------------------------------
     // E. Response
     // ---------------------------------------------------------
     res.status(200).json({
@@ -270,18 +270,19 @@ async function chatInteractive(req, res) {
       mood: parsedResponse.newMood 
     });
 
+    // 👇👇👇 هذا هو الجزء الناقص الذي يجب إضافته 👇👇👇
     setImmediate(() => {
         const updatedHistory = [...history, { role: 'user', text: message }, { role: 'model', text: parsedResponse.reply }];
+        
+        // حفظ الشات
         saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory).catch(e => logger.error(e));
+        
+        // تحليل الذاكرة (حقائق)
         analyzeAndSaveMemory(userId, updatedHistory).catch(e => logger.error(e));
+        
+        // 🔥 تحليل التذكيرات (هنا يتم اكتشاف "بعد دقيقتين")
+        analyzeSessionForEvents(userId, updatedHistory).catch(e => logger.error('SessionAnalyzer Fail:', e));
     });
-
-  } catch (err) {
-    logger.error('Chat Controller Error:', err);
-    if (!res.headersSent) res.status(500).json({ reply: "حدث خطأ تقني." });
-  }
-}
-
 module.exports = {
   initChatController,
   chatInteractive,
