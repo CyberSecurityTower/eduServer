@@ -419,22 +419,45 @@ async function processSessionAnalytics(userId, sessionId) {
 // 5. Notifications (Expo Push + Inbox)
 // ============================================================================
 
+// تعريف الأنواع لضمان عدم الخطأ في الكتابة (اختياري لكن مفيد)
+const NOTIF_TYPES = {
+  NEW_LESSON: 'new_lesson',
+  LESSON: 'lesson',
+  TASK_REMINDER: 'task_reminder',
+  TASKS: 'tasks',
+  QUIZ_REMINDER: 'quiz_reminder',
+  QUIZ: 'quiz',
+  SYSTEM: 'system',
+  ALERT: 'alert',
+  CHAT: 'chat'
+};
+
 async function sendUserNotification(userId, notification) {
   try {
-    // 1. Save to DB (Inbox)
+    // 1. التحقق من البيانات المطلوبة حسب الـ Cheat Sheet
+    const type = notification.type || NOTIF_TYPES.SYSTEM;
+    const meta = notification.meta || {};
+
+    // تحقق خاص لدرس جديد (يجب توفر المعرفات)
+    if ((type === NOTIF_TYPES.NEW_LESSON || type === NOTIF_TYPES.LESSON) && !meta.targetId) {
+        console.warn(`⚠️ Warning: Notification of type '${type}' sent without 'targetId'. Navigation might fail.`);
+    }
+
+    // 2. الحفظ في قاعدة البيانات (Inbox)
+    // نحفظ البيانات الخام كما هي ليتم عرضها في صفحة الإشعارات داخل التطبيق
     await supabase.from('user_notifications').insert({
         user_id: userId,
         box_type: 'inbox',
         title: notification.title,
         message: notification.message,
-        type: notification.type || 'system',
-        target_id: notification.meta?.actionId || null,
+        type: type,
+        target_id: meta.targetId || null, // مهم جداً للتنقل
         read: false,
         created_at: nowISO(),
-        meta: notification.meta || {} 
+        meta: meta // نحفظ باقي البيانات هنا
     });
 
-    // 2. Send Expo Push
+    // 3. الإرسال عبر Expo Push Notification
     const { data: user } = await supabase
         .from('users')
         .select('fcm_token')
@@ -446,6 +469,7 @@ async function sendUserNotification(userId, notification) {
 
     if (!pushToken.startsWith('ExponentPushToken')) return;
 
+    // تجهيز الـ Payload حسب الجدول
     const message = {
       to: pushToken,
       sound: 'default',
@@ -453,14 +477,16 @@ async function sendUserNotification(userId, notification) {
       body: notification.message,
       priority: 'high',
       data: {
-        source: notification.type || 'system', 
-        type: notification.type, 
-        notificationId: notification.meta?.actionId || crypto.randomUUID(),
-        ...notification.meta
+        // هذه البيانات هي التي يقرأها الفرونت أند للتوجيه
+        type: type, 
+        targetId: meta.targetId, // (Lesson ID)
+        subjectId: meta.subjectId, // (Subject ID)
+        actionId: meta.actionId || crypto.randomUUID(),
+        ...meta // دمج أي بيانات إضافية
       }
     };
 
-    // Native Node Fetch
+    // الإرسال الفعلي
     await fetch('https://exp.host/--/api/v2/push/send', {
       method: 'POST',
       headers: {
@@ -471,11 +497,12 @@ async function sendUserNotification(userId, notification) {
       body: JSON.stringify([message]),
     });
 
+    // logger.success(`[Notification] Sent '${type}' to ${userId}`);
+
   } catch (error) {
     logger.error(`[Notification] Error for ${userId}:`, error.message);
   }
 }
-
 function calculateSafeProgress(completed, total) {
   const c = Number(completed) || 0;
   const t = Number(total) || 1;
