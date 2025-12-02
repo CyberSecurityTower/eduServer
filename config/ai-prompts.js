@@ -1,4 +1,3 @@
-
 // config/ai-prompts.js
 'use strict';
 
@@ -11,7 +10,7 @@ const PROMPTS = {
   chat: {
     generateTitle: (message, language) => `Generate a very short title (2-4 words) in ${language}. Msg: "${escapeForPrompt(safeSnippet(message, 100))}"`,
 
-    // ✅ النسخة المحدثة (The Updated Interactive Chat with Hive Mind, Agenda & Action Protocol)
+    // ✅ النسخة المحدثة والمصححة
     interactiveChat: (
       message,
       memoryReport,
@@ -25,18 +24,22 @@ const PROMPTS = {
       examContext = null,
       activeAgenda = [], 
       groupContext = '',
-      currentContext = {} 
+      currentContext = {} // ✅ التأكد من وجود هذا المعامل
     ) => {
       const creator = CREATOR_PROFILE;
+      // ✅ 1. استخراج معرف الدرس من السياق الحالي
       const targetLessonId = currentContext?.lessonId || 'UNKNOWN_LESSON_ID';
-      // 1. استخراج بيانات المستخدم
+
+      // استخراج بيانات المستخدم
       const facts = userProfileData.facts || {};
       const rawName = facts.userName || userProfileData.firstName || userProfileData.name || 'Student';
       const userName = rawName.charAt(0).toUpperCase() + rawName.slice(1);
       
       const userGender = facts.userGender || userProfileData.gender || 'male';
       const userPath = userProfileData.selectedPathId || 'University Student';
-      const gatekeeperEnforcement = `
+
+      // ✅ 2. توحيد اسم متغير التعليمات (Fixing the ReferenceError)
+      const gatekeeperInstructions = `
 🚨 **SYSTEM OVERRIDE - CRITICAL:**
 I have detected that the user is in a lesson context (ID: ${targetLessonId}).
 IF the user answers the quiz correctly OR explicitly says they finished:
@@ -46,12 +49,13 @@ YOU **MUST** ADD THIS FIELD TO YOUR JSON RESPONSE:
 DO NOT FORGET THIS. The user's progress WILL NOT SAVE if you omit this field.
 Even if you are chatting casually, if the task is done, SEND THE SIGNAL.
 `;
-      // 2. تحضير نصوص الأجندة (Agenda)
+
+      // 3. تحضير نصوص الأجندة (Agenda)
       const agendaSection = activeAgenda.length > 0 
         ? `📋 **YOUR HIDDEN AGENDA (Tasks to do):**\n${activeAgenda.map(t => `- [ID: ${t.id}]: ${t.description}`).join('\n')}\n(Try to address ONE if context allows. If user says "later", SNOOZE it.)`
         : "📋 No pending agenda.";
 
-      // 3. تحضير نصوص العقل الجماعي (Hive Mind)
+      // 4. تحضير نصوص العقل الجماعي (Hive Mind)
      let hiveMindSection = "";
       if (CONFIG.ENABLE_EDUNEXUS) {
           hiveMindSection = groupContext 
@@ -59,11 +63,12 @@ Even if you are chatting casually, if the task is done, SEND THE SIGNAL.
             : "🏫 No shared intel yet.";
       }
 
-      // 4. تحضير سياق الدرس (اختياري)
+      // 5. تحضير سياق الدرس
       const lessonContext = curriculumReport 
         ? `📚 **LESSON CONTEXT:** ${safeSnippet(curriculumReport, 500)}` 
         : "📚 No specific lesson context.";
-      // 🔥 التعديل الجوهري: المحرك العاطفي 🔥
+
+      // 🔥 المحرك العاطفي 🔥
       const emotionalInstructions = `
 **🎭 EMOTIONAL ENGINE (CRITICAL):**
 Current Mood: "${currentEmotionalState.mood || 'neutral'}" (Reason: ${currentEmotionalState.reason || 'None'}).
@@ -79,7 +84,8 @@ Current Mood: "${currentEmotionalState.mood || 'neutral'}" (Reason: ${currentEmo
 
 **IMPORTANT:** Your 'reply' tone MUST match the 'newMood'. Do not be polite if you are angry or jealous.
 `;
-      // C. قسم التعليمات والبروتوكول (EduNexus Protocol)
+
+      // بروتوكول EduNexus
       let eduNexusProtocolInstructions = "";
       let memoryUpdateJsonField = ""; 
 
@@ -128,8 +134,10 @@ ${hiveMindSection}
 
 **💬 CHAT HISTORY:**
 ${history}
-**gatekeeper:
+
+**🔐 GATEKEEPER:**
 ${gatekeeperInstructions}
+
 **💬 CURRENT MESSAGE:**
 "${escapeForPrompt(safeSnippet(message, 2000))}"
 ${emotionalInstructions}
@@ -152,88 +160,11 @@ ${eduNexusProtocolInstructions}
    - Format: { "type": "flashcard", "data": { "front": "Short Question", "back": "Detailed Answer" } }
    - Keep the 'reply' text short (e.g., "هاك فلاش كارد للمراجعة 👇").
 
-### 1. الفلاش كارد (Flashcard)
-يستخدم لعرض مصطلح وتعريفه، أو سؤال وجواب سريع.
+### Widget Examples (JSON Data Structure):
+(Use 'type': 'flashcard', 'quiz', or 'summary' as needed based on user request).
 
-{
-  "type": "flashcard",
-  "data": {
-    "front": "What is the Virtual DOM?",
-    "back": "A lightweight copy of the real DOM used by React to optimize rendering."
-  }
-}
+${gatekeeperInstructions}
 
-
-**شرح الحقول:**
-*   type: يجب أن يكون "flashcard".
-*   front: النص الذي يظهر على الوجه الأمامي (السؤال أو المصطلح).
-*   back: النص الذي يظهر عند قلب البطاقة (الإجابة أو التعريف).
-
----
-
-### 2. الكويز (Quiz)
-يستخدم لعرض سؤال أو مجموعة أسئلة متعددة الخيارات مع تصحيح تلقائي.
-
-{
-  "type": "quiz",
-  "data": {
-    "questions": [
-      {
-        "text": "Which hook is used for side effects in React?",
-        "options": ["useState", "useEffect", "useContext", "useReducer"],
-        "correctAnswer": "useEffect",
-        "explanation": "useEffect runs after the render and is used for data fetching, subscriptions, etc."
-      }
-    ]
-  }
-}
-
-
-**شرح الحقول:**
-*   type: يجب أن يكون "quiz".
-*   questions: مصفوفة تحتوي على الأسئلة.
-*   text: نص السؤال.
-*   options: مصفوفة نصوص تحتوي على الخيارات (يجب أن تكون 3 أو 4 خيارات موزعة عشوائيًّا).
-*   correctAnswer: نص الإجابة الصحيحة (يجب أن يطابق حرفياً أحد الخيارات في options).
-*   explanation: (اختياري) نص يظهر بعد الإجابة لشرح السبب.
-
----
-
-### 3. الملخص (Summary)
-يستخدم لعرض تلخيص للنقاط الأساسية بشكل منظم.
-
-**هيكل JSON (الخيار الأفضل - نقاط):**
-{
-  "type": "summary",
-  "data": {
-    "title": "Key Takeaways: React Hooks",
-    "points": [
-      "Hooks allow you to use state without writing a class.",
-      "useState returns a stateful value and a function to update it.",
-      "Custom hooks let you reuse stateful logic between components."
-    ]
-  }
-}
-
-
-**أو (خيار نصي):**
-
-{
-  "type": "summary",
-  "data": {
-    "title": "Lesson Summary",
-    "summary": "React Hooks are functions that let you 'hook into' React state and lifecycle features from function components. They were introduced in React 16.8."
-  }
-}
-
-
-**شرح الحقول:**
-*   type: يجب أن يكون "summary".
-*   title: عنوان الملخص.
-*   points: مصفوفة نصوص، كل نص يمثل نقطة (Bullet point). هذا الشكل يظهر بشكل أجمل في التصميم الخاص بك.
-*   summary: (بديل لـ points) نص فقرة كاملة.
-
-${gatekeeperEnforcement}
 **📦 REQUIRED OUTPUT FORMAT (JSON ONLY):**
 {
   "reply": "Your response in Algerian Derja...",
@@ -242,15 +173,14 @@ ${gatekeeperEnforcement}
   "agenda_actions": [
     { "id": "task_id", "action": "snooze|complete", "until": "YYYY-MM-DD (optional)" }
   ],
-  "widgets":  [{ "type": "flashcard", "data": { "front": "...", "back": "..." } }]
-},
-"lesson_signal": null`;
+  "widgets":  [{ "type": "flashcard", "data": { "front": "...", "back": "..." } }],
+  "lesson_signal": null
+}`;
     },
   },
 
   // --- Managers Prompts (Standard) ---
   managers: {
-    // 👇 كان الخطأ هنا (نقص علامة ` في البداية)
     traffic: (message) => `Analyze: { "language": "Ar/En/Fr", "title": "Short Title", "intent": "study|chat|admin" }. Msg: "${escapeForPrompt(safeSnippet(message, 200))}"`,
     
     memoryExtractor: (currentFacts, chatHistory) => `
