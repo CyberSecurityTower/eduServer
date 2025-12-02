@@ -559,6 +559,12 @@ async function scheduleSpacedRepetition(userId, topic, daysDelay) {
   
   logger.info(`[Spaced Repetition] Scheduled review for ${topic} in ${daysDelay} days.`);
 }
+async function updateAiAgenda(userId, newAgenda) {
+    return supabase
+        .from('ai_memory_profiles')
+        .update({ ai_agenda: newAgenda, last_updated_at: new Date().toISOString() })
+        .eq('user_id', userId);
+}
 
 module.exports = {
   initDataHelpers,
@@ -578,5 +584,6 @@ module.exports = {
   getSpacedRepetitionCandidates,
   generateSmartStudyStrategy,
   getOptimalStudyTime,
-  scheduleSpacedRepetition
+  scheduleSpacedRepetition,
+  updateAiAgenda   
 };
