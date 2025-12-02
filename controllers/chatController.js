@@ -8,6 +8,7 @@ const CONFIG = require('../config');
 const supabase = require('../services/data/supabase');
 const logger = require('../utils/logger');
 const PROMPTS = require('../config/ai-prompts');
+const { markLessonComplete } = require('../services/engines/gatekeeper'); 
 const { initSessionAnalyzer, analyzeSessionForEvents } = require('../services/ai/managers/sessionAnalyzer');
 
 // Utilities
@@ -308,7 +309,20 @@ async function chatInteractive(req, res) {
     // ---------------------------------------------------------
     // E. Action Layer & Agenda Updates
     // ---------------------------------------------------------
-    
+    // هل أرسل الـ AI إشارة درس؟
+    if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'complete') {
+        const signal = parsedResponse.lesson_signal;
+        
+        // تنفيذ المنطق في الخلفية (أو انتظاره إذا أردت إرجاع النتيجة فوراً)
+        await markLessonComplete(userId, signal.id, signal.score || 100);
+        
+        // إضافة ويدجت احتفال للرد (اختياري)
+        parsedResponse.widgets.push({
+            type: 'celebration',
+            data: { message: 'مبروك! كملت الدرس 🎉' }
+        });
+    }
+
     // 1. EduNexus Updates
     if (CONFIG.ENABLE_EDUNEXUS && parsedResponse.memory_update && groupId) {
         const action = parsedResponse.memory_update;
