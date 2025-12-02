@@ -28,7 +28,7 @@ const PROMPTS = {
       currentContext = {} 
     ) => {
       const creator = CREATOR_PROFILE;
-
+      const targetLessonId = currentContext?.lessonId || 'UNKNOWN_LESSON_ID';
       // 1. استخراج بيانات المستخدم
       const facts = userProfileData.facts || {};
       const rawName = facts.userName || userProfileData.firstName || userProfileData.name || 'Student';
