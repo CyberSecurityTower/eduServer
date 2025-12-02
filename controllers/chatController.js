@@ -298,7 +298,8 @@ async function chatInteractive(req, res) {
       systemContextCombined, // ✅ السياق المحدث
       examContext, 
       activeAgenda,
-      sharedContext
+      sharedContext,
+      currentContext 
     );
 
     const modelResp = await generateWithFailoverRef('chat', finalPrompt, { label: 'MasterChat', timeoutMs: CONFIG.TIMEOUTS.chat });
