@@ -56,36 +56,48 @@ async function getUserDisplayName(userId) {
 
 async function getProfile(userId) {
   try {
+    // 1. نحاول جلب البروفايل من الكاش
     const cached = await cacheGet('profile', userId);
     if (cached) return cached;
 
-    const { data, error } = await supabase
-      .from('ai_memory_profiles')
-      .select('*')
-      .eq('user_id', userId)
-      .maybeSingle(); // 👈 استخدم maybeSingle بدلاً من single لتجنب الخطأ إذا لم يوجد
+    // 2. نجلب بيانات الذاكرة (AI Memory) + بيانات المستخدم الأساسية (Users Table)
+    // نستخدم Promise.all للسرعة
+    const [memoryResult, userResult] = await Promise.all([
+      supabase.from('ai_memory_profiles').select('*').eq('user_id', userId).maybeSingle(),
+      supabase.from('users').select('date_of_birth, first_name, gender').eq('id', userId).single()
+    ]);
 
-    if (data) {
-      let val = toCamelCase(data);
-      if (!val.facts) val.facts = {}; 
-      
-      await cacheSet('profile', userId, val);
-      return val;
-    } else {
-      // ⚠️ حالة مستخدم جديد: نرجع كائن فارغ لكن صالح
-      console.log(`⚠️ No memory profile found for ${userId}, returning empty default.`);
-      return { 
-          profileSummary: 'New user.', 
-          facts: {}, 
-          aiAgenda: [] 
-      };
+    const memoryData = memoryResult.data || { facts: {}, profileSummary: '' };
+    const userData = userResult.data || {};
+
+    // 3. 🔥 حساب العمر (The Age Fix) 🔥
+    let age = 'Unknown';
+    if (userData.date_of_birth) {
+      const dob = new Date(userData.date_of_birth);
+      const diffMs = Date.now() - dob.getTime();
+      const ageDate = new Date(diffMs);
+      age = Math.abs(ageDate.getUTCFullYear() - 1970);
     }
+
+    // 4. دمج البيانات
+    let finalProfile = toCamelCase(memoryData);
+    if (!finalProfile.facts) finalProfile.facts = {};
+
+    // حقن المعلومات الأساسية في الحقائق (Facts) ليراها الـ AI
+    finalProfile.facts.age = age;
+    finalProfile.facts.firstName = userData.first_name;
+    finalProfile.facts.gender = userData.gender;
+
+    // حفظ في الكاش
+    await cacheSet('profile', userId, finalProfile);
+    
+    return finalProfile;
+
   } catch (err) {
     logger.error('getProfile error:', err.message);
-    return { profileSummary: 'No available memory.', facts: {} };
+    return { profileSummary: 'Error fetching profile.', facts: {} };
   }
 }
-
 // ============================================================================
 // 2. Progress & Curriculum Logic
 // ============================================================================
