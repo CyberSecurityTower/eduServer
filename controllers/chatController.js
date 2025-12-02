@@ -117,7 +117,7 @@ async function chatInteractive(req, res) {
     // --- END ENFORCEMENT ---
 
     // Fetch Context Data (Parallel with Error Handling)
-    const [rawProfile, memoryReport, curriculumReport, weaknessesRaw, formattedProgress] = await Promise.all([
+    const [rawProfile, memoryReport, curriculumReport, weaknessesRaw, formattedProgress, currentTasks] = await Promise.all([
       getProfile(userId).catch(() => ({})),
       runMemoryAgent(userId, message).catch(() => ''),
       runCurriculumAgent(userId, message).catch(() => ''), 
