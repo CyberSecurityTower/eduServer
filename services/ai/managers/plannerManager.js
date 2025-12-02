@@ -1,67 +1,88 @@
-
 // services/ai/managers/plannerManager.js
 'use strict';
 
-const crypto = require('crypto');
-const CONFIG = require('../../../config');
-const { getFirestoreInstance, admin } = require('../../data/firestore');
-const { fetchUserWeaknesses, cacheDel } = require('../../data/helpers');
-const { extractTextFromResult, ensureJsonOrRepair } = require('../../../utils');
+const supabase = require('../../data/supabase');
 const logger = require('../../../utils/logger');
 
-let generateWithFailoverRef; // Injected dependency
+/**
+ * Cortex Gravity Engine v1.0
+ * يقوم بحساب ثقل كل درس بناءً على المعامل والمتطلبات.
+ */
+async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
+  try {
+    // 1. جلب كل البيانات المطلوبة دفعة واحدة (Join Query)
+    // نجلب الدروس + المواد + تقدم الطالب
+    const { data: lessons, error } = await supabase
+      .from('lessons')
+      .select(`
+        id, title, subject_id, prerequisites, has_content, order_index,
+        subjects ( id, title, coefficient ),
+        user_progress ( status, mastery_score )
+      `)
+      .eq('subjects.path_id', pathId); // تأكد من وجود path_id في جدول subjects
 
-function initPlannerManager(dependencies) {
-  if (!dependencies.generateWithFailover) {
-    throw new Error('Planner Manager requires generateWithFailover for initialization.');
+    if (error) throw error;
+
+    // تحويل التقدم إلى Map لسرعة البحث
+    const progressMap = {};
+    lessons.forEach(l => {
+      // user_progress يعود كمصفوفة، نأخذ العنصر الخاص بالمستخدم الحالي (يجب فلترته في الكويري أو هنا)
+      // ملاحظة: الأفضل فلترته في الكويري، لكن للتبسيط هنا:
+      const prog = l.user_progress.find(p => p.user_id === userId); 
+      progressMap[l.id] = prog ? prog.status : 'locked';
+    });
+
+    // 2. حساب النقاط (The Scoring Loop)
+    const candidates = lessons.map(lesson => {
+      // إذا الدرس مكتمل، لا نريده في مهام اليوم (في الـ MVP)
+      if (progressMap[lesson.id] === 'completed') return null;
+
+      let score = 0;
+      const subjectCoeff = lesson.subjects?.coefficient || 1;
+
+      // A. عامل الثقل (Weight Factor)
+      score += subjectCoeff * 10;
+
+      // B. عامل التسلسل (Sequence Factor)
+      let prerequisitesMet = true;
+      if (lesson.prerequisites && lesson.prerequisites.length > 0) {
+        for (const preId of lesson.prerequisites) {
+          if (progressMap[preId] !== 'completed') {
+            prerequisitesMet = false;
+            break;
+          }
+        }
+      }
+
+      if (!prerequisitesMet) {
+        return null; // الدرس مغلق لأن المتطلبات غير مكتملة
+      } else {
+        score += 100; // دفعة قوية لأن الدرس متاح الآن
+      }
+
+      // C. عامل الحالة (State Factor) - المعلم الشبح
+      // حتى لو لم يكن هناك محتوى، نظهره لأن الـ AI سيشرحه
+      
+      return {
+        id: lesson.id,
+        title: lesson.title,
+        subjectTitle: lesson.subjects?.title,
+        type: lesson.has_content ? 'study' : 'ghost_explain', // نوع جديد للمهمة
+        score: score,
+        relatedLessonId: lesson.id
+      };
+    }).filter(Boolean); // إزالة القيم null
+
+    // 3. الترتيب واختيار الأفضل
+    candidates.sort((a, b) => b.score - a.score); // الأعلى سكور أولاً
+    const topTasks = candidates.slice(0, 3); // نأخذ أهم 3 مهام
+
+    return { tasks: topTasks, source: 'GravityAlgorithm' };
+
+  } catch (err) {
+    logger.error('Gravity Planner Error:', err.message);
+    return { tasks: [] };
   }
-  generateWithFailoverRef = dependencies.generateWithFailover;
-  logger.info('Planner Manager initialized.');
 }
 
-const db = getFirestoreInstance();
-
-// Planner manager: create a simple study plan JSON
-async function runPlannerManager(userId, pathId = null) {
-  const weaknesses = await fetchUserWeaknesses(userId);
-  const weaknessesPrompt = weaknesses.length > 0
-    ? `<context>\nThe user has shown weaknesses in the following areas:\n${weaknesses.map(w => `- In subject "${w.subjectTitle}", the lesson "${w.lessonTitle}" (ID: ${w.lessonId}) has a mastery of ${w.masteryScore || 0}%.`).join('\n')}\n</context>`
-    : '<context>The user is new or has no specific weaknesses. Suggest a general introductory plan to get them started.</context>';
-
-  const prompt = `You are an elite academic coach. Create an engaging, personalized study plan.\n${weaknessesPrompt}\n<rules>\n1.  Generate 2-4 daily tasks.\n2.  All task titles MUST be in clear, user-friendly Arabic.\n3.  **Clarity:** If a task is for a specific subject (e.g., "Physics"), mention it in the title, like "مراجعة الدرس الأول في الفيزياء".\n4.  You MUST create a variety of task types.\n5.  Each task MUST include 'relatedLessonId' and 'relatedSubjectId'.\n6.  Output MUST be ONLY a valid JSON object: { "tasks": [ ... ] }\n</rules>`;
-
-  if (!generateWithFailoverRef) {
-    logger.error('runPlannerManager: generateWithFailover is not set.');
-    const fallback = [{ id: crypto.randomUUID(), title: 'مراجعة المفاهيم الأساسية', type: 'review', status: 'pending', relatedLessonId: null, relatedSubjectId: null }];
-    await db.collection('userProgress').doc(userId).set({ dailyTasks: { tasks: fallback, generatedAt: admin.firestore.FieldValue.serverTimestamp() } }, { merge: true });
-    return { tasks: fallback, source: 'fallback' };
-  }
-
-  const res = await generateWithFailoverRef('planner', prompt, { label: 'Planner', timeoutMs: CONFIG.TIMEOUTS.default });
-  const raw = await extractTextFromResult(res);
-  const parsed = await ensureJsonOrRepair(raw, 'planner');
-
-  if (!parsed || !Array.isArray(parsed.tasks) || parsed.tasks.length === 0) {
-    const fallback = [{ id: crypto.randomUUID(), title: 'مراجعة المفاهيم الأساسية', type: 'review', status: 'pending', relatedLessonId: null, relatedSubjectId: null }];
-    await db.collection('userProgress').doc(userId).set({ dailyTasks: { tasks: fallback, generatedAt: admin.firestore.FieldValue.serverTimestamp() } }, { merge: true });
-    return { tasks: fallback, source: 'fallback' };
-  }
-
-  const tasksToSave = parsed.tasks.slice(0, 5).map((t) => ({
-    id: t.id || crypto.randomUUID(),
-    title: String(t.title || 'مهمة تعليمية'),
-    type: ['review', 'quiz', 'new_lesson', 'practice', 'study'].includes(String(t.type || '').toLowerCase()) ? String(t.type).toLowerCase() : 'review',
-    status: 'pending',
-    relatedLessonId: t.relatedLessonId || null,
-    relatedSubjectId: t.relatedSubjectId || null,
-  }));
-
-  await db.collection('userProgress').doc(userId).set({ dailyTasks: { tasks: tasksToSave, generatedAt: admin.firestore.FieldValue.serverTimestamp() } }, { merge: true });
-  await cacheDel('progress', userId);
-  return { tasks: tasksToSave, source: 'AI' };
-}
-
-module.exports = {
-  initPlannerManager,
-  runPlannerManager,
-};
+module.exports = { runPlannerManager };
