@@ -9,6 +9,7 @@ const supabase = require('../services/data/supabase');
 const logger = require('../utils/logger');
 const PROMPTS = require('../config/ai-prompts');
 const { markLessonComplete } = require('../services/engines/gatekeeper'); 
+const { runPlannerManager } = require('../services/ai/managers/plannerManager');
 const { initSessionAnalyzer, analyzeSessionForEvents } = require('../services/ai/managers/sessionAnalyzer');
 
 // Utilities
@@ -310,19 +311,38 @@ async function chatInteractive(req, res) {
     // E. Action Layer & Agenda Updates
     // ---------------------------------------------------------
     // هل أرسل الـ AI إشارة درس؟
-    if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'complete') {
+   if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'complete') {
         const signal = parsedResponse.lesson_signal;
         
-        // تنفيذ المنطق في الخلفية (أو انتظاره إذا أردت إرجاع النتيجة فوراً)
+        // 1. تنفيذ الحفظ
         await markLessonComplete(userId, signal.id, signal.score || 100);
         
-        // إضافة ويدجت احتفال للرد (اختياري)
-        parsedResponse.widgets.push({
-            type: 'celebration',
-            data: { message: 'مبروك! كملت الدرس 🎉' }
-        });
-    }
+        // 2. 🔥 حساب الخطوة القادمة فوراً (The Smart Move)
+        // نطلب من الخوارزمية مهمة واحدة فقط (الأعلى أولوية)
+        const nextMovePlan = await runPlannerManager(userId); 
+        const nextTask = nextMovePlan.tasks[0]; // المهمة رقم 1
 
+        let recommendationText = "";
+        if (nextTask) {
+            recommendationText = `\n\n💡 **الخطوة التالية:** ${nextTask.title} (${nextTask.subjectTitle})`;
+            
+            // نضيف ويدجت "زر" ليضغط عليه الطالب ويذهب للدرس التالي مباشرة
+            parsedResponse.widgets.push({
+                type: 'action_button',
+                data: { 
+                    label: `ابدأ: ${nextTask.title}`, 
+                    action: 'navigate', 
+                    targetId: nextTask.relatedLessonId 
+                }
+            });
+        }
+
+        // دمج التوصية مع رد الـ AI
+        parsedResponse.reply += recommendationText;
+        
+        // ويدجت الاحتفال
+        parsedResponse.widgets.push({ type: 'celebration', data: { message: 'إنجاز عظيم! 🚀' } });
+    }
     // 1. EduNexus Updates
     if (CONFIG.ENABLE_EDUNEXUS && parsedResponse.memory_update && groupId) {
         const action = parsedResponse.memory_update;
