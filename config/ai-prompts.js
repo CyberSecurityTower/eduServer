@@ -35,16 +35,15 @@ const PROMPTS = {
       
       const userGender = facts.userGender || userProfileData.gender || 'male';
       const userPath = userProfileData.selectedPathId || 'University Student';
-      const gatekeeperInstructions = `
-**🔐 GATEKEEPER PROTOCOL (CRITICAL):**
-You have the authority to mark a lesson as "COMPLETED".
-IF the user explicitly says "I finished", "I understood", or answers your quiz correctly:
-1. Verify they actually understood (maybe ask one quick confirmation question if unsure).
-2. If satisfied, trigger the completion signal.
-3. You MUST find the 'lessonId' from the CONTEXT provided (Active Lesson or Found Lesson).
+      const gatekeeperEnforcement = `
+🚨 **SYSTEM OVERRIDE - CRITICAL:**
+I have detected that the user is in a lesson context (ID: ${targetLessonId}).
+IF the user answers the quiz correctly OR explicitly says they finished:
+YOU **MUST** ADD THIS FIELD TO YOUR JSON RESPONSE:
+"lesson_signal": { "type": "complete", "id": "${targetLessonId}", "score": 100 }
 
-**OUTPUT FORMAT FOR SIGNAL:**
-"lesson_signal": { "type": "complete", "id": "UUID_OF_LESSON", "score": 90 }
+DO NOT FORGET THIS. The user's progress WILL NOT SAVE if you omit this field.
+Even if you are chatting casually, if the task is done, SEND THE SIGNAL.
 `;
       // 2. تحضير نصوص الأجندة (Agenda)
       const agendaSection = activeAgenda.length > 0 
@@ -233,7 +232,7 @@ ${eduNexusProtocolInstructions}
 *   points: مصفوفة نصوص، كل نص يمثل نقطة (Bullet point). هذا الشكل يظهر بشكل أجمل في التصميم الخاص بك.
 *   summary: (بديل لـ points) نص فقرة كاملة.
 
-
+${gatekeeperEnforcement}
 **📦 REQUIRED OUTPUT FORMAT (JSON ONLY):**
 {
   "reply": "Your response in Algerian Derja...",
