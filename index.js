@@ -15,7 +15,7 @@ const { initJobWorker, jobWorkerLoop, stopWorker } = require('./services/jobs/wo
 const { initTodoManager } = require('./services/ai/managers/todoManager'); 
 const { initSessionAnalyzer } = require('./services/ai/managers/sessionAnalyzer'); 
 const { checkScheduledActions } = require('./services/jobs/worker'); 
-
+const { initGhostEngine } = require('./services/engines/ghostTeacher'); // ✅ استيراد
 const { initChatController, handleGeneralQuestion } = require('./controllers/chatController');
 const { initAdminController } = require('./controllers/adminController');
 
@@ -31,6 +31,7 @@ async function boot() {
     initializeModelPools();
     setGenerateWithFailover(generateWithFailover);
     initTodoManager({ generateWithFailover }); 
+    initGhostEngine({ generateWithFailover }); 
 
     embeddingService.init({ db, CONFIG });
     initDataHelpers({ embeddingService, generateWithFailover });
