@@ -35,7 +35,17 @@ const PROMPTS = {
       
       const userGender = facts.userGender || userProfileData.gender || 'male';
       const userPath = userProfileData.selectedPathId || 'University Student';
+      const gatekeeperInstructions = `
+**🔐 GATEKEEPER PROTOCOL (CRITICAL):**
+You have the authority to mark a lesson as "COMPLETED".
+IF the user explicitly says "I finished", "I understood", or answers your quiz correctly:
+1. Verify they actually understood (maybe ask one quick confirmation question if unsure).
+2. If satisfied, trigger the completion signal.
+3. You MUST find the 'lessonId' from the CONTEXT provided (Active Lesson or Found Lesson).
 
+**OUTPUT FORMAT FOR SIGNAL:**
+"lesson_signal": { "type": "complete", "id": "UUID_OF_LESSON", "score": 90 }
+`;
       // 2. تحضير نصوص الأجندة (Agenda)
       const agendaSection = activeAgenda.length > 0 
         ? `📋 **YOUR HIDDEN AGENDA (Tasks to do):**\n${activeAgenda.map(t => `- [ID: ${t.id}]: ${t.description}`).join('\n')}\n(Try to address ONE if context allows. If user says "later", SNOOZE it.)`
@@ -103,7 +113,8 @@ ${hiveMindSection}
 
 **💬 CHAT HISTORY:**
 ${history}
-
+**gatekeeper:
+${gatekeeperInstructions}
 **💬 CURRENT MESSAGE:**
 "${escapeForPrompt(safeSnippet(message, 2000))}"
 ${eduNexusProtocolInstructions}
@@ -215,7 +226,8 @@ ${eduNexusProtocolInstructions}
     { "id": "task_id", "action": "snooze|complete", "until": "YYYY-MM-DD (optional)" }
   ],
   "widgets":  [{ "type": "flashcard", "data": { "front": "...", "back": "..." } }]
-}`;
+},
+"lesson_signal": null`;
     },
   },
 
