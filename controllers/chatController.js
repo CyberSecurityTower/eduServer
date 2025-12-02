@@ -123,12 +123,16 @@ async function chatInteractive(req, res) {
       runCurriculumAgent(userId, message).catch(() => ''), 
       fetchUserWeaknesses(userId).catch(() => []),
       formatProgressForAI(userId).catch(() => ''),
-       supabase.from('user_tasks').select('title, type, priority').eq('user_id', userId).eq('status', 'pending')
+       supabase.from('user_tasks').select('title, type, priority, meta').eq('user_id', userId).eq('status', 'pending')
     ]);
 
     // تنسيق المهام للنص
-    const tasksList = currentTasks.data && currentTasks.data.length > 0 
-        ? currentTasks.data.map(t => `- [${t.type}] ${t.title} (${t.priority})`).join('\n')
+   const tasksList = currentTasks.data && currentTasks.data.length > 0 
+        ? currentTasks.data.map(t => {
+            // نتحقق من الميتا
+            const creator = (t.meta && t.meta.created_by === 'user') ? '👤 User-Added' : '🤖 AI-Suggested';
+            return `- [${creator}] ${t.title} (${t.priority})`;
+        }).join('\n')
         : "No active tasks.";
     
     const aiProfileData = rawProfile || {}; 
