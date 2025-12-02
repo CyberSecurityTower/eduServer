@@ -122,9 +122,15 @@ async function chatInteractive(req, res) {
       runMemoryAgent(userId, message).catch(() => ''),
       runCurriculumAgent(userId, message).catch(() => ''), 
       fetchUserWeaknesses(userId).catch(() => []),
-      formatProgressForAI(userId).catch(() => '')
+      formatProgressForAI(userId).catch(() => ''),
+       supabase.from('user_tasks').select('title, type, priority').eq('user_id', userId).eq('status', 'pending')
     ]);
 
+    // تنسيق المهام للنص
+    const tasksList = currentTasks.data && currentTasks.data.length > 0 
+        ? currentTasks.data.map(t => `- [${t.type}] ${t.title} (${t.priority})`).join('\n')
+        : "No active tasks.";
+    
     const aiProfileData = rawProfile || {}; 
     const groupId = userData.groupId;
 
@@ -177,8 +183,18 @@ async function chatInteractive(req, res) {
     }
    
     const identityContext = `User Identity: Name=${fullUserProfile.firstName}, Group=${groupId}, Role=${fullUserProfile.role}.`;
-    const systemContextCombined = `${identityContext}\n${getAlgiersTimeContext().contextSummary}\n${sharedContext}`;
-
+    const ageContext = rawProfile.facts?.age ? `User Age: ${rawProfile.facts.age} years old.` : "";
+    
+    const systemContextCombined = `
+    ${identityContext}
+    ${ageContext}
+    ${getAlgiersTimeContext().contextSummary}
+    ${sharedContext}
+    
+    📋 **CURRENT TODO LIST:**
+    ${tasksList}
+    (If the user adds a task that conflicts with their goals or exam schedule, advise them gently).
+    `;
     // ---------------------------------------------------------
     // C. AI Generation (With Strict Sanitization)
     // ---------------------------------------------------------
