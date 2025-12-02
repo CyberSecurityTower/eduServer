@@ -24,7 +24,8 @@ const PROMPTS = {
       systemContext = '',
       examContext = null,
       activeAgenda = [], 
-      groupContext = ''
+      groupContext = '',
+      currentContext = {} 
     ) => {
       const creator = CREATOR_PROFILE;
 
