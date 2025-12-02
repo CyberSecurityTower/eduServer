@@ -1,4 +1,3 @@
-
 'use strict';
 
 // ==========================================
@@ -10,14 +9,19 @@ const supabase = require('../services/data/supabase');
 const logger = require('../utils/logger');
 const PROMPTS = require('../config/ai-prompts');
 const { initSessionAnalyzer, analyzeSessionForEvents } = require('../services/ai/managers/sessionAnalyzer');
+
 // Utilities
 const { toCamelCase, nowISO } = require('../services/data/dbUtils');
-const { getAlgiersTimeContext, extractTextFromResult, ensureJsonOrRepair } = require('../utils');
+const { 
+  getAlgiersTimeContext, 
+  extractTextFromResult, 
+  ensureJsonOrRepair, 
+  safeSnippet // ✅ New Import
+} = require('../utils');
 
 // Helpers
 const {
   getProfile, 
-  getProgress, 
   formatProgressForAI,
   saveChatSession, 
   fetchUserWeaknesses, 
@@ -25,9 +29,12 @@ const {
 } = require('../services/data/helpers');
 
 // AI Managers
-const { runMemoryAgent, saveMemoryChunk, analyzeAndSaveMemory } = require('../services/ai/managers/memoryManager');
+const { runMemoryAgent, analyzeAndSaveMemory } = require('../services/ai/managers/memoryManager');
 const { runCurriculumAgent } = require('../services/ai/managers/curriculumManager');
 const { runSuggestionManager } = require('../services/ai/managers/suggestionManager');
+
+// ✅ Engines (New)
+const { explainLessonContent } = require('../services/engines/ghostTeacher'); // ✅ استيراد محرك الشبح
 
 // ✅ EduNexus
 const { getNexusMemory, updateNexusKnowledge } = require('../services/ai/eduNexus');
@@ -39,7 +46,7 @@ let generateWithFailoverRef;
 // ==========================================
 function initChatController(dependencies) {
   generateWithFailoverRef = dependencies.generateWithFailover;
-  logger.info('Chat Controller initialized (Identity Injection Mode 🚀).');
+  logger.info('Chat Controller initialized (Context Aware & Identity Mode 🚀).');
 }
 
 // ==========================================
@@ -68,7 +75,8 @@ async function generateChatSuggestions(req, res) {
 // 4. Main Logic: Chat Interactive
 // ==========================================
 async function chatInteractive(req, res) {
-  let { userId, message, history = [], sessionId } = req.body;
+  // ✅ نستقبل currentContext من الفرونت أند
+  let { userId, message, history = [], sessionId, currentContext = {} } = req.body;
 
   // Safety check for history
   if (!Array.isArray(history)) history = [];
@@ -86,7 +94,7 @@ async function chatInteractive(req, res) {
 
     let userData = toCamelCase(userRaw);
 
-    // --- GROUP ENFORCEMENT ---
+    // --- GROUP ENFORCEMENT logic (from original file) ---
     if (!userData.groupId) {
         const groupMatch = message.match(/(?:فوج|group|groupe|g)\s*(\d+)/i);
         if (groupMatch) {
@@ -116,20 +124,77 @@ async function chatInteractive(req, res) {
     }
     // --- END ENFORCEMENT ---
 
-    // Fetch Context Data (Parallel with Error Handling)
+    // ---------------------------------------------------------
+    // ✅ B. Context Injection & Ghost Teacher Logic
+    // ---------------------------------------------------------
+    let activeLessonContext = "";
+    
+    if (currentContext.lessonId) {
+        // جلب بيانات الدرس المفتوح حالياً
+        const { data: lessonData } = await supabase
+            .from('lessons')
+            .select('*, subjects(title)') // نجلب اسم المادة
+            .eq('id', currentContext.lessonId)
+            .single();
+
+        if (lessonData) {
+            // 👻 Ghost Teacher Logic: إذا الدرس فارغ
+            if (!lessonData.has_content) {
+                // نتحقق هل الرسالة تدل على طلب شرح؟ (الفرونت أند يرسل "Explain the lesson..." عند الضغط)
+                // أو إذا كانت الرسالة قصيرة جداً في سياق درس فارغ
+                const isRequestingExplanation = message.toLowerCase().includes('explain') || message.includes('اشرح') || (message.length < 50 && message.includes('?')); 
+                
+                if (isRequestingExplanation) {
+                    logger.info(`👻 Ghost Teacher Triggered for Lesson: ${lessonData.title}`);
+                    
+                    // 🔥 استدعاء محرك الشبح فوراً
+                    const ghostResult = await explainLessonContent(lessonData.id, userId);
+                    
+                    const replyText = `👻 **المعلم الشبح:**\n\n${ghostResult.content}`;
+                    
+                    // حفظ في الهيستوري والعودة مبكراً
+                    saveChatSession(sessionId, userId, message, [
+                        ...history, 
+                        { role: 'user', text: message, timestamp: nowISO() }, 
+                        { role: 'model', text: replyText, timestamp: nowISO() }
+                    ]);
+
+                    return res.status(200).json({
+                        reply: replyText,
+                        widgets: [],
+                        sessionId,
+                        mood: 'excited' // الشبح دائماً متحمس
+                    });
+                } else {
+                    // المستخدم في درس فارغ لكن يسأل سؤالاً عاماً
+                    activeLessonContext = `User is viewing an EMPTY lesson titled "${lessonData.title}" in subject "${lessonData.subjects?.title || 'Unknown'}". If they ask for content, tell them to click the 'Explain' button or ask you directly to Generate it.`;
+                }
+            } else {
+                // الدرس له محتوى، نجلبه لتعزيز السياق
+                const { data: contentData } = await supabase.from('lessons_content').select('content').eq('lesson_id', lessonData.id).single();
+                
+                // استخدام safeSnippet لعدم تجاوز حدود التوكنز
+                const snippet = safeSnippet(contentData?.content || "", 1000);
+                
+                activeLessonContext = `📚 **ACTIVE LESSON CONTEXT:**\nUser is currently reading: "${lessonData.title}" (${lessonData.subjects?.title || ''}).\nContent Snippet: "${snippet}"...\n(Answer questions based on this context if relevant).`;
+            }
+        }
+    }
+    // ---------------------------------------------------------
+
+    // Fetch Context Data (Parallel)
     const [rawProfile, memoryReport, curriculumReport, weaknessesRaw, formattedProgress, currentTasks] = await Promise.all([
       getProfile(userId).catch(() => ({})),
       runMemoryAgent(userId, message).catch(() => ''),
       runCurriculumAgent(userId, message).catch(() => ''), 
       fetchUserWeaknesses(userId).catch(() => []),
       formatProgressForAI(userId).catch(() => ''),
-       supabase.from('user_tasks').select('title, type, priority, meta').eq('user_id', userId).eq('status', 'pending')
+      supabase.from('user_tasks').select('title, type, priority, meta').eq('user_id', userId).eq('status', 'pending')
     ]);
 
-    // تنسيق المهام للنص
+    // تنسيق المهام
    const tasksList = currentTasks.data && currentTasks.data.length > 0 
         ? currentTasks.data.map(t => {
-            // نتحقق من الميتا
             const creator = (t.meta && t.meta.created_by === 'user') ? '👤 User-Added' : '🤖 AI-Suggested';
             return `- [${creator}] ${t.title} (${t.priority})`;
         }).join('\n')
@@ -154,7 +219,7 @@ async function chatInteractive(req, res) {
     };
 
     // ---------------------------------------------------------
-    // B. Context Preparation & Sanitization
+    // C. Context Preparation
     // ---------------------------------------------------------
     let currentEmotionalState = aiProfileData.emotional_state || { mood: 'happy', angerLevel: 0, reason: '' };
     
@@ -162,7 +227,7 @@ async function chatInteractive(req, res) {
     const allAgenda = Array.isArray(aiProfileData.aiAgenda) ? aiProfileData.aiAgenda : [];
     const activeAgenda = allAgenda.filter(t => t.status === 'pending');
 
-    // Exam Context Calculation
+    // Exam Context
     let examContext = {}; 
     if (userData.nextExamDate) {
         const diffDays = Math.ceil((new Date(userData.nextExamDate) - new Date()) / (1000 * 60 * 60 * 24));
@@ -176,69 +241,62 @@ async function chatInteractive(req, res) {
     if (CONFIG.ENABLE_EDUNEXUS && groupId) {
         const nexusMemory = await getNexusMemory(groupId);
         if (nexusMemory && nexusMemory.exams) {
-            sharedContext = "🏫 **HIVE MIND (معلومات الفوج المؤكدة):**\n";
+            sharedContext = "🏫 **HIVE MIND (Group Info):**\n";
             Object.entries(nexusMemory.exams).forEach(([subject, data]) => {
                 if (data.confirmed_value) {
-                    const status = data.is_verified ? "(مؤكد من الإدارة ✅)" : "(شائعة قوية ⚠️)";
-                    sharedContext += `- امتحان ${subject}: ${data.confirmed_value} ${status}\n`;
+                    const status = data.is_verified ? "(Verified ✅)" : "(Rumor ⚠️)";
+                    sharedContext += `- Exam ${subject}: ${data.confirmed_value} ${status}\n`;
                 }
             });
         }
     }
    
-    const identityContext = `User Identity: Name=${fullUserProfile.firstName}, Group=${groupId}, Role=${fullUserProfile.role}.`;
     const ageContext = rawProfile.facts?.age ? `User Age: ${rawProfile.facts.age} years old.` : "";
     
+    // 🔥 دمج السياقات الجديدة (Active Lesson)
     const systemContextCombined = `
-    ${identityContext}
+    User Identity: Name=${fullUserProfile.firstName}, Group=${groupId}, Role=${fullUserProfile.role}.
     ${ageContext}
     ${getAlgiersTimeContext().contextSummary}
     ${sharedContext}
+    ${activeLessonContext}
     
     📋 **CURRENT TODO LIST:**
     ${tasksList}
     (If the user adds a task that conflicts with their goals or exam schedule, advise them gently).
     `;
+
     // ---------------------------------------------------------
-    // C. AI Generation (With Strict Sanitization)
+    // D. AI Generation
     // ---------------------------------------------------------
     
     const safeMessage = message || '';
-    const safeMemoryReport = memoryReport || '';
-    const safeCurriculumReport = curriculumReport || '';
-
-    // 🔥 دالة تنسيق الوقت (HH:MM)
+    
+    // دالة تنسيق الوقت
     const formatTimeShort = (isoString) => {
         if (!isoString) return '';
         const date = new Date(isoString);
         return `${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')}`;
     };
 
-    // 🔥 دمج التوقيت مع الرسائل السابقة
     const safeHistoryStr = history.slice(-10).map(h => {
         const timeTag = h.timestamp ? `[${formatTimeShort(h.timestamp)}] ` : ''; 
         return `${timeTag}${h.role === 'model' ? 'EduAI' : 'User'}: ${h.text}`;
     }).join('\n');
 
-    const safeFormattedProgress = formattedProgress || '';
-    const safeWeaknesses = Array.isArray(weaknessesRaw) ? weaknessesRaw : [];
-    const safeSystemContext = systemContextCombined || '';
-    const safeExamContext = examContext; 
-
-    // ✅ تم تصحيح الاستدعاء هنا (إزالة التكرار)
     const finalPrompt = PROMPTS.chat.interactiveChat(
       safeMessage, 
-      safeMemoryReport, 
-      safeCurriculumReport, 
-      safeHistoryStr,  // ✅ مرة واحدة فقط
-      safeFormattedProgress, 
-      safeWeaknesses, 
+      memoryReport || '', 
+      curriculumReport || '', 
+      safeHistoryStr,
+      formattedProgress || '', 
+      Array.isArray(weaknessesRaw) ? weaknessesRaw : [], 
       currentEmotionalState, 
       fullUserProfile, 
-      safeSystemContext, 
-      safeExamContext, 
+      systemContextCombined, // ✅ السياق المحدث
+      examContext, 
       activeAgenda,
-      sharedContext // تمرير سياق الفوج إذا لزم الأمر
+      sharedContext
     );
 
     const modelResp = await generateWithFailoverRef('chat', finalPrompt, { label: 'MasterChat', timeoutMs: CONFIG.TIMEOUTS.chat });
@@ -248,16 +306,18 @@ async function chatInteractive(req, res) {
     if (!parsedResponse?.reply) parsedResponse = { reply: rawText || "Error.", widgets: [] };
 
     // ---------------------------------------------------------
-    // D. Action Layer
+    // E. Action Layer & Agenda Updates
     // ---------------------------------------------------------
     
-     if (CONFIG.ENABLE_EDUNEXUS && parsedResponse.memory_update && groupId) {
+    // 1. EduNexus Updates
+    if (CONFIG.ENABLE_EDUNEXUS && parsedResponse.memory_update && groupId) {
         const action = parsedResponse.memory_update;
         if (action.action === 'UPDATE_EXAM' && action.subject && action.new_date) {
             await updateNexusKnowledge(groupId, userId, 'exams', action.subject, action.new_date);
         }
     }
 
+    // 2. Agenda Actions
     if (parsedResponse.agenda_actions && Array.isArray(parsedResponse.agenda_actions)) {
         let currentAgenda = [...allAgenda];
         let agendaUpdated = false;
@@ -277,6 +337,7 @@ async function chatInteractive(req, res) {
         if (agendaUpdated) await updateAiAgenda(userId, currentAgenda);
     }
 
+    // 3. Mood Update
     if (parsedResponse.newMood) {
         supabase.from('ai_memory_profiles').update({ 
             emotional_state: { mood: parsedResponse.newMood, reason: parsedResponse.moodReason || '' },
@@ -285,7 +346,7 @@ async function chatInteractive(req, res) {
     }
 
      // ---------------------------------------------------------
-    // E. Response
+    // F. Response
     // ---------------------------------------------------------
     res.status(200).json({
       reply: parsedResponse.reply,
@@ -298,7 +359,7 @@ async function chatInteractive(req, res) {
     setImmediate(() => {
         const updatedHistory = [
             ...history,
-            { role: 'user', text: message, timestamp: nowISO() }, // إضافة التوقيت هنا للحفظ
+            { role: 'user', text: message, timestamp: nowISO() },
             { role: 'model', text: parsedResponse.reply, timestamp: nowISO() }
         ];
 
