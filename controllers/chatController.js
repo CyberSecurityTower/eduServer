@@ -11,7 +11,7 @@ const PROMPTS = require('../config/ai-prompts');
 const { markLessonComplete } = require('../services/engines/gatekeeper'); 
 const { runPlannerManager } = require('../services/ai/managers/plannerManager');
 const { initSessionAnalyzer, analyzeSessionForEvents } = require('../services/ai/managers/sessionAnalyzer');
-const { refreshUserTasks } = require('../services/data/helpers'); 
+const { refreshUserTasks } = require('../services/data/helpers'); // ✅ دالة تحديث المهام
 
 // Utilities
 const { toCamelCase, nowISO } = require('../services/data/dbUtils');
@@ -19,7 +19,7 @@ const {
   getAlgiersTimeContext, 
   extractTextFromResult, 
   ensureJsonOrRepair, 
-  safeSnippet // ✅ New Import
+  safeSnippet 
 } = require('../utils');
 
 // Helpers
@@ -36,8 +36,8 @@ const { runMemoryAgent, analyzeAndSaveMemory } = require('../services/ai/manager
 const { runCurriculumAgent } = require('../services/ai/managers/curriculumManager');
 const { runSuggestionManager } = require('../services/ai/managers/suggestionManager');
 
-// ✅ Engines (New)
-const { explainLessonContent } = require('../services/engines/ghostTeacher'); // ✅ استيراد محرك الشبح
+// ✅ Engines
+const { explainLessonContent } = require('../services/engines/ghostTeacher');
 
 // ✅ EduNexus
 const { getNexusMemory, updateNexusKnowledge } = require('../services/ai/eduNexus');
@@ -97,7 +97,7 @@ async function chatInteractive(req, res) {
 
     let userData = toCamelCase(userRaw);
 
-    // --- GROUP ENFORCEMENT logic (from original file) ---
+    // --- GROUP ENFORCEMENT logic ---
     if (!userData.groupId) {
         const groupMatch = message.match(/(?:فوج|group|groupe|g)\s*(\d+)/i);
         if (groupMatch) {
@@ -133,29 +133,22 @@ async function chatInteractive(req, res) {
     let activeLessonContext = "";
     
     if (currentContext.lessonId) {
-        // جلب بيانات الدرس المفتوح حالياً
         const { data: lessonData } = await supabase
             .from('lessons')
-            .select('*, subjects(title)') // نجلب اسم المادة
+            .select('*, subjects(title)')
             .eq('id', currentContext.lessonId)
             .single();
 
         if (lessonData) {
-            // 👻 Ghost Teacher Logic: إذا الدرس فارغ
+            // 👻 Ghost Teacher Logic
             if (!lessonData.has_content) {
-                // نتحقق هل الرسالة تدل على طلب شرح؟ (الفرونت أند يرسل "Explain the lesson..." عند الضغط)
-                // أو إذا كانت الرسالة قصيرة جداً في سياق درس فارغ
                 const isRequestingExplanation = message.toLowerCase().includes('explain') || message.includes('اشرح') || (message.length < 50 && message.includes('?')); 
                 
                 if (isRequestingExplanation) {
                     logger.info(`👻 Ghost Teacher Triggered for Lesson: ${lessonData.title}`);
-                    
-                    // 🔥 استدعاء محرك الشبح فوراً
                     const ghostResult = await explainLessonContent(lessonData.id, userId);
-                    
                     const replyText = `👻 **المعلم الشبح:**\n\n${ghostResult.content}`;
                     
-                    // حفظ في الهيستوري والعودة مبكراً
                     saveChatSession(sessionId, userId, message, [
                         ...history, 
                         { role: 'user', text: message, timestamp: nowISO() }, 
@@ -166,24 +159,18 @@ async function chatInteractive(req, res) {
                         reply: replyText,
                         widgets: [],
                         sessionId,
-                        mood: 'excited' // الشبح دائماً متحمس
+                        mood: 'excited'
                     });
                 } else {
-                    // المستخدم في درس فارغ لكن يسأل سؤالاً عاماً
                     activeLessonContext = `User is viewing an EMPTY lesson titled "${lessonData.title}" in subject "${lessonData.subjects?.title || 'Unknown'}". If they ask for content, tell them to click the 'Explain' button or ask you directly to Generate it.`;
                 }
             } else {
-                // الدرس له محتوى، نجلبه لتعزيز السياق
                 const { data: contentData } = await supabase.from('lessons_content').select('content').eq('lesson_id', lessonData.id).single();
-                
-                // استخدام safeSnippet لعدم تجاوز حدود التوكنز
                 const snippet = safeSnippet(contentData?.content || "", 1000);
-                
                 activeLessonContext = `📚 **ACTIVE LESSON CONTEXT:**\nUser is currently reading: "${lessonData.title}" (${lessonData.subjects?.title || ''}).\nContent Snippet: "${snippet}"...\n(Answer questions based on this context if relevant).`;
             }
         }
     }
-    // ---------------------------------------------------------
 
     // Fetch Context Data (Parallel)
     const [rawProfile, memoryReport, curriculumReport, weaknessesRaw, formattedProgress, currentTasks] = await Promise.all([
@@ -206,7 +193,7 @@ async function chatInteractive(req, res) {
     const aiProfileData = rawProfile || {}; 
     const groupId = userData.groupId;
 
-    // 🔥 Identity Injection (System Context)
+    // 🔥 Identity Injection
     const fullUserProfile = { 
         userId: userId,
         firstName: userData.firstName || 'Student', 
@@ -256,7 +243,6 @@ async function chatInteractive(req, res) {
    
     const ageContext = rawProfile.facts?.age ? `User Age: ${rawProfile.facts.age} years old.` : "";
     
-    // 🔥 دمج السياقات الجديدة (Active Lesson)
     const systemContextCombined = `
     User Identity: Name=${fullUserProfile.firstName}, Group=${groupId}, Role=${fullUserProfile.role}.
     ${ageContext}
@@ -272,10 +258,8 @@ async function chatInteractive(req, res) {
     // ---------------------------------------------------------
     // D. AI Generation
     // ---------------------------------------------------------
-    
     const safeMessage = message || '';
     
-    // دالة تنسيق الوقت
     const formatTimeShort = (isoString) => {
         if (!isoString) return '';
         const date = new Date(isoString);
@@ -296,7 +280,7 @@ async function chatInteractive(req, res) {
       Array.isArray(weaknessesRaw) ? weaknessesRaw : [], 
       currentEmotionalState, 
       fullUserProfile, 
-      systemContextCombined, // ✅ السياق المحدث
+      systemContextCombined,
       examContext, 
       activeAgenda,
       sharedContext,
@@ -312,40 +296,47 @@ async function chatInteractive(req, res) {
     // ---------------------------------------------------------
     // E. Action Layer & Agenda Updates
     // ---------------------------------------------------------
-    // هل أرسل الـ AI إشارة درس؟
-   if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'complete') {
+
+    // 1. ✅ Handle Lesson Completion Signal (Consolidated & Optimized)
+    if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'complete') {
         const signal = parsedResponse.lesson_signal;
         
-        // 1. تنفيذ الحفظ
+        // أ. تنفيذ الحفظ (Gatekeeper)
         await markLessonComplete(userId, signal.id, signal.score || 100);
         
-        // 2. 🔥 حساب الخطوة القادمة فوراً (The Smart Move)
-        // نطلب من الخوارزمية مهمة واحدة فقط (الأعلى أولوية)
-        const nextMovePlan = await runPlannerManager(userId); 
-        const nextTask = nextMovePlan.tasks[0]; // المهمة رقم 1
+        // ب. 🔥 تحديث المهام (God Mode) - مسح القديم وجلب الجديد
+        const newDbTasks = await refreshUserTasks(userId); 
+        
+        // ج. اقتراح المهمة التالية من القائمة الجديدة
+        const nextTask = newDbTasks && newDbTasks.length > 0 ? newDbTasks[0] : null;
 
         let recommendationText = "";
         if (nextTask) {
-            recommendationText = `\n\n💡 **الخطوة التالية:** ${nextTask.title} (${nextTask.subjectTitle})`;
+            recommendationText = `\n\n💡 **الخطوة التالية:** ${nextTask.title}`;
             
-            // نضيف ويدجت "زر" ليضغط عليه الطالب ويذهب للدرس التالي مباشرة
+            // ويدجت للتنقل المباشر
             parsedResponse.widgets.push({
                 type: 'action_button',
                 data: { 
                     label: `ابدأ: ${nextTask.title}`, 
                     action: 'navigate', 
-                    targetId: nextTask.relatedLessonId 
+                    targetId: nextTask.meta?.relatedLessonId 
                 }
             });
         }
-
-        // دمج التوصية مع رد الـ AI
-        parsedResponse.reply += recommendationText;
         
-        // ويدجت الاحتفال
+        // د. إعلام التطبيق بضرورة تحديث الواجهة (Event Trigger)
+        parsedResponse.widgets.push({ 
+            type: 'event_trigger', 
+            data: { event: 'tasks_updated' } 
+        });
+
+        // هـ. إضافة الاحتفال والنص
+        parsedResponse.reply += recommendationText;
         parsedResponse.widgets.push({ type: 'celebration', data: { message: 'إنجاز عظيم! 🚀' } });
     }
-    // 1. EduNexus Updates
+
+    // 2. EduNexus Updates
     if (CONFIG.ENABLE_EDUNEXUS && parsedResponse.memory_update && groupId) {
         const action = parsedResponse.memory_update;
         if (action.action === 'UPDATE_EXAM' && action.subject && action.new_date) {
@@ -353,7 +344,7 @@ async function chatInteractive(req, res) {
         }
     }
 
-    // 2. Agenda Actions
+    // 3. Agenda Actions
     if (parsedResponse.agenda_actions && Array.isArray(parsedResponse.agenda_actions)) {
         let currentAgenda = [...allAgenda];
         let agendaUpdated = false;
@@ -373,52 +364,15 @@ async function chatInteractive(req, res) {
         if (agendaUpdated) await updateAiAgenda(userId, currentAgenda);
     }
 
-    // 3. Mood Update
+    // 4. Mood Update
     if (parsedResponse.newMood) {
         supabase.from('ai_memory_profiles').update({ 
             emotional_state: { mood: parsedResponse.newMood, reason: parsedResponse.moodReason || '' },
             last_updated_at: nowISO()
         }).eq('user_id', userId).then();
     }
-    //
-    if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'complete') {
-        const signal = parsedResponse.lesson_signal;
-        
-        // 1. تنفيذ الحفظ (Gatekeeper)
-        await markLessonComplete(userId, signal.id, signal.score || 100);
-        
-        // 2. 🔥 التحديث الجذري للمهام (The God Mode Update) 🔥
-        // سيقوم هذا السطر بمسح المهام القديمة ووضع المهام الجديدة في الداتابيز
-        const newDbTasks = await refreshUserTasks(userId); 
-        
-        // 3. اختيار المهمة الأولى من القائمة الجديدة لاقتراحها في الشات
-        const nextTask = newDbTasks[0]; 
 
-        let recommendationText = "";
-        if (nextTask) {
-            recommendationText = `\n\n💡 **الخطوة التالية (تم تحديث جدولك):** ${nextTask.title}`;
-            
-            // ويدجت للتنقل
-            parsedResponse.widgets.push({
-                type: 'action_button',
-                data: { 
-                    label: `ابدأ: ${nextTask.title}`, 
-                    action: 'navigate', 
-                    targetId: nextTask.meta?.relatedLessonId 
-                }
-            });
-        }
-
-        // إعلام الفرونت أند بضرورة تحديث قائمة المهام
-        parsedResponse.widgets.push({ 
-            type: 'event_trigger', 
-            data: { event: 'tasks_updated' } // الفرونت أند يستمع لهذا ويعيد طلب /get-daily-tasks
-        });
-
-        parsedResponse.reply += recommendationText;
-        parsedResponse.widgets.push({ type: 'celebration', data: { message: 'إنجاز عظيم! 🚀' } });
-    }
-     // ---------------------------------------------------------
+    // ---------------------------------------------------------
     // F. Response
     // ---------------------------------------------------------
     res.status(200).json({
