@@ -20,9 +20,9 @@ async function scanAndFillEmptyLessons() {
   logger.info('👻 Ghost Teacher Scanner Started (Direct Check Mode)...');
   
   // 1. نجلب كل الدروس
-  const { data: allLessons, error } = await supabase
-      .from('lessons')
-      .select('id, title, subjects(title)');
+  const { data: allLessons } = await supabase
+        .from('lessons')
+        .select('id, title, subject_id, subjects(title)');
 
   if (error || !allLessons) return;
 
@@ -99,19 +99,18 @@ async function generateAndSaveLessonContent(lesson) {
       
       const content = await extractTextFromResult(res);
 
-      if (content && content.length > 100) {
-          logger.info(`💾 Saving content for lesson: ${lesson.id}...`);
+     if (content && content.length > 100) {
+            logger.info(`💾 Saving content for lesson: ${lesson.id}...`);
 
-          // 1. الحفظ في lessons_content
-          // ⚠️ هام: نرسل lesson_id يدوياً لنمنع توليد ID عشوائي
-          const { error: insertError } = await supabase
-              .from('lessons_content')
-              .upsert({
-                  lesson_id: lesson.id, // ✅ هذا هو الرابط، لن يتغير
-                  content: content,
-                  updated_at: new Date().toISOString()
-              }, { onConflict: 'lesson_id' });
-
+            // 1. الحفظ في lessons_content
+            const { error: insertError } = await supabase
+                .from('lessons_content')
+                .upsert({
+                    lesson_id: lesson.id, 
+                    subject_id: lesson.subject_id, 
+                    content: content,
+                    updated_at: new Date().toISOString()
+                }, { onConflict: 'lesson_id' });
           if (insertError) {
               logger.error(`❌ DB Insert Error:`, insertError.message);
               return;
