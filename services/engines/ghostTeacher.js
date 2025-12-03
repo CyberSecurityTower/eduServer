@@ -13,96 +13,132 @@ function initGhostEngine(dependencies) {
 }
 
 /**
- * Generate lesson Markdown and save it in DB
+ * 🕵️‍♂️ الماسح الضوئي الذكي (Smart Scanner)
+ * يبحث عن الدروس التي ليس لها سجل في جدول المحتوى
  */
-async function generateAndSaveLessonContent(lesson) {
-  try {
-    const subjectTitle = lesson.subjects?.title || 'General';
-
-    const prompt = `
-    You are a distinguished University Professor.
-    Subject: ${subjectTitle}
-    Lesson Title: "${lesson.title}"
-
-    **Task:** Write a comprehensive academic lesson in **Formal Arabic**.
-
-    **Markdown structure:**
-
-    # ${lesson.title}
-    (Introduction...)
-
-    ## 1. المفاهيم الأساسية
-    (Detailed explanation...)
-
-    ## 2. الشرح التفصيلي
-    (Extended explanation...)
-
-    ## 3. خلاصة الدرس
-    - Key point 1
-    - Key point 2
-
-    Output ONLY the Markdown text.
-    `;
-
-    if (!generateWithFailoverRef)
-      throw new Error('AI generator not initialized');
-
-    // Generate content
-    const aiResp = await generateWithFailoverRef(
-      'chat', 
-      prompt, 
-      { label: 'GhostGenerator', timeoutMs: 90000 }
-    );
-
-    const content = await extractTextFromResult(aiResp);
-
-    if (!content || content.length < 50) {
-      logger.error(`❌ AI Returned Empty Content for: ${lesson.title}`);
-      return;
-    }
-
-    // Save Markdown into lessons_content
-    const { error: contentError } = await supabase
-      .from('lessons_content')
-      .upsert(
-        {
-          lesson_id: lesson.id,
-          content: content,
-          updated_at: new Date().toISOString()
-        },
-        { onConflict: 'lesson_id' }
-      );
-
-    if (contentError) {
-      logger.error(`❌ DB Save Failed for ${lesson.title}: ${contentError.message}`);
-      return;
-    }
-
-    logger.success(`✅ Content saved for: ${lesson.title}`);
-
-    // Update lesson flags
-    const { error: updateError } = await supabase
+async function scanAndFillEmptyLessons() {
+  logger.info('👻 Ghost Teacher Scanner Started (Direct Check Mode)...');
+  
+  // 1. نجلب كل الدروس
+  const { data: allLessons, error } = await supabase
       .from('lessons')
-      .update({
-        has_content: true,
-        ai_memory: {
-          generated_by: 'ghost_teacher_v2',
-          generated_at: new Date().toISOString(),
-          is_ai_generated: true
-        }
-      })
-      .eq('id', lesson.id);
+      .select('id, title, subjects(title)');
 
-    if (updateError)
-      logger.error(`❌ Failed to update lesson status for ${lesson.title}: ${updateError.message}`);
+  if (error || !allLessons) return;
 
-  } catch (err) {
-    logger.error(`❌ Error generating lesson content: ${err.message}`);
+  // 2. نجلب كل المحتويات الموجودة (IDs فقط)
+  const { data: existingContents } = await supabase
+      .from('lessons_content')
+      .select('lesson_id');
+  
+  // نحولها لـ Set للسرعة
+  const existingIds = new Set(existingContents?.map(x => x.lesson_id) || []);
+
+  // 3. الفلترة: نأخذ الدروس التي ID الخاص بها غير موجود في قائمة المحتوى
+  const emptyLessons = allLessons.filter(l => !existingIds.has(l.id));
+
+  if (emptyLessons.length === 0) {
+      logger.info('👻 All lessons have content. System is clean.');
+      return;
+  }
+
+  logger.info(`👻 Found ${emptyLessons.length} truly empty lessons. Processing batch of 5...`);
+
+  // نأخذ أول 5 فقط لتجنب الضغط
+  for (const lesson of emptyLessons.slice(0, 5)) {
+      await generateAndSaveLessonContent(lesson);
   }
 }
 
 /**
- * المعلم الشبح
+ * Generate lesson Markdown and save it in DB
+ */
+async function generateAndSaveLessonContent(lesson) {
+  try {
+      const subjectTitle = lesson.subjects?.title || 'General';
+      
+      // 🔥 البرومبت المعدل: محتوى خام مباشر (Direct Content)
+      const prompt = `
+      You are an Academic Content Generator.
+      Subject: ${subjectTitle}
+      Lesson: "${lesson.title}"
+
+      **Task:** Generate the lesson content in **Formal Arabic (الفصحى)**.
+      
+      **STRICT RULES:**
+      1. **NO INTRODUCTIONS:** Do NOT say "Welcome students", "Today we discuss", or "In this lesson".
+      2. **START IMMEDIATELY:** Start directly with the Markdown Title.
+      3. **FORMAT:** Use clean Markdown.
+      
+      **Required Structure:**
+      # ${lesson.title}
+      
+      (Write a direct definition/intro to the concept here...)
+      
+      ## 1. المحاور الأساسية
+      (Details...)
+      
+      ## 2. شرح معمق
+      (Details...)
+      
+      ## 3. خلاصة
+      - Point 1
+      - Point 2
+      
+      Output ONLY the Markdown.
+      `;
+
+      if (!generateWithFailoverRef)
+        throw new Error('AI generator not initialized');
+
+      // نستخدم 'chat' (الذي يجب أن يكون مربوطاً بـ Pro أو Flash حسب رصيدك)
+      const res = await generateWithFailoverRef('chat', prompt, { 
+          label: 'GhostGenerator', 
+          timeoutMs: 90000 
+      });
+      
+      const content = await extractTextFromResult(res);
+
+      if (content && content.length > 100) {
+          logger.info(`💾 Saving content for lesson: ${lesson.id}...`);
+
+          // 1. الحفظ في lessons_content
+          // ⚠️ هام: نرسل lesson_id يدوياً لنمنع توليد ID عشوائي
+          const { error: insertError } = await supabase
+              .from('lessons_content')
+              .upsert({
+                  lesson_id: lesson.id, // ✅ هذا هو الرابط، لن يتغير
+                  content: content,
+                  updated_at: new Date().toISOString()
+              }, { onConflict: 'lesson_id' });
+
+          if (insertError) {
+              logger.error(`❌ DB Insert Error:`, insertError.message);
+              return;
+          }
+
+          // 2. تحديث العلامة في جدول lessons (لأغراض الـ UI فقط)
+          await supabase.from('lessons').update({
+              has_content: true,
+              ai_memory: { 
+                generated_by: 'ghost_teacher_v2',
+                generated_at: new Date().toISOString(),
+                is_ai_generated: true
+              }
+          }).eq('id', lesson.id);
+
+          logger.success(`✅ Generated & Saved: ${lesson.title}`);
+      } else {
+          logger.error(`❌ AI Returned Empty or Short Content for: ${lesson.title}`);
+      }
+
+  } catch (err) {
+      logger.error(`Failed to generate for lesson ${lesson.id}:`, err.message);
+  }
+}
+
+/**
+ * المعلم الشبح (للشرح بالدارجة)
  */
 async function explainLessonContent(lessonId, userId) {
   try {
@@ -151,30 +187,11 @@ async function explainLessonContent(lessonId, userId) {
     return { content: explanation, isGenerated: true };
 
   } catch (err) {
-    logger.error(`Failed to generate for lesson ${lesson.id}:\n`, err.message);
+    logger.error(`Failed to explain lesson ${lessonId}:\n`, err.message);
     return {
       content: 'عذراً، المعلم الشبح راهو شارب قهوة ☕',
       isError: true
     };
-  }
-}
-
-/**
- * Scanner for empty lessons
- */
-async function scanAndFillEmptyLessons() {
-  logger.info('👻 Ghost Teacher Scanner Started...');
-
-  const { data: lessons, error } = await supabase
-    .from('lessons')
-    .select('id, title, subjects(title)')
-    .eq('has_content', false)
-    .limit(5);
-
-  if (error) return logger.error(error.message);
-
-  for (const lesson of lessons) {
-    await generateAndSaveLessonContent(lesson);
   }
 }
 
