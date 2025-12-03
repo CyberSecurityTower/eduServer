@@ -91,4 +91,108 @@ async function explainLessonContent(lessonId, userId) {
   }
 }
 
-module.exports = { initGhostEngine, explainLessonContent };
+/**
+ * 🕵️‍♂️ الماسح الضوئي للدروس الفارغة
+ * يمكن استدعاؤه من Admin Controller أو Cron Job
+ */
+async function scanAndFillEmptyLessons() {
+    logger.info('👻 Ghost Teacher Scanner Started...');
+    
+    // 1. البحث عن الدروس التي ليس لها محتوى (أو has_content = false)
+    // نحدد عدداً صغيراً (مثلاً 5) في كل مرة لتجنب الضغط على الـ API
+    const { data: emptyLessons, error } = await supabase
+        .from('lessons')
+        .select('id, title, subjects(title)')
+        .eq('has_content', false) 
+        .limit(5);
+
+    if (error) {
+        logger.error('Scanner Error:', error.message);
+        return;
+    }
+
+    if (!emptyLessons || emptyLessons.length === 0) {
+        logger.info('👻 No empty lessons found. Good job!');
+        return;
+    }
+
+    logger.info(`👻 Found ${emptyLessons.length} empty lessons. Generating content...`);
+
+    for (const lesson of emptyLessons) {
+        await generateAndSaveLessonContent(lesson);
+    }
+}
+
+/**
+ * التوليد والحفظ بتنسيق Markdown مخصص
+ */
+async function generateAndSaveLessonContent(lesson) {
+    try {
+        const subjectTitle = lesson.subjects?.title || 'General';
+        
+        // 🔥 البرومبت المصمم خصيصاً للستايل الخاص بك
+        const prompt = `
+        You are an expert Professor creating content for an app.
+        Target: Algerian University Student.
+        Subject: ${subjectTitle}
+        Lesson: "${lesson.title}"
+
+        **Task:** Write a comprehensive lesson explanation.
+        
+        **STRICT FORMATTING RULES (Markdown for React Native):**
+        1. Use **# Title** for the main title (Matches 'heading1').
+        2. Use **## Subtitle** for sections (Matches 'heading2').
+        3. Use **bold** for key terms (Matches 'strong').
+        4. Use \`code\` for technical terms or formulas (Matches 'code_inline').
+        5. Use lists (- item) for bullet points.
+        6. **Language:** Mix of Academic Arabic and clear Algerian Derja for examples.
+        
+        **Content Structure:**
+        # ${lesson.title}
+        (Intro paragraph...)
+        
+        ## 1. الفكرة الأساسية (The Core Concept)
+        (Explanation...)
+        
+        ## 2. مثال تطبيقي (Real Example)
+        (Use a local Algerian example...)
+        
+        ## 3. خلاصة (Summary)
+        - Point 1
+        - Point 2
+        
+        Output ONLY the Markdown content.
+        `;
+
+        const res = await generateWithFailoverRef('chat', prompt, { label: 'GhostGenerator', timeoutMs: 60000 });
+        const content = await extractTextFromResult(res);
+
+        if (content && content.length > 100) {
+            // 1. حفظ المحتوى في جدول lessons_content
+            // نستخدم upsert لضمان عدم التكرار
+            await supabase.from('lessons_content').upsert({
+                lesson_id: lesson.id,
+                content: content,
+                updated_at: new Date().toISOString()
+            });
+
+            // 2. تحديث جدول lessons ليعرف النظام أن المحتوى أصبح موجوداً
+            // لكن نضع علامة is_ai_generated لنميزه
+            await supabase.from('lessons').update({
+                has_content: true,
+                ai_memory: { 
+                    generated_by: 'ghost_teacher_v2', 
+                    generated_at: new Date().toISOString(),
+                    is_ai_generated: true 
+                }
+            }).eq('id', lesson.id);
+
+            logger.success(`👻 Generated content for: ${lesson.title}`);
+        }
+
+    } catch (err) {
+        logger.error(`Failed to generate for lesson ${lesson.id}:`, err.message);
+    }
+}
+
+module.exports = { initGhostEngine, explainLessonContent, generateAndSaveLessonContent, scanAndFillEmptyLessons };
