@@ -17,21 +17,16 @@ router.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date
 router.post('/chat-interactive', chatController.chatInteractive);
 router.post('/admin/run-night-watch', adminController.triggerNightWatch);
 
-// Suggestions (Optional, kept for UI chips)
 router.post('/generate-chat-suggestions', chatController.generateChatSuggestions); // تأكد من تصديرها في chatController
 router.get('/get-daily-tasks', tasksController.getDailyTasks); 
 router.post('/admin/trigger-indexing', adminController.triggerFullIndexing);
-
-// Analytics
 router.post('/log-event', analyticsController.logEvent);
 router.post('/process-session', analyticsController.processSession);
-//runNightlyAnalysis
 router.post('/run-nightly-analysis', adminController.runNightlyAnalysis);
 router.post('/admin/index-lesson', adminController.indexSpecificLesson);
 
-// ✅ هذا هو الرابط الذي سيتصل به الفرونت أند
 router.post('/generate-daily-tasks', tasksController.generateDailyTasks);
-
+router.post('/admin/ghost-scan', adminController.triggerGhostScan);
 // إذا كنت تريد رابطاً لتحديث حالة المهمة (تم الإنجاز)
 router.post('/update-task-status', tasksController.updateDailyTasks); 
 module.exports = router;
