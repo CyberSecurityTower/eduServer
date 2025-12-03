@@ -11,6 +11,7 @@ const { generateSmartStudyStrategy } = require('../services/data/helpers');
 const embeddingService = require('../services/embeddings'); 
 const supabase = require('../services/data/supabase'); 
 const { runNightWatch } = require('../services/jobs/nightWatch'); // استيراد الدالة
+const { scanAndFillEmptyLessons } = require('../services/engines/ghostTeacher'); 
 
 const db = getFirestoreInstance(); 
 let generateWithFailoverRef; 
@@ -374,6 +375,22 @@ async function triggerGhostScan(req, res) {
     scanAndFillEmptyLessons();
     res.json({ message: 'Ghost Scanner started in background 👻' });
 }
+async function triggerGhostScan(req, res) {
+  try {
+    // حماية بسيطة (تأكد أن المفتاح موجود في .env)
+    if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+    
+    // تشغيل في الخلفية (Fire and Forget)
+    scanAndFillEmptyLessons();
+    
+    res.json({ message: '👻 Ghost Scanner started in background.' });
+  } catch (error) {
+    logger.error('Ghost Scan Trigger Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+}
 module.exports = {
   initAdminController,
   indexSpecificLesson,
@@ -381,5 +398,6 @@ module.exports = {
   enqueueJobRoute,
   generateTitleRoute,
   triggerFullIndexing,
-  triggerNightWatch 
+  triggerNightWatch,
+  triggerGhostScan 
 };
