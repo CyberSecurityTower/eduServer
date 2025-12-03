@@ -11,6 +11,7 @@ const PROMPTS = require('../config/ai-prompts');
 const { markLessonComplete } = require('../services/engines/gatekeeper'); 
 const { runPlannerManager } = require('../services/ai/managers/plannerManager');
 const { initSessionAnalyzer, analyzeSessionForEvents } = require('../services/ai/managers/sessionAnalyzer');
+const { refreshUserTasks } = require('../services/data/helpers'); 
 
 // Utilities
 const { toCamelCase, nowISO } = require('../services/data/dbUtils');
@@ -379,7 +380,44 @@ async function chatInteractive(req, res) {
             last_updated_at: nowISO()
         }).eq('user_id', userId).then();
     }
+    //
+    if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'complete') {
+        const signal = parsedResponse.lesson_signal;
+        
+        // 1. تنفيذ الحفظ (Gatekeeper)
+        await markLessonComplete(userId, signal.id, signal.score || 100);
+        
+        // 2. 🔥 التحديث الجذري للمهام (The God Mode Update) 🔥
+        // سيقوم هذا السطر بمسح المهام القديمة ووضع المهام الجديدة في الداتابيز
+        const newDbTasks = await refreshUserTasks(userId); 
+        
+        // 3. اختيار المهمة الأولى من القائمة الجديدة لاقتراحها في الشات
+        const nextTask = newDbTasks[0]; 
 
+        let recommendationText = "";
+        if (nextTask) {
+            recommendationText = `\n\n💡 **الخطوة التالية (تم تحديث جدولك):** ${nextTask.title}`;
+            
+            // ويدجت للتنقل
+            parsedResponse.widgets.push({
+                type: 'action_button',
+                data: { 
+                    label: `ابدأ: ${nextTask.title}`, 
+                    action: 'navigate', 
+                    targetId: nextTask.meta?.relatedLessonId 
+                }
+            });
+        }
+
+        // إعلام الفرونت أند بضرورة تحديث قائمة المهام
+        parsedResponse.widgets.push({ 
+            type: 'event_trigger', 
+            data: { event: 'tasks_updated' } // الفرونت أند يستمع لهذا ويعيد طلب /get-daily-tasks
+        });
+
+        parsedResponse.reply += recommendationText;
+        parsedResponse.widgets.push({ type: 'celebration', data: { message: 'إنجاز عظيم! 🚀' } });
+    }
      // ---------------------------------------------------------
     // F. Response
     // ---------------------------------------------------------
