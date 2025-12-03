@@ -11,7 +11,7 @@ const PROMPTS = require('../config/ai-prompts');
 const { markLessonComplete } = require('../services/engines/gatekeeper'); 
 const { runPlannerManager } = require('../services/ai/managers/plannerManager');
 const { initSessionAnalyzer, analyzeSessionForEvents } = require('../services/ai/managers/sessionAnalyzer');
-const { refreshUserTasks } = require('../services/data/helpers'); // ✅ دالة تحديث المهام
+const { refreshUserTasks, getLastActiveSessionContext } = require('../services/data/helpers'); // ✅ Added getLastActiveSessionContext
 
 // Utilities
 const { toCamelCase, nowISO } = require('../services/data/dbUtils');
@@ -78,18 +78,55 @@ async function generateChatSuggestions(req, res) {
 // 4. Main Logic: Chat Interactive
 // ==========================================
 async function chatInteractive(req, res) {
-  // ✅ نستقبل currentContext من الفرونت أند
+  // ✅ نستقبل البيانات من الفرونت أند
   let { userId, message, history = [], sessionId, currentContext = {} } = req.body;
 
-  // Safety check for history
+  // Safety check for history & sessionId
   if (!Array.isArray(history)) history = [];
   if (!sessionId) sessionId = crypto.randomUUID();
 
   try {
-    // ---------------------------------------------------------
-    // A. Data Aggregation (Identity First)
-    // ---------------------------------------------------------
-    const { data: userRaw, error: userError } = await supabase.from('users').select('*, group_id, role').eq('id', userId).single();
+    // =========================================================
+    // 1. SMART CONTEXT & SESSION BRIDGING
+    // =========================================================
+    // 🧠 المنطق الذكي: هل هذه بداية جلسة جديدة أم تحديث للصفحة؟
+    if (!history || history.length === 0) {
+        
+        // أ. نحاول جلب الجلسة الحالية من الداتابيز (للحماية من الـ Refresh)
+        const { data: currentSessionData } = await supabase
+            .from('chat_sessions')
+            .select('messages')
+            .eq('id', sessionId)
+            .single();
+
+        if (currentSessionData && currentSessionData.messages && currentSessionData.messages.length > 0) {
+            // الحالة A: المستخدم عمل Refresh لنفس الجلسة -> نستعيد الرسائل
+            history = currentSessionData.messages.map(m => ({
+                role: m.author === 'bot' ? 'model' : 'user',
+                text: m.text,
+                timestamp: m.timestamp
+            }));
+        } else {
+            // الحالة B: جلسة جديدة كلياً -> نستدعي الجسر لجلب سياق آخر جلسة نشطة
+            const bridgeContext = await getLastActiveSessionContext(userId, sessionId);
+            
+            if (bridgeContext) {
+                logger.info(`🌉 Bridging context from previous session (${Math.round(bridgeContext.timeSince)} mins ago)`);
+                
+                // ندمج الرسائل القديمة في الهيستوري الحالي لكي يراها الـ AI
+                history = bridgeContext.messages;
+            }
+        }
+    }
+
+    // =========================================================
+    // 2. Data Aggregation (Identity First)
+    // =========================================================
+    const { data: userRaw, error: userError } = await supabase
+        .from('users')
+        .select('*, group_id, role')
+        .eq('id', userId)
+        .single();
     
     if (userError || !userRaw) {
         return res.status(404).json({ reply: "عذراً، لم أتمكن من العثور على حسابك." });
@@ -97,35 +134,45 @@ async function chatInteractive(req, res) {
 
     let userData = toCamelCase(userRaw);
 
-    // --- GROUP ENFORCEMENT logic ---
+    // =========================================================
+    // 3. GROUP ENFORCEMENT LOGIC
+    // =========================================================
     if (!userData.groupId) {
         const groupMatch = message.match(/(?:فوج|group|groupe|g)\s*(\d+)/i);
+        
         if (groupMatch) {
             const groupNum = groupMatch[1]; 
             const pathId = userData.selectedPathId || 'UAlger3_L1_ITCF'; 
             const newGroupId = `${pathId}_G${groupNum}`;
             
             try {
+                // إنشاء الفوج إذا لم يكن موجوداً
                 await supabase.from('study_groups').upsert({ 
                     id: newGroupId, 
                     path_id: pathId,
                     name: `Group ${groupNum}`
                 }, { onConflict: 'id' });
 
+                // تحديث المستخدم
                 await supabase.from('users').update({ group_id: newGroupId }).eq('id', userId);
                 
                 return res.status(200).json({ 
                     reply: `تم! ✅ راك مسجل ضروك في الفوج ${groupNum}.`,
-                    sessionId, mood: 'excited'
+                    sessionId, 
+                    mood: 'excited'
                 });
             } catch (err) {
-                return res.status(200).json({ reply: "حدث خطأ تقني.", sessionId });
+                console.error("Group Update Error:", err);
+                return res.status(200).json({ reply: "حدث خطأ تقني أثناء تسجيل الفوج.", sessionId });
             }
         } else {
-            return res.status(200).json({ reply: "مرحبا! 👋 واش من فوج (Groupe) راك تقرا فيه؟ (اكتب: فوج 1)", sessionId });
+            // إذا لم يذكر رقم الفوج، نطلب منه ذلك ونوقف التنفيذ هنا
+            return res.status(200).json({ 
+                reply: "مرحبا! 👋 واش من فوج (Groupe) راك تقرا فيه؟ (اكتب: فوج 1)", 
+                sessionId 
+            });
         }
     }
-    // --- END ENFORCEMENT ---
 
     // ---------------------------------------------------------
     // ✅ B. Context Injection & Ghost Teacher Logic
@@ -384,10 +431,22 @@ async function chatInteractive(req, res) {
 
     // Background processing
     setImmediate(() => {
-        const updatedHistory = [
-            ...history,
+        // ملاحظة مهمة عند الحفظ:
+        // عندما نحفظ الجلسة الجديدة (sessionId الجديد)، ستحتوي فقط على الرسائل الجديدة
+        // وهذا صحيح! لا نريد تكرار تخزين الرسائل القديمة في كل جلسة جديدة.
+        // الـ AI "رأى" القديم وتصرف بناءً عليه، لكننا نخزن الجديد فقط في سجل الجلسة الحالية.
+        const newMessagesOnly = [
             { role: 'user', text: message, timestamp: nowISO() },
             { role: 'model', text: parsedResponse.reply, timestamp: nowISO() }
+        ];
+
+        // إذا أردت حفظ الهيستوري كاملاً في الجلسة الحالية (اختياري، لكن يفضل حفظ الجديد فقط لتوفير المساحة)
+        // هنا سنقوم بدمج الجديد مع الهيستوري القادم من الريكويست (الذي قد يحتوي على القديم المدمج)
+        // ولكن لأغراض التخزين النظيف، يفضل تخزين ما حدث في هذه الجلسة فقط.
+        // ومع ذلك، لضمان استمرار السياق عند الـ Refresh، سنقوم بحفظ الحالة الراهنة.
+        const updatedHistory = [
+            ...history,
+            ...newMessagesOnly
         ];
 
         saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory)
