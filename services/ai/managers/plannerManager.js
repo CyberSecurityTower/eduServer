@@ -62,17 +62,22 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
 
       // C. عامل الحالة (State Factor) - المعلم الشبح
       // حتى لو لم يكن هناك محتوى، نظهره لأن الـ AI سيشرحه
+      // C. التعديل هنا: تنسيق العنوان ليكون واضحاً وبالعربية
+      let taskTitle = lesson.title;
       
+      // إذا كان العنوان طويلاً جداً، نقصه
+      if (taskTitle.length > 40) taskTitle = taskTitle.substring(0, 37) + "...";
+
       return {
         id: lesson.id,
-        title: lesson.title,
+        // 🔥 إجبار العنوان ليكون محدداً: "درس: [اسم الدرس]"
+        title: `درس: ${taskTitle} (${lesson.subjects?.title || 'مادة'})`, 
         subjectTitle: lesson.subjects?.title,
-        type: lesson.has_content ? 'study' : 'ghost_explain', // نوع جديد للمهمة
+        type: lesson.has_content ? 'study' : 'ghost_explain',
         score: score,
         relatedLessonId: lesson.id
       };
-    }).filter(Boolean); // إزالة القيم null
-
+    }).filter(Boolean);
     // 3. الترتيب واختيار الأفضل
     candidates.sort((a, b) => b.score - a.score); // الأعلى سكور أولاً
     const topTasks = candidates.slice(0, 3); // نأخذ أهم 3 مهام
