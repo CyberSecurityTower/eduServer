@@ -75,7 +75,11 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
         subjectTitle: lesson.subjects?.title,
         type: lesson.has_content ? 'study' : 'ghost_explain',
         score: score,
-        relatedLessonId: lesson.id
+        meta: {
+            relatedLessonId: lesson.id,
+            relatedSubjectId: lesson.subject_id, 
+            relatedLessonTitle: lesson.title
+        }
       };
     }).filter(Boolean);
     // 3. الترتيب واختيار الأفضل
