@@ -51,8 +51,14 @@ Even if you are chatting casually, if the task is done, SEND THE SIGNAL.
 `;
 
       // 3. تحضير نصوص الأجندة (Agenda)
+     // 3. تحضير نصوص الأجندة (Agenda) - النسخة المحسنة
       const agendaSection = activeAgenda.length > 0 
-        ? `📋 **YOUR HIDDEN AGENDA (Tasks to do):**\n${activeAgenda.map(t => `- [ID: ${t.id}]: ${t.description}`).join('\n')}\n(Try to address ONE if context allows. If user says "later", SNOOZE it.)`
+        ? `📋 **YOUR HIDDEN AGENDA (Tasks to do):**\n${activeAgenda.map(t => `- [ID: ${t.id}]: ${t.title}`).join('\n')}
+        
+        🚨 **ANTI-REPETITION RULE:** 
+        Check the "CHAT HISTORY" below. 
+        - IF you have ALREADY discussed/criticized a specific task (e.g., "Video Games") in the last 3 turns, **DO NOT MENTION IT AGAIN** unless the user brings it up.
+        - Do not be a broken record. Move on.`
         : "📋 No pending agenda.";
 
       // 4. تحضير نصوص العقل الجماعي (Hive Mind)
