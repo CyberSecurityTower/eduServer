@@ -9,6 +9,7 @@ const CONFIG = require('../../config');
 const { safeSnippet, extractTextFromResult, ensureJsonOrRepair } = require('../../utils');
 const logger = require('../../utils/logger');
 const crypto = require('crypto'); // مهم لتوليد IDs
+const { runPlannerManager } = require('../ai/managers/plannerManager'); 
 
 // Dependencies Injection
 let embeddingServiceRef;
@@ -566,6 +567,64 @@ async function updateAiAgenda(userId, newAgenda) {
         .eq('user_id', userId);
 }
 
+/**
+ * 🔥 دالة التحديث الشامل للمهام
+ * تقوم بحذف المهام المعلقة القديمة واستبدالها بخطة الجاذبية الجديدة
+ */
+async function refreshUserTasks(userId) {
+  try {
+    logger.info(`🔄 Refreshing tasks for user: ${userId}...`);
+
+    // 1. حذف المهام القديمة المعلقة (Pending) فقط
+    // لا نحذف المكتملة لنحتفظ بالسجل
+    const { error: deleteError } = await supabase
+      .from('user_tasks')
+      .delete()
+      .eq('user_id', userId)
+      .eq('status', 'pending')
+      .neq('type', 'user_created'); // 💡 حماية: لا نحذف المهام التي كتبها المستخدم بيده
+
+    if (deleteError) {
+        logger.error('Error clearing old tasks:', deleteError.message);
+    }
+
+    // 2. تشغيل محرك الجاذبية لحساب أفضل 3 مهام حالياً
+    const plan = await runPlannerManager(userId);
+    const newTasks = plan.tasks || [];
+
+    if (newTasks.length === 0) return [];
+
+    // 3. تجهيز البيانات للإدخال
+    const tasksToInsert = newTasks.map(t => ({
+      user_id: userId,
+      title: t.title,
+      type: t.type || 'study', // study, review, ghost_explain
+      priority: 'high', // لأن الـ Planner اختارهم فهم الأهم
+      status: 'pending',
+      meta: { 
+        relatedLessonId: t.relatedLessonId,
+        score: t.score,
+        source: 'gravity_engine'
+      },
+      created_at: new Date().toISOString()
+    }));
+
+    // 4. إدخال المهام الجديدة
+    const { data, error: insertError } = await supabase
+      .from('user_tasks')
+      .insert(tasksToInsert)
+      .select();
+
+    if (insertError) throw insertError;
+
+    logger.success(`✅ Tasks refreshed! Added ${data.length} new smart tasks.`);
+    return data;
+
+  } catch (err) {
+    logger.error('refreshUserTasks Failed:', err.message);
+    return [];
+  }
+}
 module.exports = {
   initDataHelpers,
   getUserDisplayName,
@@ -585,5 +644,6 @@ module.exports = {
   generateSmartStudyStrategy,
   getOptimalStudyTime,
   scheduleSpacedRepetition,
-  updateAiAgenda   
+  updateAiAgenda,
+  refreshUserTasks
 };
