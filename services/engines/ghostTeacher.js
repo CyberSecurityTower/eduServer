@@ -19,36 +19,43 @@ function initGhostEngine(dependencies) {
 async function scanAndFillEmptyLessons() {
   logger.info('👻 Ghost Teacher Scanner Started (Direct Check Mode)...');
   
-  // 1. نجلب كل الدروس
-  const { data: allLessons } = await supabase
-        .from('lessons')
-        .select('id, title, subject_id, subjects(title)');
+  // 1. Fetch all lessons
+  const { data: allLessons, error: lessonsError } = await supabase
+    .from('lessons')
+    .select('id, title, subject_id, subjects(title)');
 
-  if (error || !allLessons) return;
+  if (lessonsError || !allLessons) {
+    logger.error('❌ Error loading lessons:', lessonsError?.message);
+    return;
+  }
 
-  // 2. نجلب كل المحتويات الموجودة (IDs فقط)
-  const { data: existingContents } = await supabase
-      .from('lessons_content')
-      .select('lesson_id');
-  
-  // نحولها لـ Set للسرعة
+  // 2. Fetch existing lesson content IDs
+  const { data: existingContents, error: contentError } = await supabase
+    .from('lessons_content')
+    .select('lesson_id');
+
+  if (contentError) {
+    logger.error('❌ Error loading lesson contents:', contentError.message);
+    return;
+  }
+
   const existingIds = new Set(existingContents?.map(x => x.lesson_id) || []);
 
-  // 3. الفلترة: نأخذ الدروس التي ID الخاص بها غير موجود في قائمة المحتوى
+  // 3. Filter empty lessons
   const emptyLessons = allLessons.filter(l => !existingIds.has(l.id));
 
   if (emptyLessons.length === 0) {
-      logger.info('👻 All lessons have content. System is clean.');
-      return;
+    logger.info('👻 All lessons have content. System is clean.');
+    return;
   }
 
   logger.info(`👻 Found ${emptyLessons.length} truly empty lessons. Processing batch of 5...`);
 
-  // نأخذ أول 5 فقط لتجنب الضغط
   for (const lesson of emptyLessons.slice(0, 5)) {
-      await generateAndSaveLessonContent(lesson);
+    await generateAndSaveLessonContent(lesson);
   }
 }
+
 
 /**
  * Generate lesson Markdown and save it in DB
