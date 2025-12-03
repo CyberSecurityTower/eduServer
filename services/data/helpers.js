@@ -57,21 +57,21 @@ async function getUserDisplayName(userId) {
 
 async function getProfile(userId) {
   try {
-    // 1. نحاول جلب البروفايل من الكاش
+    // 1. الكاش أولاً (سريع جداً)
     const cached = await cacheGet('profile', userId);
     if (cached) return cached;
 
-    // 2. نجلب بيانات الذاكرة (AI Memory) + بيانات المستخدم الأساسية (Users Table)
-    // نستخدم Promise.all للسرعة
-    const [memoryResult, userResult] = await Promise.all([
+    // 2. Native Supabase Query (أسرع وأوفر)
+    // نجلب الجدولين في استعلامين متوازيين (Parallel)
+    const [memoryRes, userRes] = await Promise.all([
       supabase.from('ai_memory_profiles').select('*').eq('user_id', userId).maybeSingle(),
-      supabase.from('users').select('date_of_birth, first_name, gender').eq('id', userId).single()
+      supabase.from('users').select('date_of_birth, first_name, gender, role').eq('id', userId).single()
     ]);
 
-    const memoryData = memoryResult.data || { facts: {}, profileSummary: '' };
-    const userData = userResult.data || {};
+    const memoryData = memoryRes.data || { facts: {}, profile_summary: '' };
+    const userData = userRes.data || {};
 
-    // 3. 🔥 حساب العمر (The Age Fix) 🔥
+    // حساب العمر
     let age = 'Unknown';
     if (userData.date_of_birth) {
       const dob = new Date(userData.date_of_birth);
@@ -80,55 +80,70 @@ async function getProfile(userId) {
       age = Math.abs(ageDate.getUTCFullYear() - 1970);
     }
 
-    // 4. دمج البيانات
-    let finalProfile = toCamelCase(memoryData);
-    if (!finalProfile.facts) finalProfile.facts = {};
+    // دمج البيانات (CamelCase يدوياً هنا للأداء)
+    const finalProfile = {
+      userId: userId,
+      profileSummary: memoryData.profile_summary,
+      aiAgenda: memoryData.ai_agenda,
+      emotionalState: memoryData.emotional_state,
+      facts: {
+        ...(memoryData.facts || {}),
+        age: age,
+        firstName: userData.first_name,
+        gender: userData.gender,
+        role: userData.role
+      }
+    };
 
-    // حقن المعلومات الأساسية في الحقائق (Facts) ليراها الـ AI
-    finalProfile.facts.age = age;
-    finalProfile.facts.firstName = userData.first_name;
-    finalProfile.facts.gender = userData.gender;
-
-    // حفظ في الكاش
+    // تحديث الكاش
     await cacheSet('profile', userId, finalProfile);
-    
     return finalProfile;
 
   } catch (err) {
-    logger.error('getProfile error:', err.message);
-    return { profileSummary: 'Error fetching profile.', facts: {} };
+    logger.error('getProfile Native Error:', err.message);
+    return { facts: {} };
   }
 }
-// ============================================================================
-// 2. Progress & Curriculum Logic
-// ============================================================================
 
+// 🚀 تحسين 2: جلب التقدم مباشرة
 async function getProgress(userId) {
   try {
     const cached = await cacheGet('progress', userId);
     if (cached) return cached;
 
+    // استعلام مباشر وسريع
     const { data, error } = await supabase
       .from('user_progress')
-      .select('*')
+      .select('*') // تأكد أن لديك عمود JSONB اسمه 'data' أو الأعمدة مفصلة
       .eq('user_id', userId)
       .single();
 
-    if (data) {
-      let val = toCamelCase(data);
-      // 🔥 UNWRAP: فك عمود 'data' لأنه JSONB يحتوي على كل شيء
-      if (val.data) {
-          val = { ...val, ...val.data };
-      }
-      await cacheSet('progress', userId, val);
-      return val;
+    if (error && error.code !== 'PGRST116') { // PGRST116 تعني لا توجد نتائج
+        logger.error('Supabase Progress Error:', error.message);
     }
-  } catch (err) {
-    logger.error('getProgress error:', err.message);
-  }
-  return { stats: { points: 0 }, streakCount: 0, pathProgress: {}, dailyTasks: { tasks: [] } };
-}
 
+    let val = { stats: { points: 0 }, streakCount: 0, pathProgress: {}, dailyTasks: { tasks: [] } };
+
+    if (data) {
+      // تحويل snake_case إلى camelCase يدوياً للأجزاء الرئيسية
+      val = {
+          stats: data.stats || val.stats,
+          streakCount: data.streak_count || 0,
+          pathProgress: data.path_progress || {},
+          dailyTasks: data.daily_tasks || { tasks: [] }
+      };
+      // إذا كنت تخزن كل شيء في عمود 'data' كما في الكود القديم:
+      if (data.data) val = { ...val, ...data.data };
+    }
+
+    await cacheSet('progress', userId, val);
+    return val;
+
+  } catch (err) {
+    logger.error('getProgress Native Error:', err.message);
+    return { stats: { points: 0 }, dailyTasks: { tasks: [] } };
+  }
+}
 async function formatProgressForAI(userId) {
   try {
     const progress = await getProgress(userId); 
