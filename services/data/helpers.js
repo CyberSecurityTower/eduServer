@@ -582,11 +582,15 @@ async function refreshUserTasks(userId) {
     const tasksToInsert = newTasks.map(t => ({
       user_id: userId,
       title: t.title,
-      type: t.type || 'study', // study, review, ghost_explain
+      type: t.type || 'study',
       priority: 'high',
       status: 'pending',
+      
+      // 🔥 تخزين البيانات كاملة في الـ Meta ليقرأها الفرونت أند
       meta: { 
-        relatedLessonId: t.relatedLessonId,
+        relatedLessonId: t.meta.relatedLessonId,
+        subjectId: t.meta.relatedSubjectId,    
+        lessonTitle: t.meta.relatedLessonTitle, 
         score: t.score,
         source: 'gravity_engine'
       },
