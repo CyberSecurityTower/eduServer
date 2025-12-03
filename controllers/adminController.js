@@ -369,7 +369,11 @@ async function triggerNightWatch(req, res) {
     res.status(500).json({ error: error.message });
   }
 }
-
+async function triggerGhostScan(req, res) {
+ // تشغيل في الخلفية (لا تنتظر)
+    scanAndFillEmptyLessons();
+    res.json({ message: 'Ghost Scanner started in background 👻' });
+}
 module.exports = {
   initAdminController,
   indexSpecificLesson,
