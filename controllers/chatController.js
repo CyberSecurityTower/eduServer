@@ -11,7 +11,7 @@ const PROMPTS = require('../config/ai-prompts');
 const { markLessonComplete } = require('../services/engines/gatekeeper'); 
 const { runPlannerManager } = require('../services/ai/managers/plannerManager');
 const { initSessionAnalyzer, analyzeSessionForEvents } = require('../services/ai/managers/sessionAnalyzer');
-const { refreshUserTasks, getLastActiveSessionContext } = require('../services/data/helpers'); // ✅ Added getLastActiveSessionContext
+const { refreshUserTasks, getLastActiveSessionContext } = require('../services/data/helpers');
 
 // Utilities
 const { toCamelCase, nowISO } = require('../services/data/dbUtils');
@@ -81,39 +81,36 @@ async function chatInteractive(req, res) {
   // ✅ نستقبل البيانات من الفرونت أند
   let { userId, message, history = [], sessionId, currentContext = {} } = req.body;
 
-  // Safety check for history & sessionId
-  if (!Array.isArray(history)) history = [];
+  // Safety check
   if (!sessionId) sessionId = crypto.randomUUID();
+  if (!Array.isArray(history)) history = [];
 
   try {
     // =========================================================
-    // 1. SMART CONTEXT & SESSION BRIDGING
+    // 1. SMART HISTORY RESTORATION & BRIDGING
     // =========================================================
-    // 🧠 المنطق الذكي: هل هذه بداية جلسة جديدة أم تحديث للصفحة؟
+    // 🛑 التعديل هنا: إذا كان الهيستوري فارغاً، نحاول جلبه من الداتابيز
     if (!history || history.length === 0) {
-        
-        // أ. نحاول جلب الجلسة الحالية من الداتابيز (للحماية من الـ Refresh)
-        const { data: currentSessionData } = await supabase
+        // أ. محاولة جلب الجلسة الحالية (Refresh Scenario)
+        const { data: sessionData } = await supabase
             .from('chat_sessions')
             .select('messages')
             .eq('id', sessionId)
             .single();
-
-        if (currentSessionData && currentSessionData.messages && currentSessionData.messages.length > 0) {
-            // الحالة A: المستخدم عمل Refresh لنفس الجلسة -> نستعيد الرسائل
-            history = currentSessionData.messages.map(m => ({
+            
+        if (sessionData && sessionData.messages && sessionData.messages.length > 0) {
+            // تحويل صيغة الداتابيز (author) إلى صيغة الـ AI (role)
+            history = sessionData.messages.map(m => ({
                 role: m.author === 'bot' ? 'model' : 'user',
                 text: m.text,
                 timestamp: m.timestamp
             }));
+            // نأخذ آخر 10 رسائل فقط لتوفير التوكنز
+            history = history.slice(-10);
         } else {
-            // الحالة B: جلسة جديدة كلياً -> نستدعي الجسر لجلب سياق آخر جلسة نشطة
+            // ب. إذا لم توجد جلسة حالية، نحاول جلب سياق من جلسة سابقة (Bridging Scenario)
             const bridgeContext = await getLastActiveSessionContext(userId, sessionId);
-            
             if (bridgeContext) {
-                logger.info(`🌉 Bridging context from previous session (${Math.round(bridgeContext.timeSince)} mins ago)`);
-                
-                // ندمج الرسائل القديمة في الهيستوري الحالي لكي يراها الـ AI
                 history = bridgeContext.messages;
             }
         }
@@ -146,14 +143,12 @@ async function chatInteractive(req, res) {
             const newGroupId = `${pathId}_G${groupNum}`;
             
             try {
-                // إنشاء الفوج إذا لم يكن موجوداً
                 await supabase.from('study_groups').upsert({ 
                     id: newGroupId, 
                     path_id: pathId,
                     name: `Group ${groupNum}`
                 }, { onConflict: 'id' });
 
-                // تحديث المستخدم
                 await supabase.from('users').update({ group_id: newGroupId }).eq('id', userId);
                 
                 return res.status(200).json({ 
@@ -166,7 +161,6 @@ async function chatInteractive(req, res) {
                 return res.status(200).json({ reply: "حدث خطأ تقني أثناء تسجيل الفوج.", sessionId });
             }
         } else {
-            // إذا لم يذكر رقم الفوج، نطلب منه ذلك ونوقف التنفيذ هنا
             return res.status(200).json({ 
                 reply: "مرحبا! 👋 واش من فوج (Groupe) راك تقرا فيه؟ (اكتب: فوج 1)", 
                 sessionId 
@@ -192,10 +186,10 @@ async function chatInteractive(req, res) {
                 const isRequestingExplanation = message.toLowerCase().includes('explain') || message.includes('اشرح') || (message.length < 50 && message.includes('?')); 
                 
                 if (isRequestingExplanation) {
-                    logger.info(`👻 Ghost Teacher Triggered for Lesson: ${lessonData.title}`);
                     const ghostResult = await explainLessonContent(lessonData.id, userId);
                     const replyText = `👻 **المعلم الشبح:**\n\n${ghostResult.content}`;
                     
+                    // حفظ فوري
                     saveChatSession(sessionId, userId, message, [
                         ...history, 
                         { role: 'user', text: message, timestamp: nowISO() }, 
@@ -209,12 +203,12 @@ async function chatInteractive(req, res) {
                         mood: 'excited'
                     });
                 } else {
-                    activeLessonContext = `User is viewing an EMPTY lesson titled "${lessonData.title}" in subject "${lessonData.subjects?.title || 'Unknown'}". If they ask for content, tell them to click the 'Explain' button or ask you directly to Generate it.`;
+                    activeLessonContext = `User is viewing an EMPTY lesson titled "${lessonData.title}". If they ask for content, tell them to click 'Explain'.`;
                 }
             } else {
                 const { data: contentData } = await supabase.from('lessons_content').select('content').eq('lesson_id', lessonData.id).single();
                 const snippet = safeSnippet(contentData?.content || "", 1000);
-                activeLessonContext = `📚 **ACTIVE LESSON CONTEXT:**\nUser is currently reading: "${lessonData.title}" (${lessonData.subjects?.title || ''}).\nContent Snippet: "${snippet}"...\n(Answer questions based on this context if relevant).`;
+                activeLessonContext = `📚 **ACTIVE LESSON CONTEXT:**\nUser is reading: "${lessonData.title}".\nSnippet: "${snippet}"...\n`;
             }
         }
     }
@@ -259,8 +253,6 @@ async function chatInteractive(req, res) {
     // C. Context Preparation
     // ---------------------------------------------------------
     let currentEmotionalState = aiProfileData.emotional_state || { mood: 'happy', angerLevel: 0, reason: '' };
-    
-    // Agenda Filtering
     const allAgenda = Array.isArray(aiProfileData.aiAgenda) ? aiProfileData.aiAgenda : [];
     const activeAgenda = allAgenda.filter(t => t.status === 'pending');
 
@@ -299,7 +291,6 @@ async function chatInteractive(req, res) {
     
     📋 **CURRENT TODO LIST:**
     ${tasksList}
-    (If the user adds a task that conflicts with their goals or exam schedule, advise them gently).
     `;
 
     // ---------------------------------------------------------
@@ -307,15 +298,18 @@ async function chatInteractive(req, res) {
     // ---------------------------------------------------------
     const safeMessage = message || '';
     
+    // ✅ تنسيق الهيستوري المحدث للـ Prompt
     const formatTimeShort = (isoString) => {
         if (!isoString) return '';
         const date = new Date(isoString);
         return `${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')}`;
     };
 
-    const safeHistoryStr = history.slice(-10).map(h => {
+    const safeHistoryStr = history.map(h => {
         const timeTag = h.timestamp ? `[${formatTimeShort(h.timestamp)}] ` : ''; 
-        return `${timeTag}${h.role === 'model' ? 'EduAI' : 'User'}: ${h.text}`;
+        // تأكد من التعامل مع role أو author
+        const speaker = (h.role === 'model' || h.author === 'bot') ? 'EduAI' : 'User';
+        return `${timeTag}${speaker}: ${h.text}`;
     }).join('\n');
 
     const finalPrompt = PROMPTS.chat.interactiveChat(
@@ -344,41 +338,22 @@ async function chatInteractive(req, res) {
     // E. Action Layer & Agenda Updates
     // ---------------------------------------------------------
 
-    // 1. ✅ Handle Lesson Completion Signal (Consolidated & Optimized)
+    // 1. Handle Lesson Completion
     if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'complete') {
         const signal = parsedResponse.lesson_signal;
-        
-        // أ. تنفيذ الحفظ (Gatekeeper)
         await markLessonComplete(userId, signal.id, signal.score || 100);
-        
-        // ب. 🔥 تحديث المهام (God Mode) - مسح القديم وجلب الجديد
         const newDbTasks = await refreshUserTasks(userId); 
-        
-        // ج. اقتراح المهمة التالية من القائمة الجديدة
         const nextTask = newDbTasks && newDbTasks.length > 0 ? newDbTasks[0] : null;
 
         let recommendationText = "";
         if (nextTask) {
             recommendationText = `\n\n💡 **الخطوة التالية:** ${nextTask.title}`;
-            
-            // ويدجت للتنقل المباشر
             parsedResponse.widgets.push({
                 type: 'action_button',
-                data: { 
-                    label: `ابدأ: ${nextTask.title}`, 
-                    action: 'navigate', 
-                    targetId: nextTask.meta?.relatedLessonId 
-                }
+                data: { label: `ابدأ: ${nextTask.title}`, action: 'navigate', targetId: nextTask.meta?.relatedLessonId }
             });
         }
-        
-        // د. إعلام التطبيق بضرورة تحديث الواجهة (Event Trigger)
-        parsedResponse.widgets.push({ 
-            type: 'event_trigger', 
-            data: { event: 'tasks_updated' } 
-        });
-
-        // هـ. إضافة الاحتفال والنص
+        parsedResponse.widgets.push({ type: 'event_trigger', data: { event: 'tasks_updated' } });
         parsedResponse.reply += recommendationText;
         parsedResponse.widgets.push({ type: 'celebration', data: { message: 'إنجاز عظيم! 🚀' } });
     }
@@ -420,7 +395,7 @@ async function chatInteractive(req, res) {
     }
 
     // ---------------------------------------------------------
-    // F. Response
+    // F. Response & Background Saving
     // ---------------------------------------------------------
     res.status(200).json({
       reply: parsedResponse.reply,
@@ -431,24 +406,14 @@ async function chatInteractive(req, res) {
 
     // Background processing
     setImmediate(() => {
-        // ملاحظة مهمة عند الحفظ:
-        // عندما نحفظ الجلسة الجديدة (sessionId الجديد)، ستحتوي فقط على الرسائل الجديدة
-        // وهذا صحيح! لا نريد تكرار تخزين الرسائل القديمة في كل جلسة جديدة.
-        // الـ AI "رأى" القديم وتصرف بناءً عليه، لكننا نخزن الجديد فقط في سجل الجلسة الحالية.
-        const newMessagesOnly = [
+        // ✅ نضيف الرسالة الجديدة والرد الجديد للهيستوري القديم (الذي قد يكون تم جلبه من الداتابيز)
+        const updatedHistory = [
+            ...history,
             { role: 'user', text: message, timestamp: nowISO() },
             { role: 'model', text: parsedResponse.reply, timestamp: nowISO() }
         ];
 
-        // إذا أردت حفظ الهيستوري كاملاً في الجلسة الحالية (اختياري، لكن يفضل حفظ الجديد فقط لتوفير المساحة)
-        // هنا سنقوم بدمج الجديد مع الهيستوري القادم من الريكويست (الذي قد يحتوي على القديم المدمج)
-        // ولكن لأغراض التخزين النظيف، يفضل تخزين ما حدث في هذه الجلسة فقط.
-        // ومع ذلك، لضمان استمرار السياق عند الـ Refresh، سنقوم بحفظ الحالة الراهنة.
-        const updatedHistory = [
-            ...history,
-            ...newMessagesOnly
-        ];
-
+        // نحفظ الكل لضمان استمرارية السياق
         saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory)
             .catch(e => logger.error(e));
 
