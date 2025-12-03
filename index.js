@@ -12,7 +12,6 @@ const { initializeModelPools } = require('./services/ai');
 const generateWithFailover = require('./services/ai/failover');
 const { initDataHelpers } = require('./services/data/helpers');
 const { initJobWorker, jobWorkerLoop, stopWorker } = require('./services/jobs/worker');
-const { initTodoManager } = require('./services/ai/managers/todoManager'); 
 const { initSessionAnalyzer } = require('./services/ai/managers/sessionAnalyzer'); 
 const { checkScheduledActions } = require('./services/jobs/worker'); 
 const { initGhostEngine } = require('./services/engines/ghostTeacher'); // ✅ استيراد
@@ -30,7 +29,6 @@ async function boot() {
     const db = initializeFirestore();
     initializeModelPools();
     setGenerateWithFailover(generateWithFailover);
-    initTodoManager({ generateWithFailover }); 
     initGhostEngine({ generateWithFailover }); 
 
     embeddingService.init({ db, CONFIG });
