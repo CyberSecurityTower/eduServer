@@ -164,21 +164,22 @@ async function generateAndSaveLessonContent(lesson) {
         Output ONLY the Markdown content.
         `;
 
-        const res = await generateWithFailoverRef('chat', prompt, { label: 'GhostGenerator', timeoutMs: 60000 });
-        const content = await extractTextFromResult(res);
-
         if (content && content.length > 100) {
-            // 1. حفظ المحتوى في جدول lessons_content
-            // نستخدم upsert لضمان عدم التكرار
-            await supabase.from('lessons_content').upsert({
-                lesson_id: lesson.id,
+            // 1. حفظ المحتوى
+            const { error: contentError } = await supabase.from('lessons_content').upsert({
+                lesson_id: lesson.id, // تأكد أن هذا العمود هو Primary Key أو Unique في Supabase
                 content: content,
                 updated_at: new Date().toISOString()
-            });
+            }, { onConflict: 'lesson_id' }); // 👈 مهم جداً: تحديد عمود التعارض
 
-            // 2. تحديث جدول lessons ليعرف النظام أن المحتوى أصبح موجوداً
-            // لكن نضع علامة is_ai_generated لنميزه
-            await supabase.from('lessons').update({
+            if (contentError) {
+                logger.error(`❌ DB Save Failed for ${lesson.title}:`, contentError.message);
+            } else {
+                logger.success(`✅ Content saved to DB for: ${lesson.title}`);
+            }
+
+            // 2. تحديث الحالة
+            const { error: updateError } = await supabase.from('lessons').update({
                 has_content: true,
                 ai_memory: { 
                     generated_by: 'ghost_teacher_v2', 
@@ -186,13 +187,9 @@ async function generateAndSaveLessonContent(lesson) {
                     is_ai_generated: true 
                 }
             }).eq('id', lesson.id);
-
-            logger.success(`👻 Generated content for: ${lesson.title}`);
+            
+            if (updateError) logger.error(`❌ Lesson Status Update Failed:`, updateError.message);
         }
 
-    } catch (err) {
-        logger.error(`Failed to generate for lesson ${lesson.id}:`, err.message);
-    }
-}
 
 module.exports = { initGhostEngine, explainLessonContent, generateAndSaveLessonContent, scanAndFillEmptyLessons };
