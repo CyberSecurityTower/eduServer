@@ -612,6 +612,47 @@ async function refreshUserTasks(userId) {
     return [];
   }
 }
+
+/**
+ * 🌉 جسر الذاكرة: يجلب سياق آخر محادثة للمستخدم
+ * لربط الجلسات ببعضها إذا كانت قريبة زمنياً
+ */
+async function getLastActiveSessionContext(userId, currentSessionId) {
+  try {
+    // نجلب آخر جلسة تم تحديثها لهذا المستخدم (غير الجلسة الحالية)
+    const { data: lastSession } = await supabase
+      .from('chat_sessions')
+      .select('messages, updated_at')
+      .eq('user_id', userId)
+      .neq('id', currentSessionId) // لا نريد الجلسة الحالية الفارغة
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (!lastSession || !lastSession.messages) return null;
+
+    // التحقق من الزمن: هل المحادثة "طازجة"؟ (مثلاً أقل من ساعة)
+    const lastTime = new Date(lastSession.updated_at).getTime();
+    const now = Date.now();
+    const diffMinutes = (now - lastTime) / (1000 * 60);
+
+    // إذا مر أكثر من ساعتين، نعتبرها جلسة قديمة ولا ندمجها (نبدأ جديد)
+    // يمكنك تعديل الرقم حسب رغبتك (مثلاً 120 دقيقة)
+    if (diffMinutes > 120) return null; 
+
+    // نأخذ آخر 6 رسائل فقط لتوفير السياق
+    const recentMessages = lastSession.messages.slice(-6).map(m => ({
+        role: m.author === 'bot' ? 'model' : 'user',
+        text: m.text,
+        timestamp: m.timestamp
+    }));
+
+    return { messages: recentMessages, timeSince: diffMinutes };
+
+  } catch (err) {
+    return null;
+  }
+}
 module.exports = {
   initDataHelpers,
   getUserDisplayName,
@@ -632,5 +673,6 @@ module.exports = {
   scheduleSpacedRepetition,
   updateAiAgenda,
   refreshUserTasks, 
-  cacheDel
+  cacheDel,
+  getLastActiveSessionContext 
 };
