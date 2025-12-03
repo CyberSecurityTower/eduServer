@@ -594,25 +594,20 @@ async function refreshUserTasks(userId) {
     }));
 
     // 4. إدخال المهام الجديدة
-    const { data, error: insertError } = await supabase
-      .from('user_tasks')
-      .insert(tasksToInsert)
-      .select();
-
-    if (insertError) throw insertError;
-
-    // 5. تنظيف كاش التقدم لضمان ظهور المهام الجديدة فوراً
-    await cacheDel('progress', userId);
-
-    logger.success(`✅ Tasks refreshed! Added ${data.length} new smart tasks.`);
-    return data;
+    const { data } = await supabase.from('user_tasks').insert(tasksToInsert).select();
+    
+    // 🔥🔥🔥 الإصلاح هنا: تفجير الكاش لإجبار النظام على قراءة الجديد
+    await cacheDel('progress', userId); 
+    await cacheDel('profile', userId); // لأن الأجندة قد تكون مخزنة هنا أيضاً
+    
+    logger.success(`✅ Tasks refreshed & Cache cleared for ${userId}`);
+    return data || [];
 
   } catch (err) {
     logger.error('refreshUserTasks Failed:', err.message);
     return [];
   }
 }
-
 module.exports = {
   initDataHelpers,
   getUserDisplayName,
