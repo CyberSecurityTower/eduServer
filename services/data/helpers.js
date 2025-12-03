@@ -1,4 +1,3 @@
-
 // services/data/helpers.js
 'use strict';
 
@@ -8,7 +7,7 @@ const LRUCache = require('./cache');
 const CONFIG = require('../../config');
 const { safeSnippet, extractTextFromResult, ensureJsonOrRepair } = require('../../utils');
 const logger = require('../../utils/logger');
-const crypto = require('crypto'); // مهم لتوليد IDs
+const crypto = require('crypto');
 const { runPlannerManager } = require('../ai/managers/plannerManager'); 
 
 // Dependencies Injection
@@ -21,8 +20,9 @@ function initDataHelpers(dependencies) {
   }
   embeddingServiceRef = dependencies.embeddingService;
   generateWithFailoverRef = dependencies.generateWithFailover;
-  logger.info('Data Helpers initialized (Supabase Native).');
+  logger.info('Data Helpers initialized (Native Supabase Mode 🚀).');
 }
+
 // ---------- Cache instances ----------
 const DEFAULT_TTL = CONFIG.CACHE_TTL_MS || 1000 * 60 * 60;
 const educationalPathCache = new LRUCache(50, DEFAULT_TTL);
@@ -41,31 +41,23 @@ async function cacheDel(scope, key) { return localCache[scope]?.del(key); }
 
 async function getUserDisplayName(userId) {
   try {
-    const { data, error } = await supabase
-      .from('users')
-      .select('first_name')
-      .eq('id', userId)
-      .single();
-
-    if (error || !data) return 'Student';
-    return data.first_name || 'Student';
+    const profile = await getProfile(userId);
+    return profile.facts?.firstName || 'Student';
   } catch (err) {
     return 'Student';
   }
 }
 
-
 async function getProfile(userId) {
   try {
-    // 1. الكاش أولاً (سريع جداً)
+    // 1. الكاش أولاً
     const cached = await cacheGet('profile', userId);
     if (cached) return cached;
 
-    // 2. Native Supabase Query (أسرع وأوفر)
-    // نجلب الجدولين في استعلامين متوازيين (Parallel)
+    // 2. Native Supabase Query (Parallel)
     const [memoryRes, userRes] = await Promise.all([
       supabase.from('ai_memory_profiles').select('*').eq('user_id', userId).maybeSingle(),
-      supabase.from('users').select('date_of_birth, first_name, gender, role').eq('id', userId).single()
+      supabase.from('users').select('date_of_birth, first_name, gender, role, selected_path_id').eq('id', userId).single()
     ]);
 
     const memoryData = memoryRes.data || { facts: {}, profile_summary: '' };
@@ -80,7 +72,7 @@ async function getProfile(userId) {
       age = Math.abs(ageDate.getUTCFullYear() - 1970);
     }
 
-    // دمج البيانات (CamelCase يدوياً هنا للأداء)
+    // دمج البيانات
     const finalProfile = {
       userId: userId,
       profileSummary: memoryData.profile_summary,
@@ -92,7 +84,8 @@ async function getProfile(userId) {
         firstName: userData.first_name,
         gender: userData.gender,
         role: userData.role
-      }
+      },
+      selectedPathId: userData.selected_path_id // ✅ إضافة مهمة للتوجيه
     };
 
     // تحديث الكاش
@@ -105,35 +98,40 @@ async function getProfile(userId) {
   }
 }
 
-// 🚀 تحسين 2: جلب التقدم مباشرة
+// ============================================================================
+// 2. Progress & Educational Paths
+// ============================================================================
+
 async function getProgress(userId) {
   try {
     const cached = await cacheGet('progress', userId);
     if (cached) return cached;
 
-    // استعلام مباشر وسريع
+    // استعلام مباشر
     const { data, error } = await supabase
       .from('user_progress')
-      .select('*') // تأكد أن لديك عمود JSONB اسمه 'data' أو الأعمدة مفصلة
+      .select('*')
       .eq('user_id', userId)
       .single();
 
-    if (error && error.code !== 'PGRST116') { // PGRST116 تعني لا توجد نتائج
+    if (error && error.code !== 'PGRST116') {
         logger.error('Supabase Progress Error:', error.message);
     }
 
     let val = { stats: { points: 0 }, streakCount: 0, pathProgress: {}, dailyTasks: { tasks: [] } };
 
     if (data) {
-      // تحويل snake_case إلى camelCase يدوياً للأجزاء الرئيسية
-      val = {
-          stats: data.stats || val.stats,
-          streakCount: data.streak_count || 0,
-          pathProgress: data.path_progress || {},
-          dailyTasks: data.daily_tasks || { tasks: [] }
-      };
-      // إذا كنت تخزن كل شيء في عمود 'data' كما في الكود القديم:
-      if (data.data) val = { ...val, ...data.data };
+      // دعم الهيكلية القديمة (JSONB data) والجديدة (أعمدة منفصلة)
+      if (data.data) {
+        val = { ...val, ...data.data };
+      } else {
+        val = {
+            stats: data.stats || val.stats,
+            streakCount: data.streak_count || 0,
+            pathProgress: data.path_progress || {},
+            dailyTasks: data.daily_tasks || { tasks: [] }
+        };
+      }
     }
 
     await cacheSet('progress', userId, val);
@@ -144,6 +142,7 @@ async function getProgress(userId) {
     return { stats: { points: 0 }, dailyTasks: { tasks: [] } };
   }
 }
+
 async function formatProgressForAI(userId) {
   try {
     const progress = await getProgress(userId); 
@@ -152,7 +151,6 @@ async function formatProgressForAI(userId) {
     if (Object.keys(userProgressData).length === 0) return 'User has not started any educational path yet.';
 
     const summaryLines = [];
-    // نستخدم Set لتجنب تكرار الطلبات
     const requestedPaths = new Set(Object.keys(userProgressData));
 
     for (const pathId of requestedPaths) {
@@ -245,7 +243,6 @@ async function getSpacedRepetitionCandidates(userId) {
         const lessons = subjects[subjId].lessons || {};
         Object.keys(lessons).forEach(lessonId => {
           const lesson = lessons[lessonId];
-          // يجب أن يكون الدرس مكتملاً وله درجة
           if (lesson.status === 'completed' && lesson.masteryScore !== undefined) {
              const lastAttemptTime = lesson.lastAttempt ? new Date(lesson.lastAttempt).getTime() : 0;
              const daysSince = (now - lastAttemptTime) / DAY_MS;
@@ -279,7 +276,6 @@ async function getSpacedRepetitionCandidates(userId) {
 async function generateSmartStudyStrategy(userId) {
   try {
       const progress = await getProgress(userId);
-      // جلب Path ID من جدول Users
       const { data: userData } = await supabase.from('users').select('selected_path_id, ai_discovery_missions').eq('id', userId).single();
       
       if (!userData) return [];
@@ -290,7 +286,6 @@ async function generateSmartStudyStrategy(userId) {
       const candidates = [];
       const pathProgress = progress.pathProgress || {};
 
-      // منطق بسيط: البحث عن نقاط الضعف
       Object.keys(pathProgress).forEach(pId => {
         const subjects = pathProgress[pId].subjects || {};
         Object.keys(subjects).forEach(subjId => {
@@ -314,7 +309,7 @@ async function generateSmartStudyStrategy(userId) {
 }
 
 // ============================================================================
-// 4. Chat History & Memory Logic (كانت ناقصة سابقاً)
+// 4. Chat History & Memory Logic
 // ============================================================================
 
 async function fetchRecentComprehensiveChatHistory(userId) {
@@ -342,7 +337,6 @@ async function fetchRecentComprehensiveChatHistory(userId) {
 
     if (combinedMessages.length === 0) return 'لا توجد محادثات حديثة.';
     
-    // ترتيب زمني
     combinedMessages.sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0));
 
     return combinedMessages
@@ -360,7 +354,7 @@ async function saveChatSession(sessionId, userId, title, messages, type = 'main_
   if (!sessionId || !userId) return;
   try {
     const storableMessages = (messages || []).slice(-30).map(m => ({
-        author: m.role === 'model' ? 'bot' : m.role, // توحيد التسميات
+        author: m.role === 'model' ? 'bot' : m.role,
         text: m.text,
         timestamp: m.timestamp || nowISO(),
         type: m.type || 'text'
@@ -370,25 +364,20 @@ async function saveChatSession(sessionId, userId, title, messages, type = 'main_
       id: sessionId,
       user_id: userId,
       title: title,
-      messages: storableMessages, // JSONB array
+      messages: storableMessages,
       type: type,
       context: context, 
       updated_at: nowISO(),
     };
     const { error } = await supabase.from('chat_sessions').upsert(payload);
     if (error) {
-        console.error("🚨 كارثة في حفظ الشات:", error.message); // سيطبع لك السبب الحقيقي
-        console.error("Payload:", payload); // لترى ماذا حاولت أن ترسل
-    } else {
-        console.log("✅ تم حفظ الشات بنجاح ID:", sessionId);
+        console.error("🚨 Error saving chat:", error.message);
     }
-
   } catch (error) {
     console.error(`Error saving session:`, error);
   }
 }
 
-// 🔥 تم ملء هذه الدالة الآن بشكل كامل
 async function analyzeAndSaveMemory(userId, history) {
   try {
       if (!generateWithFailoverRef) return;
@@ -396,7 +385,6 @@ async function analyzeAndSaveMemory(userId, history) {
       const profile = await getProfile(userId);
       const currentSummary = profile.profileSummary || '';
       
-      // نأخذ آخر جزء من المحادثة
       const recentChat = history.slice(-10).map(m => `${m.role}: ${m.text}`).join('\n');
 
       const prompt = `
@@ -416,13 +404,11 @@ async function analyzeAndSaveMemory(userId, history) {
       const parsed = await ensureJsonOrRepair(text, 'analysis');
 
       if (parsed && parsed.updatedSummary) {
-          // تحديث Supabase
           await supabase.from('ai_memory_profiles').upsert({
               user_id: userId,
               profile_summary: parsed.updatedSummary,
               last_updated_at: nowISO()
           });
-          // تنظيف الكاش
           await cacheDel('profile', userId);
       }
   } catch (e) {
@@ -430,13 +416,10 @@ async function analyzeAndSaveMemory(userId, history) {
   }
 }
 
-// 🔥 تم ملء هذه الدالة الآن
 async function processSessionAnalytics(userId, sessionId) {
-  // هذه الدالة يمكن تطويرها لاحقاً لحساب مدة الجلسة بدقة
-  // حالياً سنكتفي بتحديث "وقت آخر نشاط"
   try {
       await supabase.from('users').update({
-          last_active_at: nowISO() // تأكد من وجود هذا العمود أو تجاهل الخطوة
+          last_active_at: nowISO()
       }).eq('id', userId);
   } catch (e) {
       // ignore
@@ -447,7 +430,6 @@ async function processSessionAnalytics(userId, sessionId) {
 // 5. Notifications (Expo Push + Inbox)
 // ============================================================================
 
-// تعريف الأنواع لضمان عدم الخطأ في الكتابة (اختياري لكن مفيد)
 const NOTIF_TYPES = {
   NEW_LESSON: 'new_lesson',
   LESSON: 'lesson',
@@ -462,30 +444,27 @@ const NOTIF_TYPES = {
 
 async function sendUserNotification(userId, notification) {
   try {
-    // 1. التحقق من البيانات المطلوبة حسب الـ Cheat Sheet
     const type = notification.type || NOTIF_TYPES.SYSTEM;
     const meta = notification.meta || {};
 
-    // تحقق خاص لدرس جديد (يجب توفر المعرفات)
     if ((type === NOTIF_TYPES.NEW_LESSON || type === NOTIF_TYPES.LESSON) && !meta.targetId) {
-        console.warn(`⚠️ Warning: Notification of type '${type}' sent without 'targetId'. Navigation might fail.`);
+        console.warn(`⚠️ Warning: Notification of type '${type}' sent without 'targetId'.`);
     }
 
-    // 2. الحفظ في قاعدة البيانات (Inbox)
-    // نحفظ البيانات الخام كما هي ليتم عرضها في صفحة الإشعارات داخل التطبيق
+    // 1. Save to Inbox
     await supabase.from('user_notifications').insert({
         user_id: userId,
         box_type: 'inbox',
         title: notification.title,
         message: notification.message,
         type: type,
-        target_id: meta.targetId || null, // مهم جداً للتنقل
+        target_id: meta.targetId || null,
         read: false,
         created_at: nowISO(),
-        meta: meta // نحفظ باقي البيانات هنا
+        meta: meta
     });
 
-    // 3. الإرسال عبر Expo Push Notification
+    // 2. Send Push
     const { data: user } = await supabase
         .from('users')
         .select('fcm_token')
@@ -497,7 +476,6 @@ async function sendUserNotification(userId, notification) {
 
     if (!pushToken.startsWith('ExponentPushToken')) return;
 
-    // تجهيز الـ Payload حسب الجدول
     const message = {
       to: pushToken,
       sound: 'default',
@@ -505,16 +483,14 @@ async function sendUserNotification(userId, notification) {
       body: notification.message,
       priority: 'high',
       data: {
-        // هذه البيانات هي التي يقرأها الفرونت أند للتوجيه
         type: type, 
-        targetId: meta.targetId, // (Lesson ID)
-        subjectId: meta.subjectId, // (Subject ID)
+        targetId: meta.targetId,
+        subjectId: meta.subjectId,
         actionId: meta.actionId || crypto.randomUUID(),
-        ...meta // دمج أي بيانات إضافية
+        ...meta
       }
     };
 
-    // الإرسال الفعلي
     await fetch('https://exp.host/--/api/v2/push/send', {
       method: 'POST',
       headers: {
@@ -525,12 +501,11 @@ async function sendUserNotification(userId, notification) {
       body: JSON.stringify([message]),
     });
 
-    // logger.success(`[Notification] Sent '${type}' to ${userId}`);
-
   } catch (error) {
     logger.error(`[Notification] Error for ${userId}:`, error.message);
   }
 }
+
 function calculateSafeProgress(completed, total) {
   const c = Number(completed) || 0;
   const t = Number(total) || 1;
@@ -538,7 +513,6 @@ function calculateSafeProgress(completed, total) {
 }
 
 async function getOptimalStudyTime(userId) {
-  // منطق بسيط: العودة بـ 8 مساءً
   const d = new Date();
   d.setHours(20, 0, 0, 0);
   if (d < new Date()) d.setDate(d.getDate() + 1);
@@ -546,20 +520,12 @@ async function getOptimalStudyTime(userId) {
 }
 
 async function scheduleSpacedRepetition(userId, topic, daysDelay) {
-  const db = require('./firestore').getFirestoreInstance(); // أو Supabase مباشرة
-  
-  // حساب التاريخ القادم
   const triggerDate = new Date();
   triggerDate.setDate(triggerDate.getDate() + daysDelay);
   
-  // إضافة المهمة إلى "أجندة الـ AI" وليس كإشعار Push
-  // لأننا نريد أن يسأله الـ AI في الشات: "شفيت على الدرس الفلاني؟"
-  
-  // 1. نجلب الأجندة الحالية
   const { data } = await supabase.from('ai_memory_profiles').select('ai_agenda').eq('user_id', userId).single();
   let agenda = data?.ai_agenda || [];
   
-  // 2. نضيف مهمة المراجعة
   const newTask = {
       id: `review_${Date.now()}`,
       type: 'spaced_review',
@@ -570,11 +536,10 @@ async function scheduleSpacedRepetition(userId, topic, daysDelay) {
   
   agenda.push(newTask);
   
-  // 3. نحفظ
   await supabase.from('ai_memory_profiles').update({ ai_agenda: agenda }).eq('user_id', userId);
-  
   logger.info(`[Spaced Repetition] Scheduled review for ${topic} in ${daysDelay} days.`);
 }
+
 async function updateAiAgenda(userId, newAgenda) {
     return supabase
         .from('ai_memory_profiles')
@@ -582,8 +547,12 @@ async function updateAiAgenda(userId, newAgenda) {
         .eq('user_id', userId);
 }
 
+// ============================================================================
+// 6. Task Management (Gravity Engine Integration)
+// ============================================================================
+
 /**
- * 🔥 دالة التحديث الشامل للمهام
+ * 🔥 دالة التحديث الشامل للمهام (God Mode)
  * تقوم بحذف المهام المعلقة القديمة واستبدالها بخطة الجاذبية الجديدة
  */
 async function refreshUserTasks(userId) {
@@ -591,19 +560,19 @@ async function refreshUserTasks(userId) {
     logger.info(`🔄 Refreshing tasks for user: ${userId}...`);
 
     // 1. حذف المهام القديمة المعلقة (Pending) فقط
-    // لا نحذف المكتملة لنحتفظ بالسجل
+    // لا نحذف المكتملة لنحتفظ بالسجل، ولا نحذف ما كتبه المستخدم
     const { error: deleteError } = await supabase
       .from('user_tasks')
       .delete()
       .eq('user_id', userId)
       .eq('status', 'pending')
-      .neq('type', 'user_created'); // 💡 حماية: لا نحذف المهام التي كتبها المستخدم بيده
+      .neq('type', 'user_created');
 
     if (deleteError) {
         logger.error('Error clearing old tasks:', deleteError.message);
     }
 
-    // 2. تشغيل محرك الجاذبية لحساب أفضل 3 مهام حالياً
+    // 2. تشغيل محرك الجاذبية لحساب أفضل المهام حالياً
     const plan = await runPlannerManager(userId);
     const newTasks = plan.tasks || [];
 
@@ -614,7 +583,7 @@ async function refreshUserTasks(userId) {
       user_id: userId,
       title: t.title,
       type: t.type || 'study', // study, review, ghost_explain
-      priority: 'high', // لأن الـ Planner اختارهم فهم الأهم
+      priority: 'high',
       status: 'pending',
       meta: { 
         relatedLessonId: t.relatedLessonId,
@@ -632,6 +601,9 @@ async function refreshUserTasks(userId) {
 
     if (insertError) throw insertError;
 
+    // 5. تنظيف كاش التقدم لضمان ظهور المهام الجديدة فوراً
+    await cacheDel('progress', userId);
+
     logger.success(`✅ Tasks refreshed! Added ${data.length} new smart tasks.`);
     return data;
 
@@ -640,25 +612,26 @@ async function refreshUserTasks(userId) {
     return [];
   }
 }
+
 module.exports = {
   initDataHelpers,
   getUserDisplayName,
-  formatProgressForAI,
   getProfile,
-  processSessionAnalytics,
   getProgress,
+  formatProgressForAI,
+  getCachedEducationalPathById,
   fetchUserWeaknesses,
+  getSpacedRepetitionCandidates,
+  generateSmartStudyStrategy,
   fetchRecentComprehensiveChatHistory,
   saveChatSession,
   analyzeAndSaveMemory,
-  getCachedEducationalPathById,
+  processSessionAnalytics,
   sendUserNotification,
-  cacheDel,
   calculateSafeProgress,
-  getSpacedRepetitionCandidates,
-  generateSmartStudyStrategy,
   getOptimalStudyTime,
   scheduleSpacedRepetition,
   updateAiAgenda,
-  refreshUserTasks
+  refreshUserTasks, 
+  cacheDel
 };
