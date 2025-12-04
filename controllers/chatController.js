@@ -436,15 +436,14 @@ supabase.from('user_tasks')
     });
 
     // Background processing
+try {
     setImmediate(() => {
-        // ✅ نضيف الرسالة الجديدة والرد الجديد للهيستوري القديم (الذي قد يكون تم جلبه من الداتابيز)
         const updatedHistory = [
             ...history,
             { role: 'user', text: message, timestamp: nowISO() },
             { role: 'model', text: parsedResponse.reply, timestamp: nowISO() }
         ];
 
-        // نحفظ الكل لضمان استمرارية السياق
         saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory)
             .catch(e => logger.error(e));
 
@@ -455,11 +454,11 @@ supabase.from('user_tasks')
             .catch(e => logger.error('SessionAnalyzer Fail:', e));
     });
 
-  } catch (err) {
-      logger.error("ChatInteractive ERR:", err);
-      return res.status(500).json({ reply: "حدث خطأ في الخادم." });
-  }
-} 
+} catch (err) {
+    logger.error("ChatInteractive ERR:", err);
+    return res.status(500).json({ reply: "حدث خطأ في الخادم." });
+}
+
 
 module.exports = {
   initChatController,
