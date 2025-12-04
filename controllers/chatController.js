@@ -220,16 +220,46 @@ async function chatInteractive(req, res) {
       runCurriculumAgent(userId, message).catch(() => ''), 
       fetchUserWeaknesses(userId).catch(() => []),
       formatProgressForAI(userId).catch(() => ''),
-      supabase.from('user_tasks').select('title, type, priority, meta').eq('user_id', userId).eq('status', 'pending')
-    ]);
+supabase.from('user_tasks')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('status', 'pending')
+    ]);    
+// 🔥 معالجة بيانات الجاذبية (Gravity Intel)
+    let gravityContext = null;
+    let tasksList = "No active tasks.";
+
+    if (userTasksRes.data && userTasksRes.data.length > 0) {
+        // 1. ترتيب المهام حسب السكور (الموجود داخل meta) تنازلياً
+        const sortedTasks = userTasksRes.data.sort((a, b) => {
+            const scoreA = a.meta?.score || 0;
+            const scoreB = b.meta?.score || 0;
+            return scoreB - scoreA; // الأكبر أولاً
+        });
+
+        // 2. التقاط "مهمة الجاذبية القصوى" (Top Priority)
+        const topTask = sortedTasks[0];
+        const topScore = topTask.meta?.score || 0;
+        const isExamEmergency = topScore > 4000; // سكور الطوارئ الذي وضعناه
+
+        gravityContext = {
+            title: topTask.title,
+            score: topScore,
+            isExam: isExamEmergency,
+            subject: topTask.meta?.subjectId || 'General'
+        };
 
     // تنسيق المهام
-   const tasksList = currentTasks.data && currentTasks.data.length > 0 
-        ? currentTasks.data.map(t => {
-            const creator = (t.meta && t.meta.created_by === 'user') ? '👤 User-Added' : '🤖 AI-Suggested';
-            return `- [${creator}] ${t.title} (${t.priority})`;
-        }).join('\n')
-        : "No active tasks.";
+    // 3. تنسيق القائمة للعرض العام
+       tasksList = userTasksRes.data && userTasksRes.data.length > 0
+  ? sortedTasks.map(t => {
+      const score = t.meta?.score || 0;
+      const examBadge = score > 4000 ? "🚨 EXAM TOMORROW" :
+                        score > 1000 ? "⚠️ EXAM SOON" : "";
+      return `- ${t.title} ${examBadge} (Priority: ${score})`;
+    }).join('\n')
+  : "No active tasks.";
+
     
     const aiProfileData = rawProfile || {}; 
     const groupId = userData.groupId;
@@ -325,7 +355,8 @@ async function chatInteractive(req, res) {
       examContext, 
       activeAgenda,
       sharedContext,
-      currentContext 
+      currentContext,
+      gravityContext 
     );
 
     const modelResp = await generateWithFailoverRef('chat', finalPrompt, { label: 'MasterChat', timeoutMs: CONFIG.TIMEOUTS.chat });
