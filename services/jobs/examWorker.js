@@ -20,7 +20,8 @@ function initExamWorker(dependencies) {
 async function checkExamTiming() {
   try {
     const now = new Date();
-    
+    console.log(`🕒 Exam Worker Running at: ${now.toISOString()}`);
+
     // 1. جلب الامتحانات التي تحدث اليوم (نطاق واسع)
     // نأخذ الامتحانات التي وقتها بين (الآن - 3 ساعات) و (الآن + 2 ساعة)
     // لكي نغطي حالتي "قبل ساعة" و "بعد ساعتين"
@@ -33,25 +34,39 @@ async function checkExamTiming() {
       .gte('exam_date', startTime)
       .lte('exam_date', endTime);
 
-    if (error || !exams || exams.length === 0) return;
-
+if (error || !exams || exams.length === 0) {
+        console.log("⚠️ No exams found in range.");
+        return;
+    }
     // 2. معالجة كل امتحان
     for (const exam of exams) {
       const examTime = new Date(exam.exam_date);
       const diffMs = examTime - now;
       const diffMinutes = Math.floor(diffMs / (1000 * 60)); // بالسالب يعني فات الوقت
-
+      // 👇👇👇 هنا السحر: سنطبع الفرق لنعرف السبب
+      console.log(`🔎 Checking Exam: ${exam.subjects?.title}`);
+      console.log(`   - Exam Time: ${examTime.toISOString()}`);
+      console.log(`   - Minutes Left: ${diffMinutes} minutes`); 
+      // 👆👆👆
       let notificationType = null;
 
       // ⏰ الحالة 1: قبل الامتحان بـ 45 إلى 75 دقيقة (حوالي ساعة)
       if (diffMinutes >= 45 && diffMinutes <= 75) {
+        console.log("   ✅ Condition Met: PRE_EXAM"); // 👈 تأكيد
+
         notificationType = 'pre_exam';
       }
       // ⏰ الحالة 2: بعد الامتحان بـ 105 إلى 135 دقيقة (حوالي ساعتين)
       // (الامتحان بدأ منذ ساعتين، يعني انتهى تقريباً)
       else if (diffMinutes >= -135 && diffMinutes <= -105) {
+                console.log("   ✅ Condition Met: POST_EXAM"); // 👈 تأكيد
+
         notificationType = 'post_exam';
       }
+      else {
+        console.log("   ❌ Condition Failed: Not time yet."); // 👈 تأكيد
+      }
+
 
       if (!notificationType) continue; // ليس وقته
 
