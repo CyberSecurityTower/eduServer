@@ -72,61 +72,72 @@ async function runMemoryAgent(userId, userMessage, topK = 4) {
 
 // 2. Structured Memory (Wrapper around helper)
 // 2. دالة الحفظ الذكية (هنا التغيير الجوهري)
+
 async function analyzeAndSaveMemory(userId, history) {
   try {
     if (!generateWithFailoverRef) return;
 
-    // 1. جلب الحقائق الحالية لنقارن بها (منع التكرار)
-    const profile = await getProfile(userId);
+    // 1. جلب الحقائق الحالية
+    const profile = await getProfile(userId); // تأكد أن هذه الدالة تجلب الـ facts
     const currentFacts = profile.facts || {};
 
-    // 2. تحضير الشات (آخر 10 رسائل تكفي للاستخلاص)
+    // 2. تحضير الشات
     const recentChat = history.slice(-10).map(m => `${m.role}: ${m.text}`).join('\n');
 
-    // 3. استدعاء الـ AI (The Architect)
+    // 3. استدعاء الـ AI
     const prompt = PROMPTS.managers.memoryExtractor(currentFacts, recentChat);
     
-    // نستخدم موديل ذكي (gemini-pro) لأن هذه العملية حساسة
     const res = await generateWithFailoverRef('analysis', prompt, { label: 'MemoryExtraction' });
     const text = await extractTextFromResult(res);
     const result = await ensureJsonOrRepair(text, 'analysis');
 
     if (!result) return;
 
-    // 4. التعامل مع الحقائق (Facts)
-    if (result.newFacts && Object.keys(result.newFacts).length > 0) {
-      const updatedFacts = { ...currentFacts, ...result.newFacts };
-      
-      // تحديث Supabase (JSONB update)
-      const { error } = await supabase.from('ai_memory_profiles').upsert({
-        user_id: userId,
-        facts: updatedFacts,
-        last_analyzed_at: nowISO()
-      });
-      
-      if (!error) {
-        logger.success(`[Memory] Saved NEW Facts for ${userId}:`, result.newFacts);
-        // *مهم*: تحديث الكاش المحلي إذا كنت تستخدمه في helpers.js
-        const { cacheDel } = require('../../data/helpers');
-        await cacheDel('profile', userId); 
-      }
+    let hasChanges = false;
+    let finalFacts = { ...currentFacts };
+
+    // A. حذف المفاتيح القديمة أو الخاطئة
+    if (result.deleteKeys && Array.isArray(result.deleteKeys)) {
+        result.deleteKeys.forEach(key => {
+            if (finalFacts[key]) {
+                delete finalFacts[key];
+                hasChanges = true;
+                logger.info(`🗑️ Memory: Deleted key '${key}' for user ${userId}`);
+            }
+        });
     }
 
-    // 5. التعامل مع القصص (Vector Embeddings)
-    if (result.vectorContent && typeof result.vectorContent === 'string' && result.vectorContent.length > 10) {
-      // نتأكد أن القصة تستحق الحفظ
-      logger.info(`[Memory] New Story Detected: "${safeSnippet(result.vectorContent, 50)}"`);
-      
-      // نقوم بتوليد Embeddings للنص الملخص الذي كتبه الـ AI (وليس الشات الخام)
-      // هذا يضمن جودة بحث أعلى
-      await saveMemoryChunk(userId, result.vectorContent, "User Story");
+    // B. إضافة/تحديث الحقائق الجديدة
+    if (result.newFacts && Object.keys(result.newFacts).length > 0) {
+        finalFacts = { ...finalFacts, ...result.newFacts };
+        hasChanges = true;
+        logger.success(`💾 Memory: Added/Updated facts for ${userId}`, result.newFacts);
+    }
+
+    // 4. الحفظ فقط إذا كان هناك تغيير
+    if (hasChanges) {
+        const { error } = await supabase.from('ai_memory_profiles').upsert({
+            user_id: userId,
+            facts: finalFacts,
+            last_analyzed_at: nowISO()
+        });
+        
+        if (!error) {
+            // تفريغ الكاش لكي يقرأ التحديثات فوراً
+            const { cacheDel } = require('../../data/helpers');
+            await cacheDel('profile', userId); 
+        }
+    }
+
+    // 5. التعامل مع القصص (Vector Embeddings) - كما كان سابقاً
+    if (result.vectorContent && result.vectorContent.length > 10) {
+        await saveMemoryChunk(userId, result.vectorContent, "User Story");
     }
 
   } catch (err) {
     logger.error(`[Memory] Analysis Failed: ${err.message}`);
   }
 }
-
 
 /**
  * 🧠 دالة تنظيف الذاكرة (Memory Garbage Collector)
@@ -184,10 +195,68 @@ async function consolidateUserFacts(userId) {
     logger.error('Memory Consolidation Error:', err.message);
   }
 }
+/**
+ * 🧠 دالة تنظيف الذاكرة (Memory Garbage Collector)
+ * تقوم بدمج الحقائق المتكررة وحذف التناقضات
+ */
+async function consolidateUserFacts(userId) {
+  try {
+    // 1. جلب الحقائق الحالية
+    const { data } = await supabase
+        .from('ai_memory_profiles')
+        .select('facts')
+        .eq('user_id', userId)
+        .single();
+
+    const currentFacts = data?.facts || {};
+    const keys = Object.keys(currentFacts);
+
+    // إذا كانت الحقائق قليلة، لا داعي للدمج
+    if (keys.length < 5) return;
+
+    logger.info(`🧹 Consolidating memory for user ${userId}...`);
+
+    // 2. البرومبت الذكي
+    const prompt = `
+    You are a Database Optimizer. I have a JSON of user facts that might contain duplicates or outdated info.
+    
+    Current JSON: ${JSON.stringify(currentFacts)}
+    
+    Task:
+    1. Merge related keys (e.g., "fav_subject": "Math" and "likes": "Mathematics" -> "favorite_subject": "Math").
+    2. Remove redundant or weak facts.
+    3. Keep the keys in English (snake_case).
+    4. Output ONLY the cleaned JSON.
+    `;
+
+    // نستخدم موديل ذكي (Pro) لهذه العملية الدقيقة
+    const res = await generateWithFailoverRef('analysis', prompt, { label: 'MemoryConsolidation' });
+    const text = await extractTextFromResult(res);
+    const cleanedFacts = await ensureJsonOrRepair(text, 'analysis');
+
+    if (cleanedFacts && Object.keys(cleanedFacts).length > 0) {
+        // 3. تحديث القاعدة
+        await supabase
+            .from('ai_memory_profiles')
+            .update({ 
+                facts: cleanedFacts,
+                last_optimized_at: new Date().toISOString()
+            })
+            .eq('user_id', userId);
+            
+        logger.success(`✨ Memory optimized for ${userId}. Keys reduced from ${keys.length} to ${Object.keys(cleanedFacts).length}.`);
+    }
+
+  } catch (err) {
+    logger.error('Memory Consolidation Error:', err.message);
+  }
+}
+
 module.exports = {
   initMemoryManager,
   saveMemoryChunk,
   runMemoryAgent,
   analyzeAndSaveMemory,
   consolidateUserFacts
+  
 };
