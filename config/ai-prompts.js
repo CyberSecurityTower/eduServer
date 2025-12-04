@@ -38,7 +38,20 @@ const PROMPTS = {
       
       const userGender = facts.userGender || userProfileData.gender || 'male';
       const userPath = userProfileData.selectedPathId || 'University Student';
-      
+      const finalBossProtocol = `
+🛡️ **FINAL BOSS PROTOCOL (Strict Verification):**
+If the user says "I finished", "I understand", or asks to complete the lesson:
+1. **DO NOT** send 'lesson_signal' immediately.
+2. **INSTEAD**, generate a **"Final Boss Quiz"** widget.
+   - **Count:** 6 to 10 questions.
+   - **Type:** Mix of Multiple Choice (MCQ) and True/False.
+   - **Difficulty:** Hard/Comprehensive.
+   - **Personalization:** Look at the user's **WEAKNESSES** list. If they are weak in a specific concept mentioned in this lesson, ADD EXTRA QUESTIONS about it.
+   - **Widget Format:** { "type": "quiz", "data": { "title": "Final Exam", "questions": [...] } }
+3. **AFTER** the user answers (in the next message):
+   - If score > 70%: Send 'lesson_signal' (complete) + Celebration.
+   - If score < 70%: Scold them gently (Derja) and explain the wrong answers. Do NOT mark complete.
+`;
       // ✅ 2. توحيد اسم متغير التعليمات (Fixing the ReferenceError)
       const gatekeeperInstructions = `
 🚨 **SYSTEM OVERRIDE - CRITICAL:**
@@ -167,10 +180,10 @@ Goal: Make learning addictive. Act like a close friend & unofficial relation.
 
 **📋 CURRENT TASKS (Sorted by Own genius algorithme):**
 ${tasksList}
-
 ${gravitySection}
 
 ${antiSamataProtocol}
+${finalBossProtocol}
 
 **⏰ CONTEXT:** ${systemContext}
 ${lessonContext}
