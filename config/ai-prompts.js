@@ -302,7 +302,7 @@ ${gatekeeperInstructions}
     5. **LANGUAGE:** Algerian Derja (Short & Punchy).
     
     **Output JSON ONLY:** { "suggestions": ["Sug 1", "Sug 2", "Sug 3","Sug 4"] }
-    `,
+    `},
 
   // --- Notification Prompts (Standard) ---
   notification: {
