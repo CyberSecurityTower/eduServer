@@ -17,6 +17,7 @@ const { checkScheduledActions } = require('./services/jobs/worker');
 const { initGhostEngine } = require('./services/engines/ghostTeacher'); // ✅ استيراد
 const { initChatController, handleGeneralQuestion } = require('./controllers/chatController');
 const { initAdminController } = require('./controllers/adminController');
+const { initExamWorker } = require('./services/jobs/examWorker');
 
 // Managers
 const { initConversationManager } = require('./services/ai/managers/conversationManager');
@@ -34,6 +35,7 @@ async function boot() {
     embeddingService.init({ db, CONFIG });
     initDataHelpers({ embeddingService, generateWithFailover });
     initSessionAnalyzer({ generateWithFailover }); 
+    initExamWorker({ generateWithFailover });
 
     // Initialize Managers
 // ✅ التعديل هنا: تمرير generateWithFailover لمدير الإشعارات
