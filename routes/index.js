@@ -24,7 +24,7 @@ router.post('/log-event', analyticsController.logEvent);
 router.post('/process-session', analyticsController.processSession);
 router.post('/run-nightly-analysis', adminController.runNightlyAnalysis);
 router.post('/admin/index-lesson', adminController.indexSpecificLesson);
-
+router.post('/admin/check-exams', adminController.triggerExamCheck);
 router.post('/generate-daily-tasks', tasksController.generateDailyTasks);
 router.post('/admin/ghost-scan', adminController.triggerGhostScan);
 // إذا كنت تريد رابطاً لتحديث حالة المهمة (تم الإنجاز)
