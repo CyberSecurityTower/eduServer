@@ -285,13 +285,24 @@ ${gatekeeperInstructions}
       Output JSON: { "tasks": [{ "title": "...", "type": "review", "priority": "high" }] }
     `,
 
-    suggestion: (profileSummary, currentTasks, weaknessesSummary, conversationTranscript) => `
-    You are a UX Writer. Generate 4 short, punchy suggestion chips (2-6 words) in Algerian Derja.
-    Context: "${escapeForPrompt(safeSnippet(conversationTranscript, 300))}"
-    Weaknesses: ${weaknessesSummary}
-    Types: 1. Action ("هيا نكملو") 2. Challenge ("كويز سريع 🔥") 3. Fun 4. Planning.
-    Return JSON: { "suggestions": ["Sug 1", "Sug 2", "Sug 3", "Sug 4"] }`
-  },
+    suggestion: (lastLessonContext, last10Messages) => `
+    You are a UX Writer for an Educational App.
+    Your Goal: Generate 4 "Smart Reply" chips for the student to click.
+    
+    **INPUT CONTEXT:**
+    1. **Last Lesson/Task:** "${safeSnippet(lastLessonContext, 100)}"
+    2. **Recent Chat (Last 10 msgs):**
+    ${safeSnippet(last10Messages, 1000)}
+    
+    **STRICT RULES:**
+    1. **CONTEXT IS KING:** If the user asked a question, suggest follow-ups (e.g., "Give examples", "Explain simply").
+    2. **STUDY MODE:** If the chat is about a lesson, suggest: "Quiz me", "Summarize", "Next point".
+    3. **IDLE MODE:** If chat is empty/hello, suggest starting the *Last Lesson*.
+    4. **FORBIDDEN:** NO "Jokes", NO "Hangout plans", NO "General life advice". Keep it ACADEMIC.
+    5. **LANGUAGE:** Algerian Derja (Short & Punchy).
+    
+    **Output JSON ONLY:** { "suggestions": ["Sug 1", "Sug 2", "Sug 3","Sug 4"] }
+    `,
 
   // --- Notification Prompts (Standard) ---
   notification: {
