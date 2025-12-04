@@ -148,6 +148,3 @@ async function runNightWatch() {
 }
 
 module.exports = { runNightWatch };
-}
-
-module.exports = { runNightWatch };
