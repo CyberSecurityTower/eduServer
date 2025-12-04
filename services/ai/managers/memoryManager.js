@@ -195,62 +195,6 @@ async function consolidateUserFacts(userId) {
     logger.error('Memory Consolidation Error:', err.message);
   }
 }
-/**
- * 🧠 دالة تنظيف الذاكرة (Memory Garbage Collector)
- * تقوم بدمج الحقائق المتكررة وحذف التناقضات
- */
-async function consolidateUserFacts(userId) {
-  try {
-    // 1. جلب الحقائق الحالية
-    const { data } = await supabase
-        .from('ai_memory_profiles')
-        .select('facts')
-        .eq('user_id', userId)
-        .single();
-
-    const currentFacts = data?.facts || {};
-    const keys = Object.keys(currentFacts);
-
-    // إذا كانت الحقائق قليلة، لا داعي للدمج
-    if (keys.length < 5) return;
-
-    logger.info(`🧹 Consolidating memory for user ${userId}...`);
-
-    // 2. البرومبت الذكي
-    const prompt = `
-    You are a Database Optimizer. I have a JSON of user facts that might contain duplicates or outdated info.
-    
-    Current JSON: ${JSON.stringify(currentFacts)}
-    
-    Task:
-    1. Merge related keys (e.g., "fav_subject": "Math" and "likes": "Mathematics" -> "favorite_subject": "Math").
-    2. Remove redundant or weak facts.
-    3. Keep the keys in English (snake_case).
-    4. Output ONLY the cleaned JSON.
-    `;
-
-    // نستخدم موديل ذكي (Pro) لهذه العملية الدقيقة
-    const res = await generateWithFailoverRef('analysis', prompt, { label: 'MemoryConsolidation' });
-    const text = await extractTextFromResult(res);
-    const cleanedFacts = await ensureJsonOrRepair(text, 'analysis');
-
-    if (cleanedFacts && Object.keys(cleanedFacts).length > 0) {
-        // 3. تحديث القاعدة
-        await supabase
-            .from('ai_memory_profiles')
-            .update({ 
-                facts: cleanedFacts,
-                last_optimized_at: new Date().toISOString()
-            })
-            .eq('user_id', userId);
-            
-        logger.success(`✨ Memory optimized for ${userId}. Keys reduced from ${keys.length} to ${Object.keys(cleanedFacts).length}.`);
-    }
-
-  } catch (err) {
-    logger.error('Memory Consolidation Error:', err.message);
-  }
-}
 
 module.exports = {
   initMemoryManager,
