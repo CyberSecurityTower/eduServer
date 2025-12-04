@@ -371,18 +371,50 @@ async function chatInteractive(req, res) {
     // 1. Handle Lesson Completion
     if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'complete') {
         const signal = parsedResponse.lesson_signal;
+        
+        // أ. تسجيل الإكمال في القاعدة
         await markLessonComplete(userId, signal.id, signal.score || 100);
+        
+        // ب. تحديث المهام (Gravity Engine)
         const newDbTasks = await refreshUserTasks(userId); 
-        const nextTask = newDbTasks && newDbTasks.length > 0 ? newDbTasks[0] : null;
+        
+        // 🔥 FIX 1: استبعاد الدرس الذي انتهى للتو من القائمة الجديدة
+        // حتى لو القاعدة مازالت تقول أنه غير مكتمل، نحن نعلم أنه انتهى الآن
+        const validNextTasks = (newDbTasks || []).filter(t => t.meta?.relatedLessonId !== signal.id);
+        const nextTask = validNextTasks.length > 0 ? validNextTasks[0] : null;
+
+        // 🔥 FIX 2: منطق "روح ترقد" (Sleep Guard)
+        const algiersTime = getAlgiersTimeContext(); // دالة موجودة في utils
+        const currentHour = algiersTime.hour;
+        const isLateNight = currentHour >= 22 || currentHour < 5; // بعد 10 ليلاً
+        const isExamEmergency = gravityContext?.isExam; // هل غداً امتحان؟
 
         let recommendationText = "";
-        if (nextTask) {
+
+        // السيناريو 1: غداً امتحان + وقت متأخر = أمر بالنوم
+        if (isExamEmergency && isLateNight) {
+            recommendationText = `\n\n🛑 **حبس هنا!** غدوة عندك امتحان والوقت راه روطار. **روح ترقد دوكا** باش مخك يثبت المعلومات. تصبح على خير! 😴`;
+            
+            // نلغي أي زر "ابدأ الدرس" ونضع زر الخروج
+            parsedResponse.widgets = parsedResponse.widgets.filter(w => w.type !== 'action_button');
+            parsedResponse.widgets.push({
+                type: 'action_button',
+                data: { label: 'إغلاق التطبيق والنوم 🌙', action: 'close_app' }
+            });
+        }
+        // السيناريو 2: وقت عادي = اقترح الدرس التالي
+        else if (nextTask) {
             recommendationText = `\n\n💡 **الخطوة التالية:** ${nextTask.title}`;
             parsedResponse.widgets.push({
                 type: 'action_button',
                 data: { label: `ابدأ: ${nextTask.title}`, action: 'navigate', targetId: nextTask.meta?.relatedLessonId }
             });
+        } 
+        // السيناريو 3: لا توجد مهام
+        else {
+            recommendationText = `\n\n🎉 كملت كلش لليوم! ارتاح.`;
         }
+
         parsedResponse.widgets.push({ type: 'event_trigger', data: { event: 'tasks_updated' } });
         parsedResponse.reply += recommendationText;
         parsedResponse.widgets.push({ type: 'celebration', data: { message: 'إنجاز عظيم! 🚀' } });
