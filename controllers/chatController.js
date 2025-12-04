@@ -436,7 +436,6 @@ supabase.from('user_tasks')
     });
 
     // Background processing
-try {
     setImmediate(() => {
         const updatedHistory = [
             ...history,
@@ -454,11 +453,14 @@ try {
             .catch(e => logger.error('SessionAnalyzer Fail:', e));
     });
 
-} catch (err) {
+  } catch (err) {
     logger.error("ChatInteractive ERR:", err);
-    return res.status(500).json({ reply: "حدث خطأ في الخادم." });
-}
-
+    // Check if headers are already sent to prevent double-response crash
+    if (!res.headersSent) {
+        return res.status(500).json({ reply: "حدث خطأ في الخادم." });
+    }
+  }
+} // <--- This closing brace was missing
 
 module.exports = {
   initChatController,
