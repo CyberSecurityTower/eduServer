@@ -212,24 +212,26 @@ async function chatInteractive(req, res) {
             }
         }
     }
-
-    // Fetch Context Data (Parallel)
-    const [rawProfile, memoryReport, curriculumReport, weaknessesRaw, formattedProgress, currentTasks] = await Promise.all([
+// Fetch Context Data (Parallel)
+    // ✅ FIX 1: Renamed 'currentTasks' to 'userTasksRes' to match usage below
+    const [rawProfile, memoryReport, curriculumReport, weaknessesRaw, formattedProgress, userTasksRes] = await Promise.all([
       getProfile(userId).catch(() => ({})),
       runMemoryAgent(userId, message).catch(() => ''),
       runCurriculumAgent(userId, message).catch(() => ''), 
       fetchUserWeaknesses(userId).catch(() => []),
       formatProgressForAI(userId).catch(() => ''),
-supabase.from('user_tasks')
+      supabase.from('user_tasks')
         .select('*')
         .eq('user_id', userId)
         .eq('status', 'pending')
     ]);    
-// 🔥 معالجة بيانات الجاذبية (Gravity Intel)
+
+    // 🔥 معالجة بيانات الجاذبية (Gravity Intel)
     let gravityContext = null;
     let tasksList = "No active tasks.";
 
-    if (userTasksRes.data && userTasksRes.data.length > 0) {
+    // ✅ FIX 2: Properly structured the IF block and closed it with '}'
+    if (userTasksRes && userTasksRes.data && userTasksRes.data.length > 0) {
         // 1. ترتيب المهام حسب السكور (الموجود داخل meta) تنازلياً
         const sortedTasks = userTasksRes.data.sort((a, b) => {
             const scoreA = a.meta?.score || 0;
@@ -249,18 +251,15 @@ supabase.from('user_tasks')
             subject: topTask.meta?.subjectId || 'General'
         };
 
-    // تنسيق المهام
-    // 3. تنسيق القائمة للعرض العام
-       tasksList = userTasksRes.data && userTasksRes.data.length > 0
-  ? sortedTasks.map(t => {
-      const score = t.meta?.score || 0;
-      const examBadge = score > 4000 ? "🚨 EXAM TOMORROW" :
-                        score > 1000 ? "⚠️ EXAM SOON" : "";
-      return `- ${t.title} ${examBadge} (Priority: ${score})`;
-    }).join('\n')
-  : "No active tasks.";
+        // 3. تنسيق القائمة للعرض العام
+        tasksList = sortedTasks.map(t => {
+            const score = t.meta?.score || 0;
+            const examBadge = score > 4000 ? "🚨 EXAM TOMORROW" :
+                              score > 1000 ? "⚠️ EXAM SOON" : "";
+            return `- ${t.title} ${examBadge} (Priority: ${score})`;
+        }).join('\n');
+    } 
 
-    
     const aiProfileData = rawProfile || {}; 
     const groupId = userData.groupId;
 
@@ -455,12 +454,11 @@ supabase.from('user_tasks')
 
   } catch (err) {
     logger.error("ChatInteractive ERR:", err);
-    // Check if headers are already sent to prevent double-response crash
     if (!res.headersSent) {
         return res.status(500).json({ reply: "حدث خطأ في الخادم." });
     }
   }
-} // <--- This closing brace was missing
+}
 
 module.exports = {
   initChatController,
