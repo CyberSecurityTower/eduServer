@@ -1,49 +1,52 @@
-
 // services/ai/managers/suggestionManager.js
 'use strict';
 
 const { getProfile, getProgress, fetchUserWeaknesses, fetchRecentComprehensiveChatHistory } = require('../../data/helpers');
-const { extractTextFromResult, ensureJsonOrRepair } = require('../../../utils');
+const { extractTextFromResult, ensureJsonOrRepair, safeSnippet } = require('../../../utils');
 const logger = require('../../../utils/logger');
 const PROMPTS = require('../../../config/ai-prompts');
 
 let generateWithFailoverRef;
 
 function initSuggestionManager(dependencies) {
-  if (!dependencies.generateWithFailover) {
-    throw new Error('Suggestion Manager requires generateWithFailover.');
-  }
   generateWithFailoverRef = dependencies.generateWithFailover;
-  logger.info('Suggestion Manager initialized.');
 }
 
 async function runSuggestionManager(userId) {
   try {
-    // جلب البيانات بالتوازي للسرعة
-    const [profile, progress, weaknesses, conversationTranscript] = await Promise.all([
-      getProfile(userId).catch(() => ({})),
+    // 1. جلب البيانات
+    const [progress, chatHistoryRaw] = await Promise.all([
       getProgress(userId).catch(() => ({})),
-      fetchUserWeaknesses(userId).catch(() => []),
       fetchRecentComprehensiveChatHistory(userId).catch(() => '')
     ]);
 
-    const profileSummary = profile?.profileSummary || 'No profile.';
-    const currentTasks = progress?.dailyTasks?.tasks?.map(t => t.title).join(', ') || 'No tasks.';
-    const weaknessesSummary = (weaknesses || []).map(w => w.lessonTitle).join(', ') || 'None.';
+    // 2. استخراج "آخر درس" توقف عنده الطالب
+    let lastLessonContext = "No active lesson.";
+    if (progress.pathProgress) {
+        // نبحث عن آخر درس تم التفاعل معه (بناءً على last_interaction إن وجد، أو تخمين)
+        // للتبسيط هنا سنأخذ أول مهمة معلقة أو آخر درس في المصفوفة
+        const tasks = progress.dailyTasks?.tasks || [];
+        if (tasks.length > 0) {
+            lastLessonContext = `Current Task: ${tasks[0].title}`;
+        }
+    }
 
-    const prompt = PROMPTS.managers.suggestion(profileSummary, currentTasks, weaknessesSummary, conversationTranscript);
+    // 3. استخراج "آخر 10 رسائل" فقط (الذاكرة القصيرة)
+    // chatHistoryRaw يأتي كنص طويل، سنحاول تقطيعه
+    const chatLines = chatHistoryRaw.split('\n');
+    const last10Messages = chatLines.slice(-10).join('\n');
+
+    // 4. استدعاء البرومبت الجديد
+    const prompt = PROMPTS.managers.suggestion(lastLessonContext, last10Messages);
 
     if (!generateWithFailoverRef) return getDefaultSuggestions();
 
-    const res = await generateWithFailoverRef('suggestion', prompt, { label: 'SuggestionManager', timeoutMs: 25000 }); 
+    const res = await generateWithFailoverRef('suggestion', prompt, { label: 'SuggestionManager', timeoutMs: 15000 }); 
     const raw = await extractTextFromResult(res);
     const parsed = await ensureJsonOrRepair(raw, 'suggestion');
 
     if (parsed && Array.isArray(parsed.suggestions) && parsed.suggestions.length > 0) {
-      // فلتر أمان إضافي للتأكد من الطول
-      return parsed.suggestions
-        .filter(s => s.split(' ').length <= 7) // نتأكد أنها ليست جريدة
-        .slice(0, 4);
+      return parsed.suggestions.slice(0, 3); // 3 اقتراحات فقط
     }
   } catch (error) {
     logger.error(`SuggestionManager failed for ${userId}:`, error.message);
@@ -53,12 +56,11 @@ async function runSuggestionManager(userId) {
 }
 
 function getDefaultSuggestions() {
-  // اقتراحات افتراضية جذابة وقصيرة (بالدارجة)
   return [
-    "واش هو الدرس الجاي؟",
-    "نديرو كويز خفيف؟ 🔥",
-    "فكرني وين حبسنا",
-    "لخصلي أهم النقاط"
+    "لخص لي واش هدرنا",
+    "كمل الشرح",
+    "أعطيني اختبار خفيف",
+    "وين رانا واصلين"
   ];
 }
 
