@@ -9,6 +9,7 @@ const { safeSnippet, extractTextFromResult, ensureJsonOrRepair } = require('../.
 const logger = require('../../utils/logger');
 const crypto = require('crypto');
 const { runPlannerManager } = require('../ai/managers/plannerManager'); 
+const { getAlgiersTimeContext } = require('../../utils'); // تأكد من المسار
 
 // Dependencies Injection
 let embeddingServiceRef;
@@ -653,6 +654,95 @@ async function getLastActiveSessionContext(userId, currentSessionId) {
     return null;
   }
 }
+
+/**
+ * 📅 دالة الوعي بالجدول الزمني
+ * تحدد هل الطالب في حصة، أو خرج للتو، أو لديه حصة قادمة
+ */
+async function getStudentScheduleStatus(groupId) {
+  if (!groupId) return null;
+
+  try {
+    // 1. معرفة الوقت الحالي في الجزائر
+    const algiersCtx = getAlgiersTimeContext(); // { dayName: 'Sunday', hour: 9, minute: 30 ... }
+    
+    // نحتاج تحويل الوقت الحالي إلى صيغة مقارنة (دقائق منذ منتصف الليل)
+    const now = new Date();
+    // ملاحظة: getAlgiersTimeContext تعطينا الساعة، لكن للمقارنة الدقيقة نحتاج Date object
+    // للتبسيط سنفترض أن السيرفر مضبوط أو نستخدم Intl كما في الدالة السابقة
+    const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Africa/Algiers',
+        hour12: false,
+        weekday: 'long',
+        hour: 'numeric',
+        minute: 'numeric'
+    });
+    const parts = formatter.formatToParts(now);
+    const currentDay = parts.find(p => p.type === 'weekday').value; // e.g., "Sunday"
+    const currentHour = parseInt(parts.find(p => p.type === 'hour').value, 10);
+    const currentMinute = parseInt(parts.find(p => p.type === 'minute').value, 10);
+    const currentTotalMinutes = (currentHour * 60) + currentMinute;
+
+    // 2. جلب جدول اليوم لهذا الفوج
+    const { data: schedule } = await supabase
+      .from('group_schedules')
+      .select('*')
+      .eq('group_id', groupId)
+      .eq('day_of_week', currentDay)
+      .order('start_time', { ascending: true });
+
+    if (!schedule || schedule.length === 0) return { status: 'free_day', message: 'No classes today.' };
+
+    let currentSession = null;
+    let lastSession = null;
+    let nextSession = null;
+
+    for (const session of schedule) {
+      // تحويل وقت الحصة إلى دقائق
+      const [startH, startM] = session.start_time.split(':').map(Number);
+      const [endH, endM] = session.end_time.split(':').map(Number);
+      
+      const startTotal = (startH * 60) + startM;
+      const endTotal = (endH * 60) + endM;
+
+      if (currentTotalMinutes >= startTotal && currentTotalMinutes <= endTotal) {
+        currentSession = session;
+      } else if (currentTotalMinutes > endTotal) {
+        lastSession = session; // آخر حصة انتهت
+      } else if (currentTotalMinutes < startTotal && !nextSession) {
+        nextSession = session; // أول حصة قادمة
+      }
+    }
+
+    // 3. صياغة السياق للذكاء الاصطناعي
+    if (currentSession) {
+      return {
+        state: 'in_class',
+        subject: currentSession.subject_name,
+        type: currentSession.type,
+        room: currentSession.room,
+        context: `🚨 **REAL-TIME ALERT:** The student is CURRENTLY in a class: "${currentSession.subject_name}" (${currentSession.type}) in ${currentSession.room}.`
+      };
+    } else if (lastSession && (currentTotalMinutes - ((parseInt(lastSession.end_time.split(':')[0])*60) + parseInt(lastSession.end_time.split(':')[1]))) < 60) {
+      // إذا انتهت الحصة منذ أقل من ساعة
+      return {
+        state: 'just_finished',
+        subject: lastSession.subject_name,
+        context: `ℹ️ **CONTEXT:** The student JUST finished "${lastSession.subject_name}". Ask them how it went!`
+      };
+    } else {
+      return {
+        state: 'free_time',
+        next: nextSession ? nextSession.subject_name : 'No more classes',
+        context: 'Student is currently free from university schedule.'
+      };
+    }
+
+  } catch (err) {
+    console.error('Schedule Helper Error:', err);
+    return null;
+  }
+}
 module.exports = {
   initDataHelpers,
   getUserDisplayName,
@@ -674,5 +764,6 @@ module.exports = {
   updateAiAgenda,
   refreshUserTasks, 
   cacheDel,
-  getLastActiveSessionContext 
+  getLastActiveSessionContext ,
+  getStudentScheduleStatus
 };
