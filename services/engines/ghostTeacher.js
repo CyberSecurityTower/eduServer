@@ -106,18 +106,19 @@ async function generateAndSaveLessonContent(lesson) {
       
       const content = await extractTextFromResult(res);
 
-     if (content && content.length > 100) {
-            logger.info(`💾 Saving content for lesson: ${lesson.id}...`);
+if (content && content.length > 100) {
+    logger.info(`💾 Saving content for lesson: ${lesson.id}...`);
 
-            // 1. الحفظ في lessons_content
-            const { error: insertError } = await supabase
-                .from('lessons_content')
-                .upsert({
-                    lesson_id: lesson.id, 
-                    subject_id: lesson.subject_id, 
-                    content: content,
-                    updated_at: new Date().toISOString()
-                }, { onConflict: 'lesson_id' });
+    // 1. الحفظ في lessons_content
+    const { error: insertError } = await supabase
+        .from('lessons_content')
+        .upsert({
+            id: lesson.id, 
+            subject_id: lesson.subject_id, 
+            content: content,
+            updated_at: new Date().toISOString()
+        }, { onConflict: 'id' }); 
+
           if (insertError) {
               logger.error(`❌ DB Insert Error:`, insertError.message);
               return;
