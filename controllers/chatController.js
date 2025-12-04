@@ -229,9 +229,10 @@ async function chatInteractive(req, res) {
     ]);
 
     // ✅ NEW: جلب حالة الجدول الزمني
+    let scheduleStatus = null;
     let scheduleContextString = "";
     try {
-      const scheduleStatus = await getStudentScheduleStatus(userData.groupId);
+      scheduleStatus = await getStudentScheduleStatus(userData.groupId);
       if (scheduleStatus) {
         scheduleContextString = scheduleStatus.context || "";
       }
@@ -239,6 +240,16 @@ async function chatInteractive(req, res) {
       logger.warn('getStudentScheduleStatus failed:', e);
       scheduleContextString = "";
     }
+
+    // نمرر المعلومات للبرومبت عبر currentContext (أو أي متغير تراه مناسباً)
+    // سنقوم بدمجها لكي يقرأها البرومبت أعلاه
+    const updatedContextForPrompt = {
+      ...currentContext,
+      schedule: scheduleStatus ? {
+        type: scheduleStatus.type, // 'Cours' أو 'TD'
+        subject: scheduleStatus.subject
+      } : null
+    };
 
     // 🔥 معالجة بيانات الجاذبية (Gravity Intel)
     let gravityContext = null;
@@ -369,7 +380,7 @@ async function chatInteractive(req, res) {
       examContext,
       activeAgenda,
       sharedContext,
-      currentContext,
+      updatedContextForPrompt, // <--- pass updated context with schedule info
       gravityContext
     );
 
