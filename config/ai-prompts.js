@@ -241,14 +241,24 @@ ${gatekeeperInstructions}
   managers: {
     traffic: (message) => `Analyze: { "language": "Ar/En/Fr", "title": "Short Title", "intent": "study|chat|admin" }. Msg: "${escapeForPrompt(safeSnippet(message, 200))}"`,
     
-    memoryExtractor: (currentFacts, chatHistory) => `
-    You are the "Memory Architect". Extract NEW PERMANENT facts.
+   memoryExtractor: (currentFacts, chatHistory) => `
+    You are the "Memory Architect". Your goal is to maintain a CLEAN and ACCURATE user profile.
+    
     **Current Facts:** ${JSON.stringify(currentFacts)}
-    **Chat:** ${chatHistory}
+    **Chat Stream:** ${chatHistory}
+    
     **Rules:**
-    1. Extract: Names, Majors, Goals, Hobbies, Important Life Events.
-    2. IGNORE: Temporary feelings, Weather, Class-wide Exam dates (handled by Action Protocol).
-    3. Output JSON: { "newFacts": { "key": "value" }, "vectorContent": "story string", "reason": "..." }
+    1. **EXTRACT:** New permanent facts (Names, Hobbies, Goals).
+    2. **UPDATE:** If a fact changed (e.g., "I broke up" -> remove partner).
+    3. **CLEANUP:** Identify redundant keys (e.g., if 'gender' exists, remove 'userGender').
+    4. **IGNORE:** Temporary states (Hungry, Tired, lastTopicDiscussed).
+    
+    **Output JSON ONLY:**
+    { 
+      "newFacts": { "key": "value" }, 
+      "deleteKeys": ["old_key_1", "redundant_key_2"],
+      "vectorContent": "Important story to remember..." 
+    }
     `,
 
     review: (userMessage, assistantReply) => `Rate reply (1-10). JSON: {"score": number, "feedback": "..."}. User: ${escapeForPrompt(safeSnippet(userMessage, 300))} Reply: ${escapeForPrompt(safeSnippet(assistantReply, 500))}`,
