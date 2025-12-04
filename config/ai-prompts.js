@@ -63,7 +63,9 @@ YOU **MUST** ADD THIS FIELD TO YOUR JSON RESPONSE:
 DO NOT FORGET THIS. The user's progress WILL NOT SAVE if you omit this field.
 Even if you are chatting casually, if the task is done, SEND THE SIGNAL.
 `;
-
+        const tasksList = activeAgenda.length > 0 
+        ? activeAgenda.map(t => `- ${t.title}`).join('\n') 
+        : "No active tasks.";
       // 3. تحضير نصوص الأجندة (Agenda)
      // 3. تحضير نصوص الأجندة (Agenda) - النسخة المحسنة
        const agendaSection = activeAgenda.length > 0 
