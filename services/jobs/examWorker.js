@@ -1,8 +1,8 @@
 // services/jobs/examWorker.js
 'use strict';
 
-const supabase = require('../../data/supabase');
-const { sendUserNotification } = require('../../data/helpers');
+const supabase = require('../data/supabase');
+const { sendUserNotification } = require('../data/helpers');
 const { extractTextFromResult } = require('../../utils');
 const logger = require('../../utils/logger');
 
