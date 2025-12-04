@@ -12,7 +12,7 @@ const embeddingService = require('../services/embeddings');
 const supabase = require('../services/data/supabase'); 
 const { runNightWatch } = require('../services/jobs/nightWatch'); // استيراد الدالة
 const { scanAndFillEmptyLessons } = require('../services/engines/ghostTeacher'); 
-
+const { checkExamTiming } = require('../services/jobs/examWorker');
 const db = getFirestoreInstance(); 
 let generateWithFailoverRef; 
 
@@ -391,6 +391,29 @@ async function triggerGhostScan(req, res) {
     res.status(500).json({ error: error.message });
   }
 }
+async function triggerExamCheck(req, res) {
+  try {
+    // 🔒 حماية الرابط: نستخدم نفس الـ Secret الموجود في ملف .env
+    // تأكد أن الـ Cron Job يرسل هذا الهيدر
+    const secret = req.headers['x-job-secret'];
+    
+    if (secret !== CONFIG.NIGHTLY_JOB_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized: Invalid Secret' });
+    }
+
+    // تشغيل الفحص (ننتظره لكي نرى النتيجة في لوحة تحكم الـ Cron)
+    await checkExamTiming();
+
+    return res.status(200).json({ 
+      success: true, 
+      message: 'Exam timing check completed successfully.' 
+    });
+
+  } catch (error) {
+    logger.error('Trigger Exam Check Error:', error);
+    return res.status(500).json({ error: error.message });
+  }
+}
 module.exports = {
   initAdminController,
   indexSpecificLesson,
@@ -399,5 +422,6 @@ module.exports = {
   generateTitleRoute,
   triggerFullIndexing,
   triggerNightWatch,
-  triggerGhostScan 
+  triggerGhostScan,
+  triggerExamCheck 
 };
