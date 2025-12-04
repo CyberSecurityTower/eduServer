@@ -313,6 +313,6 @@ ${gatekeeperInstructions}
     interventionUnplanned: (lesson, lang) => `Encourage student for starting "${lesson}" spontaneously in ${lang}.`,
     proactive: (type, context, user) => `Write a short notification. Type: ${type}. Context: ${context}. User: ${user}.`
   }
-};
+}
 
 module.exports = PROMPTS;
