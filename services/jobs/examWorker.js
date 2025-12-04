@@ -1,0 +1,171 @@
+// services/jobs/examWorker.js
+'use strict';
+
+const supabase = require('../../data/supabase');
+const { sendUserNotification } = require('../../data/helpers');
+const { extractTextFromResult } = require('../../utils');
+const logger = require('../../utils/logger');
+
+// نحتاج لحقن دالة التوليد (Dependency Injection)
+let generateWithFailoverRef;
+
+function initExamWorker(dependencies) {
+  generateWithFailoverRef = dependencies.generateWithFailover;
+}
+
+/**
+ * 🕵️‍♂️ مراقب الامتحانات
+ * يعمل كل بضع دقائق ليفحص هل اقترب امتحان أو انتهى
+ */
+async function checkExamTiming() {
+  try {
+    const now = new Date();
+    
+    // 1. جلب الامتحانات التي تحدث اليوم (نطاق واسع)
+    // نأخذ الامتحانات التي وقتها بين (الآن - 3 ساعات) و (الآن + 2 ساعة)
+    // لكي نغطي حالتي "قبل ساعة" و "بعد ساعتين"
+    const startTime = new Date(now.getTime() - 4 * 60 * 60 * 1000).toISOString();
+    const endTime = new Date(now.getTime() + 3 * 60 * 60 * 1000).toISOString();
+
+    const { data: exams, error } = await supabase
+      .from('exams')
+      .select('id, subject_id, exam_date, group_id, subjects(title)')
+      .gte('exam_date', startTime)
+      .lte('exam_date', endTime);
+
+    if (error || !exams || exams.length === 0) return;
+
+    // 2. معالجة كل امتحان
+    for (const exam of exams) {
+      const examTime = new Date(exam.exam_date);
+      const diffMs = examTime - now;
+      const diffMinutes = Math.floor(diffMs / (1000 * 60)); // بالسالب يعني فات الوقت
+
+      let notificationType = null;
+
+      // ⏰ الحالة 1: قبل الامتحان بـ 45 إلى 75 دقيقة (حوالي ساعة)
+      if (diffMinutes >= 45 && diffMinutes <= 75) {
+        notificationType = 'pre_exam';
+      }
+      // ⏰ الحالة 2: بعد الامتحان بـ 105 إلى 135 دقيقة (حوالي ساعتين)
+      // (الامتحان بدأ منذ ساعتين، يعني انتهى تقريباً)
+      else if (diffMinutes >= -135 && diffMinutes <= -105) {
+        notificationType = 'post_exam';
+      }
+
+      if (!notificationType) continue; // ليس وقته
+
+      // 3. جلب طلاب الفوج
+      const { data: students } = await supabase
+        .from('users')
+        .select('id, first_name')
+        .eq('group_id', exam.group_id);
+
+      if (!students) continue;
+
+      // 4. المعالجة لكل طالب
+      for (const student of students) {
+        await processStudentNotification(student, exam, notificationType);
+      }
+    }
+
+  } catch (err) {
+    logger.error('Exam Worker Error:', err.message);
+  }
+}
+
+async function processStudentNotification(student, exam, type) {
+  const userId = student.id;
+  const subjectName = exam.subjects?.title || 'المادة';
+  const examId = exam.id;
+
+  // 🛑 1. فحص التكرار (مهم جداً)
+  // نبحث في الإشعارات السابقة لهذا اليوم
+  const { data: existing } = await supabase
+    .from('user_notifications')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('type', type) // pre_exam أو post_exam
+    .eq('target_id', examId) // نربطها بمعرف الامتحان
+    .limit(1);
+
+  if (existing && existing.length > 0) return; // تم الإرسال سابقاً
+
+  // 🧠 2. جلب بروفايل الطالب (للتخصيص)
+  const { data: profile } = await supabase
+    .from('ai_memory_profiles')
+    .select('facts, emotional_state')
+    .eq('user_id', userId)
+    .single();
+
+  const facts = profile?.facts || {};
+  const mood = profile?.emotional_state?.mood || 'neutral';
+  
+  // 🎨 3. توليد الرسالة بالذكاء الاصطناعي
+  const message = await generatePersonalizedMessage(student.first_name, subjectName, type, facts, mood);
+
+  if (message) {
+    // 🚀 4. إرسال الإشعار
+    await sendUserNotification(userId, {
+      title: type === 'pre_exam' ? `⏳ بقيت ساعة على ${subjectName}` : `🏁 خلاصت ${subjectName}؟`,
+      message: message,
+      type: type,
+      meta: { targetId: examId, subject: subjectName } // نخزن الـ ID لمنع التكرار
+    });
+    
+    logger.success(`[ExamWorker] Sent ${type} to ${student.first_name} for ${subjectName}`);
+  }
+}
+
+// 🤖 مصنع الرسائل الشخصية
+async function generatePersonalizedMessage(name, subject, type, facts, mood) {
+  try {
+    if (!generateWithFailoverRef) return null;
+
+    // استخراج صفات للمستخدم (مثلاً: يحب القهوة، يكره الرياضيات...)
+    const userContext = `
+    User: ${name}
+    Facts: ${JSON.stringify(facts)}
+    Current Mood: ${mood}
+    `;
+
+    let prompt = "";
+
+    if (type === 'pre_exam') {
+      prompt = `
+      You are a close Algerian friend.
+      Context: The exam for "${subject}" starts in 1 hour.
+      User Info: ${userContext}
+      
+      Task: Write a short notification (max 15 words) in Algerian Derja.
+      - Wish them luck.
+      - Remind them of ONE thing based on context (e.g., "Don't forget your calculator/ID", "Drink water", "Breathe").
+      - If they are anxious type, be calming. If confident, be hyping.
+      - Example: "يا ${name}، ماتنساش الكالكيلاتريس! ربي يوفقك، راك واجد 💪"
+      `;
+    } else {
+      prompt = `
+      You are a close Algerian friend.
+      Context: The exam for "${subject}" finished recently.
+      User Info: ${userContext}
+      
+      Task: Write a short notification (max 15 words) in Algerian Derja.
+      - Ask how it went casually.
+      - Tell them to relax/forget about it.
+      - Example: "واش ${name}؟ المات كان ساهل ولا كلاكم؟ المهم ريح راسك دوكا."
+      `;
+    }
+
+    const res = await generateWithFailoverRef('notification', prompt, { label: 'ExamMsg' });
+    const text = await extractTextFromResult(res);
+    return text ? text.replace(/"/g, '') : null;
+
+  } catch (e) {
+    logger.error('AI Gen Error:', e.message);
+    
+    if (type === 'pre_exam') return `بالتوفيق يا ${name}! ركز مليح وما تنساش دوزانك.`;
+    return `يعطيك الصحة يا ${name}! ارتاح شوية وانسى واش فات.`;
+  }
+}
+
+module.exports = { initExamWorker, checkExamTiming };
