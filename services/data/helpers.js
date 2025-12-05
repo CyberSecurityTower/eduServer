@@ -146,16 +146,17 @@ async function getProgress(userId) {
 
 async function formatProgressForAI(userId) {
   try {
-    // 1. جلب التقدم والمسار التعليمي
+    // 1. جلب التقدم الخام
     const progress = await getProgress(userId); 
     const userProgressData = progress.pathProgress || {};
     
-    if (Object.keys(userProgressData).length === 0) return 'User is new. No progress yet.';
+    if (Object.keys(userProgressData).length === 0) return 'User has not started any path yet.';
 
     const summaryLines = [];
     const requestedPaths = new Set(Object.keys(userProgressData));
 
     for (const pathId of requestedPaths) {
+      // جلب تفاصيل المسار (المواد والدروس) من الكاش أو الداتابايز
       const educationalPath = await getCachedEducationalPathById(pathId);
       if (!educationalPath) continue;
 
@@ -164,32 +165,41 @@ async function formatProgressForAI(userId) {
       // 2. الدخول في تفاصيل كل مادة
       for (const subjectId in subjectsProgress) {
         const subjectData = educationalPath.subjects?.find(s => s.id === subjectId);
-        const subjectTitle = subjectData?.title || subjectId;
-        
-        // تصفية المواد (نركز على S1 فقط إذا أردت، أو نتركها عامة)
-        // هنا سنعرض حالة الدروس
-        const lessonsProgress = subjectsProgress[subjectId]?.lessons || {};
-        const completedLessons = [];
-        let nextLesson = null;
+        // إذا لم نجد المادة في المسار، نتجاهلها (ربما حذفت)
+        if (!subjectData) continue;
 
-        // ترتيب الدروس لمعرفة "التالي"
-        const sortedLessons = (subjectData?.lessons || []).sort((a, b) => a.order_index - b.order_index);
+        const subjectTitle = subjectData.title || subjectId;
+        const lessonsProgress = subjectsProgress[subjectId]?.lessons || {};
+        
+        const completedTitles = [];
+        let nextLessonTitle = null;
+
+        // ترتيب دروس المادة حسب الفهرس (order_index) لنعرف الترتيب الصحيح
+        const sortedLessons = (subjectData.lessons || []).sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
 
         for (const lesson of sortedLessons) {
             const lProg = lessonsProgress[lesson.id];
+            // هل الدرس مكتمل؟
             if (lProg && lProg.status === 'completed') {
-                completedLessons.push(lesson.title);
-            } else if (!nextLesson) {
-                // أول درس غير مكتمل هو "الدرس القادم"
-                nextLesson = lesson.title;
+                completedTitles.push(lesson.title);
+            } 
+            // أول درس نجده غير مكتمل هو "الهدف القادم"
+            else if (!nextLessonTitle) {
+                nextLessonTitle = lesson.title;
             }
         }
 
-        // 3. صياغة التقرير بدقة
+        // 3. صياغة التقرير (هذا ما سيقرأه الـ AI)
         let statusLine = `📌 **Subject: ${subjectTitle}**\n`;
-        statusLine += `   - ✅ Finished: ${completedLessons.length > 0 ? completedLessons.join(', ') : 'None'}.\n`;
-        if (nextLesson) {
-            statusLine += `   - 🎯 NEXT STEP: "${nextLesson}".`;
+        
+        if (completedTitles.length > 0) {
+            statusLine += `   - ✅ DONE: ${completedTitles.join(', ')}.\n`;
+        } else {
+            statusLine += `   - ⚪ No lessons finished yet.\n`;
+        }
+
+        if (nextLessonTitle) {
+            statusLine += `   - 🎯 NEXT LESSON: "${nextLessonTitle}" (Push user to start this).`;
         } else {
             statusLine += `   - 🎉 All lessons completed!`;
         }
@@ -197,10 +207,10 @@ async function formatProgressForAI(userId) {
         summaryLines.push(statusLine);
       }
     }
-    return summaryLines.length > 0 ? summaryLines.join('\n\n') : 'No specific progress.';
+    return summaryLines.length > 0 ? summaryLines.join('\n\n') : 'No specific progress data.';
   } catch (err) {
     logger.error('Error in formatProgressForAI:', err.stack);
-    return 'Could not format user progress.';
+    return 'Error reading progress.';
   }
 }
 
