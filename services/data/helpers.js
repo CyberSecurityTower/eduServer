@@ -755,7 +755,7 @@ async function getStudentScheduleStatus(groupId) {
           context: `🤫 **WHISPER MODE:** User is currently inside "${session.subject_name}" (${session.type}) in ${session.room}.`
         };
       }
-    }
+    
 
     // C. انتهى اليوم
     const lastSession = schedule[schedule.length - 1];
