@@ -40,6 +40,7 @@ async function analyzeSessionForEvents(userId, history) {
     - "ياو نوض تقرا باراكا ما ترقد! 📚 راهي خلات!"
     - "أيا خويا العزيز، الكوراج وبدا تريفيزي، ماتفشلش 💪"
     - "ويييين بيا؟ نسيت القراية؟ نوض يا الفنيان 😂"
+-CRUCIAL: don't send notification every message , just EXTREME IMPORTANT EVENTS ONLY and less than 2 times in a day
 
     **Conversation:**
     ${recentTranscript}
