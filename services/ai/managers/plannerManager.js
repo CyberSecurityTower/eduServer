@@ -5,25 +5,34 @@ const supabase = require('../../data/supabase');
 const logger = require('../../../utils/logger');
 
 /**
- * Cortex Gravity Engine v2.1 (Production Ready)
- * - Exam Rescue Mode: ON
- * - Debugging: OFF
+ * Cortex Gravity Engine v2.2 (Fixes: Exam Priority & Completion Check)
  */
 async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
   try {
-    // 1. جلب الإعدادات والفوج
-    const [settingsRes, userRes] = await Promise.all([
-        // ✅ نتأكد من جلب السداسي الحالي من الإعدادات
+    logger.info(`🪐 Gravity Engine Started for ${userId} (Path: ${pathId})`);
+
+    // 1. جلب الإعدادات، الفوج، والتقدم
+    const [settingsRes, userRes, progressRes] = await Promise.all([
         supabase.from('system_settings').select('value').eq('key', 'current_semester').single(),
-        supabase.from('users').select('group_id').eq('id', userId).single()
+        supabase.from('users').select('group_id').eq('id', userId).single(),
+        // 🔥 جلب التقدم بشكل منفصل لضمان الدقة
+        supabase.from('user_progress').select('lesson_id, status').eq('user_id', userId)
     ]);
 
-    // القيمة هنا ستكون 'S1' بناءً على صور الداتابايز لديك
     const currentSemester = settingsRes.data?.value || 'S1'; 
     const groupId = userRes.data?.group_id;
-    // 2. جلب الامتحانات القادمة (أو التي حدثت اليوم)
+    
+    // خريطة الدروس المكتملة (Set للسرعة)
+    const completedLessons = new Set();
+    if (progressRes.data) {
+        progressRes.data.forEach(p => {
+            if (p.status === 'completed') completedLessons.add(p.lesson_id);
+        });
+    }
+
+    // 2. جلب الامتحانات القادمة
     let upcomingExams = {};
-   if (groupId) {
+    if (groupId) {
         const todayStart = new Date();
         todayStart.setHours(0, 0, 0, 0);
         
@@ -35,105 +44,102 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
 
         if (exams) {
             exams.forEach(ex => {
-                const cleanId = ex.subject_id ? ex.subject_id.trim() : '';
+                // 🔥 تنظيف الـ ID لضمان التطابق
+                const cleanId = ex.subject_id ? ex.subject_id.trim().toLowerCase() : '';
                 if (cleanId) upcomingExams[cleanId] = new Date(ex.exam_date);
             });
         }
     }
 
-    // 3. جلب الدروس والتقدم
+    console.log("📅 Upcoming Exams Map:", upcomingExams);
+
+    // 3. جلب الدروس
     const { data: lessons, error } = await supabase
       .from('lessons')
       .select(`
         id, title, subject_id, prerequisites, has_content, order_index,
-        subjects ( id, title, coefficient, semester ),
-        user_progress ( status, mastery_score )
+        subjects ( id, title, coefficient, semester )
       `)
       .eq('subjects.path_id', pathId);
 
     if (error) throw error;
 
-    const progressMap = {};
-    lessons.forEach(l => {
-      const prog = l.user_progress.find(p => p.user_id === userId); 
-      progressMap[l.id] = prog ? prog.status : 'locked';
-    });
-
-    // 4. حساب النقاط
+    // 4. حساب النقاط (Gravity Calculation)
     const candidates = lessons.map(lesson => {
-      if (progressMap[lesson.id] === 'completed') return null;
+      // 🛑 الفلتر الأول: هل الدرس مكتمل؟
+      if (completedLessons.has(lesson.id)) {
+          return null;
+      }
 
-      // 🔥🔥🔥 التعديل الحاسم هنا 🔥🔥🔥
-      // قم بإزالة التعليق (Uncomment) عن هذا السطر لكي يرفض أي درس ليس في S1
+      // 🛑 الفلتر الثاني: هل هو في السداسي الحالي؟
       if (lesson.subjects?.semester && lesson.subjects.semester !== currentSemester) {
           return null; 
       }
 
       let score = 0;
       const subjectCoeff = lesson.subjects?.coefficient || 1;
-      const subjectId = lesson.subject_id ? lesson.subject_id.trim() : '';
+      // 🔥 تنظيف الـ ID للمقارنة
+      const subjectId = lesson.subject_id ? lesson.subject_id.trim().toLowerCase() : '';
 
-      // A. المعامل
+      // A. المعامل (Base Score)
       score += subjectCoeff * 10;
 
-      // B. المتطلبات
+      // B. الترتيب (الدروس الأولى أهم)
+      score += (100 - (lesson.order_index || 0));
+
+      // C. المتطلبات (Prerequisites)
       let prerequisitesMet = true;
       if (lesson.prerequisites && lesson.prerequisites.length > 0) {
         for (const preId of lesson.prerequisites) {
-          if (progressMap[preId] !== 'completed') {
+          if (!completedLessons.has(preId)) {
             prerequisitesMet = false;
             break;
           }
         }
       }
+      if (!prerequisitesMet) return null; // لا يمكن دراسته الآن
+      score += 50; // بونص لأن الطريق مفتوح
 
-      if (!prerequisitesMet) return null;
-      score += 50;
-
-      // 🔥 C. وضع الطوارئ (Exam Rescue) 🔥
+      // 🔥 D. وضع الطوارئ (Exam Rescue) 🔥
       if (upcomingExams[subjectId]) {
           const examDate = new Date(upcomingExams[subjectId]);
           const now = new Date();
-          
-          // حساب الفرق بالساعات ليكون أدق
-          const diffTime = examDate.getTime() - now.getTime();
-          const diffHours = diffTime / (1000 * 60 * 60);
+          const diffHours = (examDate - now) / (1000 * 60 * 60);
 
-          // طباعة للتصحيح (ستظهر في التيرمينال)
-          console.log(`🔎 Checking Exam for ${subjectId}: Hours left = ${diffHours}`);
+          console.log(`🚨 Exam Alert for ${subjectId}: ${diffHours.toFixed(1)} hours left.`);
 
           if (diffHours > -5 && diffHours <= 48) { 
-              // الامتحان خلال 48 ساعة القادمة (أو بدأ قبل 5 ساعات)
-              score += 5000; 
-              console.log("   🚀 URGENT BOOST APPLIED!");
+              // الامتحان غداً أو بعد غد!
+              score += 10000; // 🚀 رقم فلكي ليظهر في القمة حتماً
           } else if (diffHours <= 168) { 
               // خلال أسبوع
               score += 2000;
           }
       }
 
-      let taskTitle = lesson.title;
-      if (taskTitle.length > 40) taskTitle = taskTitle.substring(0, 37) + "...";
-
       return {
         id: lesson.id,
-        title: `درس: ${taskTitle} (${lesson.subjects?.title || 'مادة'})`, 
+        title: `درس: ${lesson.title} (${lesson.subjects?.title || 'مادة'})`, 
         type: lesson.has_content ? 'study' : 'ghost_explain',
         score: score,
         meta: {
             relatedLessonId: lesson.id,
-            subjectId: subjectId, 
-            lessonTitle: lesson.title,
+            relatedSubjectId: lesson.subject_id, // Original ID
+            relatedLessonTitle: lesson.title,
             isExamPrep: !!upcomingExams[subjectId]
         }
       };
     }).filter(Boolean);
 
-    // 5. الترتيب
+    // 5. الترتيب النهائي
     candidates.sort((a, b) => b.score - a.score); 
-    const limit = Object.keys(upcomingExams).length > 0 ? 5 : 3;
+    
+    // طباعة الفائز الأول للتأكد
+    if (candidates.length > 0) {
+        console.log(`🏆 Top Task: ${candidates[0].title} (Score: ${candidates[0].score})`);
+    }
 
-    return { tasks: candidates.slice(0, limit), source: 'GravityAlgorithm_V2' };
+    return { tasks: candidates.slice(0, 5), source: 'GravityAlgorithm_V2.2' };
 
   } catch (err) {
     logger.error('Gravity Planner Error:', err.message);
