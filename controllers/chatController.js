@@ -289,6 +289,27 @@ async function chatInteractive(req, res) {
     const aiProfileData = rawProfile || {};
     const groupId = userData.groupId;
 
+    // 🔥 تحويل الـ JSON الجديد إلى نص مقروء (Narrative)
+    const facts = aiProfileData.facts || {};
+    
+    let userBio = "User Profile:\n";
+    
+    if (facts.identity) {
+        userBio += `- Name: ${facts.identity.name} (${facts.identity.role}, ${facts.identity.age}yo).\n`;
+    }
+    if (facts.social) {
+        userBio += `- Circle: Friend ${facts.social.best_friend}, GF ${facts.social.girlfriend}.\n`;
+    }
+    if (facts.interests) {
+        userBio += `- Loves: ${facts.interests.music?.join(', ')} and ${facts.interests.animal}.\n`;
+    }
+    if (facts.education) {
+        userBio += `- Study: ${facts.education.study_style}. Weak in ${facts.education.weaknesses?.[0]}. Strong in ${facts.education.strengths?.[0]}.\n`;
+    }
+    if (facts.behavior) {
+        userBio += `- Style: ${facts.behavior.tone}. Procrastinates by ${facts.behavior.procrastination}.\n`;
+    }
+
     // 🔥 Identity Injection
     const fullUserProfile = {
       userId: userId,
@@ -296,12 +317,8 @@ async function chatInteractive(req, res) {
       lastName: userData.lastName || '',
       group: groupId,
       role: userData.role || 'student',
-      ...aiProfileData,
-      facts: {
-        ...(aiProfileData.facts || {}),
-        userName: userData.firstName || 'Student',
-        userGroup: groupId
-      }
+      formattedBio: userBio, // نرسل هذا للبرومبت
+      ...aiProfileData
     };
 
     // ---------------------------------------------------------
