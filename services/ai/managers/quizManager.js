@@ -32,7 +32,7 @@ async function runQuizAnalyzer(quizPayload) {
 - suggestedNextStep (brief Arabic actionable step)
 - dominantErrorType (one of ["مفهومي","حسابي","تنفيذي","قراءة/سهو","مختلط","غير محدد"])
 - recommendedResource (short string)
-
+- correct answer is randomly putted in range of choices
 CONTEXT:
 Lesson Title: "${escapeForPrompt(lessonTitle || 'Unknown')}"
 User Score: ${Number(totalScore)} / ${totalQuestions} (${masteryScore}%)
