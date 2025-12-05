@@ -668,6 +668,17 @@ async function getStudentScheduleStatus(groupId) {
     
     // نحتاج تحويل الوقت الحالي إلى صيغة مقارنة (دقائق منذ منتصف الليل)
     const now = new Date();
+    
+    const currentHour = algiersCtx.hour;
+
+    // 🛑 1. حماية الليل (Night Guard)
+    // إذا كانت الساعة بين 8 ليلاً و 6 صباحاً، مستحيل تكون هناك حصة!
+    if (currentHour >= 20 || currentHour < 6) {
+        return {
+            state: 'night_time',
+            context: `🌑 **STATUS:** It is Night Time (${algiersCtx.fullTime}). NO CLASSES NOW. The student is likely at home/dorm.`
+        };
+    }
     // ملاحظة: getAlgiersTimeContext تعطينا الساعة، لكن للمقارنة الدقيقة نحتاج Date object
     // للتبسيط سنفترض أن السيرفر مضبوط أو نستخدم Intl كما في الدالة السابقة
     const formatter = new Intl.DateTimeFormat('en-US', {
@@ -690,7 +701,13 @@ async function getStudentScheduleStatus(groupId) {
       .eq('group_id', groupId)
       .eq('day_of_week', currentDay)
       .order('start_time', { ascending: true });
-
+    // 🛑 2. حماية الجدول الفارغ (Empty Schedule)
+    if (!schedule || schedule.length === 0) {
+        return { 
+            state: 'no_data', 
+            context: `📅 **STATUS:** No schedule data found for today. Assume the student is FREE or studying on their own.` 
+        };
+    }
     if (!schedule || schedule.length === 0) return { status: 'free_day', message: 'No classes today.' };
 
     let currentSession = null;
