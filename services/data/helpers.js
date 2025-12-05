@@ -146,68 +146,84 @@ async function getProgress(userId) {
 
 async function formatProgressForAI(userId) {
   try {
-    // 1. جلب التقدم الخام
-    const progress = await getProgress(userId); 
+    // 1. جلب الإعدادات (السداسي الحالي) + التقدم
+    const [settingsRes, progress] = await Promise.all([
+        supabase.from('system_settings').select('value').eq('key', 'current_semester').single(),
+        getProgress(userId)
+    ]);
+
+    const currentSemester = settingsRes.data?.value || 'S1'; // S1 or S2
     const userProgressData = progress.pathProgress || {};
     
     if (Object.keys(userProgressData).length === 0) return 'User has not started any path yet.';
 
-    const summaryLines = [];
+    let activeSemesterText = "";
+    let academicArchiveText = "";
+
     const requestedPaths = new Set(Object.keys(userProgressData));
 
     for (const pathId of requestedPaths) {
-      // جلب تفاصيل المسار (المواد والدروس) من الكاش أو الداتابايز
       const educationalPath = await getCachedEducationalPathById(pathId);
       if (!educationalPath) continue;
 
       const subjectsProgress = userProgressData[pathId]?.subjects || {};
       
-      // 2. الدخول في تفاصيل كل مادة
       for (const subjectId in subjectsProgress) {
         const subjectData = educationalPath.subjects?.find(s => s.id === subjectId);
-        // إذا لم نجد المادة في المسار، نتجاهلها (ربما حذفت)
         if (!subjectData) continue;
 
         const subjectTitle = subjectData.title || subjectId;
+        const subjectSemester = subjectData.semester || 'S1'; // افتراضياً S1
         const lessonsProgress = subjectsProgress[subjectId]?.lessons || {};
         
+        // تحليل حالة الدروس
         const completedTitles = [];
         let nextLessonTitle = null;
-
-        // ترتيب دروس المادة حسب الفهرس (order_index) لنعرف الترتيب الصحيح
         const sortedLessons = (subjectData.lessons || []).sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
 
         for (const lesson of sortedLessons) {
             const lProg = lessonsProgress[lesson.id];
-            // هل الدرس مكتمل؟
             if (lProg && lProg.status === 'completed') {
                 completedTitles.push(lesson.title);
-            } 
-            // أول درس نجده غير مكتمل هو "الهدف القادم"
-            else if (!nextLessonTitle) {
+            } else if (!nextLessonTitle) {
                 nextLessonTitle = lesson.title;
             }
         }
 
-        // 3. صياغة التقرير (هذا ما سيقرأه الـ AI)
-        let statusLine = `📌 **Subject: ${subjectTitle}**\n`;
+        // 🔥 الفرز الذكي (Active vs Archive) 🔥
         
-        if (completedTitles.length > 0) {
-            statusLine += `   - ✅ DONE: ${completedTitles.join(', ')}.\n`;
-        } else {
-            statusLine += `   - ⚪ No lessons finished yet.\n`;
-        }
+        if (subjectSemester === currentSemester) {
+            // --- المواد الحالية (Active Focus) ---
+            let line = `📌 **Subject: ${subjectTitle} (${subjectSemester})**\n`;
+            if (completedTitles.length > 0) line += `   - ✅ DONE: ${completedTitles.join(', ')}.\n`;
+            else line += `   - ⚪ New Subject.\n`;
+            
+            if (nextLessonTitle) line += `   - 🎯 NEXT: "${nextLessonTitle}".`;
+            else line += `   - 🎉 Completed!`;
+            
+            activeSemesterText += line + "\n\n";
 
-        if (nextLessonTitle) {
-            statusLine += `   - 🎯 NEXT LESSON: "${nextLessonTitle}" (Push user to start this).`;
         } else {
-            statusLine += `   - 🎉 All lessons completed!`;
+            // --- الأرشيف (Context Only) ---
+            // نعرض فقط المواد التي درسها سابقاً لنعطي سياقاً
+            if (completedTitles.length > 0) {
+                academicArchiveText += `🗂️ **${subjectTitle} (${subjectSemester}):** Finished ${completedTitles.length} lessons. (Use for analogies/context only).\n`;
+            }
         }
-        
-        summaryLines.push(statusLine);
       }
     }
-    return summaryLines.length > 0 ? summaryLines.join('\n\n') : 'No specific progress data.';
+
+    // دمج النصين
+    let finalReport = "";
+    if (activeSemesterText) {
+        finalReport += `📊 **CURRENT SEMESTER (${currentSemester}) - ACTIVE FOCUS:**\n${activeSemesterText}`;
+    }
+    if (academicArchiveText) {
+        finalReport += `\n📚 **ACADEMIC BACKGROUND (PREVIOUS SEMESTERS):**\n${academicArchiveText}`;
+    }
+
+    return finalReport || 'No progress data available.';
+
   } catch (err) {
     logger.error('Error in formatProgressForAI:', err.stack);
     return 'Error reading progress.';
