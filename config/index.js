@@ -9,10 +9,10 @@ const CONFIG = {
 
   MODEL: {
     chat: 'gemini-2.5-flash',
-    todo: 'gemini-2.5-pro',
-    planner: 'gemini-2.5-pro',
-    review: 'gemini-2.5-pro',
-    analysis: 'gemini-2.5-pro',
+    todo: 'gemini-2.5-flash',
+    planner: 'gemini-2.5-flash',
+    review: 'gemini-2.5-flash',
+    analysis: 'gemini-2.5-flash',
     titleIntent: 'gemini-2.5-flash',
     notification: 'gemini-2.5-flash',
     suggestion: 'gemini-2.5-flash',
