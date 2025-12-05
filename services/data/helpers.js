@@ -622,52 +622,48 @@ async function refreshUserTasks(userId) {
   try {
     logger.info(`🔄 Refreshing tasks for user: ${userId}...`);
 
-    // 1. حذف المهام القديمة المعلقة (Pending) فقط
-    // لا نحذف المكتملة لنحتفظ بالسجل، ولا نحذف ما كتبه المستخدم
-    const { error: deleteError } = await supabase
+    // 1. جلب البروفايل لمعرفة المسار (Path ID)
+    const profile = await getProfile(userId);
+    const pathId = profile.selectedPathId || 'UAlger3_L1_ITCF'; // القيمة الافتراضية
+
+    // 2. حذف المهام القديمة المعلقة
+    await supabase
       .from('user_tasks')
       .delete()
       .eq('user_id', userId)
       .eq('status', 'pending')
       .neq('type', 'user_created');
 
-    if (deleteError) {
-        logger.error('Error clearing old tasks:', deleteError.message);
-    }
-
-    // 2. تشغيل محرك الجاذبية لحساب أفضل المهام حالياً
-    const plan = await runPlannerManager(userId);
+    // 3. تشغيل محرك الجاذبية مع المسار الصحيح
+    const plan = await runPlannerManager(userId, pathId); // 👈 تمرير pathId هنا
     const newTasks = plan.tasks || [];
 
     if (newTasks.length === 0) return [];
 
-    // 3. تجهيز البيانات للإدخال
+    // 4. إدخال المهام
     const tasksToInsert = newTasks.map(t => ({
       user_id: userId,
       title: t.title,
       type: t.type || 'study',
       priority: 'high',
       status: 'pending',
-      
-      // 🔥 تخزين البيانات كاملة في الـ Meta ليقرأها الفرونت أند
       meta: { 
         relatedLessonId: t.meta.relatedLessonId,
-        subjectId: t.meta.relatedSubjectId,    
+        relatedSubjectId: t.meta.relatedSubjectId, // تأكدنا من الاسم هنا
         lessonTitle: t.meta.relatedLessonTitle, 
         score: t.score,
+        isExamPrep: t.meta.isExamPrep, // 👈 مهم جداً للفرونت أند
         source: 'gravity_engine'
       },
       created_at: new Date().toISOString()
     }));
 
-    // 4. إدخال المهام الجديدة
     const { data } = await supabase.from('user_tasks').insert(tasksToInsert).select();
     
-    // 🔥🔥🔥 الإصلاح هنا: تفجير الكاش لإجبار النظام على قراءة الجديد
+    // تفريغ الكاش
     await cacheDel('progress', userId); 
-    await cacheDel('profile', userId); // لأن الأجندة قد تكون مخزنة هنا أيضاً
     
-    logger.success(`✅ Tasks refreshed & Cache cleared for ${userId}`);
+    logger.success(`✅ Tasks refreshed for ${userId} (Top: ${newTasks[0]?.title})`);
     return data || [];
 
   } catch (err) {
