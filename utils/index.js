@@ -178,6 +178,41 @@ function getAlgiersTimeContext() {
     contextSummary: `Current Time in Algeria: ${timeString}. Day: ${dayName} (${dayContext}).\nStatus: ${timeVibe}.`
   };
 }
+
+/**
+ * تحويل التاريخ إلى صيغة بشرية جزائرية
+ * @param {string|Date} targetDate 
+ * @returns {string} مثال: "غدوة الصباح"، "اليوم في الليل"، "السيمانة الجاية"
+ */
+function getHumanTimeDiff(targetDate) {
+  const now = new Date();
+  const target = new Date(targetDate);
+  const diffMs = target - now;
+  const diffHours = diffMs / (1000 * 60 * 60);
+  const diffDays = Math.round(diffHours / 24);
+
+  if (diffHours < 0) return "فات الحال (Passé)"; // للماضي
+
+  // خلال 24 ساعة
+  if (diffHours < 24) {
+    const targetHour = target.getHours();
+    if (diffHours < 1) return "درك (Maintenant)";
+    if (diffHours < 3) return "مبعد شوية";
+    
+    // تحديد الفترة
+    if (targetHour >= 5 && targetHour < 12) return "غدوة الصباح" (if tomorrow) or "اليوم الصباح";
+    // لتبسيط المنطق، سنعتمد على الساعات المتبقية
+    if (diffHours < 12) return "اليوم";
+    return "غدوة";
+  }
+
+  if (diffDays === 1) return "غدوة (Demain)";
+  if (diffDays === 2) return "غير غدوة (Après-demain)";
+  if (diffDays >= 3 && diffDays < 7) return `في هاد ${diffDays} أيام`;
+  if (diffDays >= 7 && diffDays < 14) return "السمانة الجاية";
+  
+  return target.toLocaleDateString('ar-DZ');
+}
 module.exports = {
   sleep,
   iso,
@@ -189,5 +224,6 @@ module.exports = {
   parseJSONFromText,
   ensureJsonOrRepair,
   setGenerateWithFailover, // Export the setter
-  getAlgiersTimeContext 
+  getAlgiersTimeContext,
+  getHumanTimeDiff 
 };
