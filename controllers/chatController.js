@@ -246,9 +246,10 @@ async function chatInteractive(req, res) {
     const updatedContextForPrompt = {
       ...currentContext,
       schedule: scheduleStatus ? {
-        type: scheduleStatus.type, // 'Cours' أو 'TD'
+        state: scheduleStatus.state, 
+        type: scheduleStatus.type, 
         subject: scheduleStatus.subject
-      } : null
+      } : { state: 'unknown' }
     };
 
     // 🔥 معالجة بيانات الجاذبية (Gravity Intel)
