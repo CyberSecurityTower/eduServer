@@ -23,7 +23,7 @@ const PROMPTS = {
       formattedProgress,        // 5
       weaknesses,               // 6
       currentEmotionalState,    // 7
-      fullUserProfile,          // 8. ✅ تم تصحيح الاسم هنا ليتطابق مع الاستخدام
+      fullUserProfile,          // 8. 
       systemContextCombined,    // 9
       examContext,              // 10
       activeAgenda,             // 11
