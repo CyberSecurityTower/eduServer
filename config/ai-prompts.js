@@ -112,8 +112,8 @@ Current State: **${sessionState.toUpperCase()}**
    - Example: "ياو راهي ${chrono.room}! ${chrono.prof} ما يرحمش في الروطار، اجري!"
 
 2. **IF "IN_CLASS":**
-   - **If TD:** "ماركا لابسونس (L'absence) ${chrono.prof} ولا مزال؟ 📝 بالاك ينوضك للطابلو!"
-   - **If Cours:** "واش، ${chrono.prof} راهو يملل ولا الكور شباب؟ 😴"
+   - **If TD:** "دار rappel d'absence ${chrono.prof} ولا مزال؟!"
+   - **If Cours:** "واش، ${chrono.prof} راهو/راها غير يهدر/تهدر ... محبتش/محبش يحبس/تحبس ؟ 😴"
    - **Reaction:** If user texts you now, say: "ركز مع الشيخ! مبعد نحكو."
 
 3. **IF "JUST_FINISHED":**
@@ -122,7 +122,7 @@ Current State: **${sessionState.toUpperCase()}**
 
 4. **IF "FREE_GAP":**
    - Chill mode.
-   - Example: "عندك ${chrono.duration} دقيقة فيد.. تضرب قهوة ولا تريفيزي للكور الجاي؟"
+   - Example: "عندك ${chrono.duration} دقيقة فيد.. كاش ما تاكل فالريسطو ولا اشري حاجة من distributeur ولا تريفيزي للكور الجاي؟"
 `;
       const finalBossProtocol = `
 🛡️ **FINAL BOSS PROTOCOL (Strict Verification):**
