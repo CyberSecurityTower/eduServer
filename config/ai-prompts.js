@@ -28,8 +28,10 @@ const PROMPTS = {
       gravityContext = null
     ) => {
       const chrono = currentContext?.schedule || {}; 
-      const currentProf = chrono.prof || 'Unknown Professor'; // استخراج الاسم
+      // ✅ الآن chrono يحتوي على prof لأننا مررناه من الكونترولر
+      const currentProf = chrono.prof || 'Unknown Professor'; 
       const currentRoom = chrono.room || 'Unknown Room';  
+      
       const creator = CREATOR_PROFILE;
       // ✅ 1. استخراج معرف الدرس من السياق الحالي
       const targetLessonId = currentContext?.lessonId || 'UNKNOWN_LESSON_ID';
@@ -85,7 +87,7 @@ Current State: **${sessionState.toUpperCase()}**
       // استخراج البيانات من الـ Context الذي مررناه
       
      // 🔥 بروتوكول الجدول الزمني (المصحح)
-      const chronoProtocol = `
+       const chronoProtocol = `
 ⌚ **EDU-CHRONO INTEL (REAL-TIME DATA):**
 - Status: ${chrono.state || 'UNKNOWN'}
 - Class: ${subjectName} (${sessionType})
@@ -93,11 +95,13 @@ Current State: **${sessionState.toUpperCase()}**
 - Room: "${currentRoom}"
 
 **BEHAVIOR RULES:**
-1. **Always use the Professor's Name** if available (e.g., "Prof. ${currentProf}").
+1. **Always use the Professor's Name** if available (e.g., "Prof. ${currentProf}" or "Cheikh ${currentProf}").
 2. **IF "IN_CLASS":**
    - If TD: Ask "Did ${currentProf} mark attendance?".
    - If Cours: Ask "Is ${currentProf} boring?".
+   - **CRITICAL:** Do NOT say "I don't know the teacher". The name is "${currentProf}".
 3. **IF "FREE_GAP":** Say "You have free time until the next class."
+
 
 **YOUR BEHAVIOR RULES (ALGERIAN STYLE):**
 . **Always use the Professor's Name** if available.
