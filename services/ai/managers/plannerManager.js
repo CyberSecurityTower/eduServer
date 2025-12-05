@@ -92,14 +92,24 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
 
       // 🔥 C. وضع الطوارئ (Exam Rescue) 🔥
       if (upcomingExams[subjectId]) {
-          const examDate = upcomingExams[subjectId];
-          const today = new Date();
-          const diffTime = examDate - today;
-          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+          const examDate = new Date(upcomingExams[subjectId]);
+          const now = new Date();
+          
+          // حساب الفرق بالساعات ليكون أدق
+          const diffTime = examDate.getTime() - now.getTime();
+          const diffHours = diffTime / (1000 * 60 * 60);
 
-          if (diffDays <= 1) score += 5000;      // غداً
-          else if (diffDays <= 3) score += 2000; // بعد 3 أيام
-          else if (diffDays <= 7) score += 500;  // بعد أسبوع
+          // طباعة للتصحيح (ستظهر في التيرمينال)
+          console.log(`🔎 Checking Exam for ${subjectId}: Hours left = ${diffHours}`);
+
+          if (diffHours > -5 && diffHours <= 48) { 
+              // الامتحان خلال 48 ساعة القادمة (أو بدأ قبل 5 ساعات)
+              score += 5000; 
+              console.log("   🚀 URGENT BOOST APPLIED!");
+          } else if (diffHours <= 168) { 
+              // خلال أسبوع
+              score += 2000;
+          }
       }
 
       let taskTitle = lesson.title;
