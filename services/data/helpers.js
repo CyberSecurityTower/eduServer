@@ -722,19 +722,17 @@ async function getStudentScheduleStatus(groupId) {
 
       // A. قبل الحصة الأولى (Waiting Mode)
       // إذا كان الوقت الحالي قبل بداية هذه الحصة، وهذه هي الحصة الأولى أو الحالية
-      if (currentTotalMins < startMins) {
-          const diff = startMins - currentTotalMins;
-          // إذا بقي أقل من 20 دقيقة -> حالة طوارئ
-          if (diff <= 20) {
-              return {
-                  state: 'ABOUT_TO_START',
-                  subject: session.subject_name,
-                  prof: profName,
-                  room: session.room,
-                  type: session.type,
-                  context: `⚠️ **URGENT:** Class "${session.subject_name}" starts in ${diff} mins at ${session.room}! Teacher: ${profName}. Tell user to RUN.`
-              };
-          } 
+       if (currentTotalMins >= startMins && currentTotalMins < endMins) {
+        return {
+          state: 'IN_CLASS',
+          subject: session.subject_name,
+          prof: profName, // تأكد أن هذا المتغير يحمل الاسم (مثلاً: "Mme. Adila Ladjeroud")
+          type: session.type,
+          room: session.room,
+          // النص السياقي
+          context: `User is in class: ${session.subject_name} (${session.type}). Teacher: ${profName}. Room: ${session.room}.`
+        };
+      }
           // إذا بقي وقت طويل (مثل حالتك: 12:46 والحصة 15:00)
           else {
               // نرجع هذه الحالة فوراً لأنها "أقرب حصة قادمة"
