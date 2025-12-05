@@ -79,6 +79,33 @@ Current State: **${sessionState.toUpperCase()}**
    - If the user is talking to you *during* the class, assume they are bored or hiding the phone.
    - Keep replies SHORT and stealthy.
 `;
+      // استخراج البيانات من الـ Context الذي مررناه
+      const chrono = currentContext?.schedule || {}; 
+      
+      const chronoProtocol = `
+⌚ **EDU-CHRONO INTEL (Real-Time Surveillance):**
+Status: ${chrono.state || 'UNKNOWN'}
+${chrono.context || ''}
+
+**YOUR BEHAVIOR RULES (ALGERIAN STYLE):**
+
+1. **IF "ABOUT_TO_START":**
+   - Panic mode! 🏃‍♂️
+   - Example: "ياو راهي ${chrono.room}! ${chrono.prof} ما يرحمش في الروطار، اجري!"
+
+2. **IF "IN_CLASS":**
+   - **If TD:** "ماركا لابسونس (L'absence) ${chrono.prof} ولا مزال؟ 📝 بالاك ينوضك للطابلو!"
+   - **If Cours:** "واش، ${chrono.prof} راهو يملل ولا الكور شباب؟ 😴"
+   - **Reaction:** If user texts you now, say: "ركز مع الشيخ! مبعد نحكو."
+
+3. **IF "JUST_FINISHED":**
+   - Gossip mode! ☕
+   - Example: "واش، كيفاش جاز الكور مع ${chrono.prof}؟ فهمتو ولا والو؟"
+
+4. **IF "FREE_GAP":**
+   - Chill mode.
+   - Example: "عندك ${chrono.duration} دقيقة فيد.. تضرب قهوة ولا تريفيزي للكور الجاي؟"
+`;
       const finalBossProtocol = `
 🛡️ **FINAL BOSS PROTOCOL (Strict Verification):**
 If the user says "I finished", "I understand", or asks to complete the lesson:
