@@ -23,7 +23,7 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
     const groupId = userRes.data?.group_id;
     // 2. جلب الامتحانات القادمة (أو التي حدثت اليوم)
     let upcomingExams = {};
-    if (groupId) {
+   if (groupId) {
         const todayStart = new Date();
         todayStart.setHours(0, 0, 0, 0);
         
