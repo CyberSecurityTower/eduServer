@@ -507,8 +507,17 @@ async function chatInteractive(req, res) {
       mood: parsedResponse.newMood
     });
 
-    // Background processing
-    setImmediate(() => {
+  // Background processing
+    setImmediate(async () => { // 👈 أضفنا async هنا
+      
+      // 🔥 1. تتبع وقت الدراسة عبر الشات
+      // إذا كان الطالب يتحدث وفي الخلفية يوجد درس مفتوح (currentContext.lessonId)
+      if (currentContext && currentContext.lessonId) {
+          // نضيف 60 ثانية لكل رسالة (تقدير لوقت القراءة والتفكير)
+          await trackStudyTime(userId, currentContext.lessonId, 60);
+      }
+
+      // 2. حفظ الشات (الكود القديم)
       const updatedHistory = [
         ...history,
         { role: 'user', text: message, timestamp: nowISO() },
