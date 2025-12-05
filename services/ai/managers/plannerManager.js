@@ -13,13 +13,14 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
   try {
     // 1. جلب الإعدادات والفوج
     const [settingsRes, userRes] = await Promise.all([
+        // ✅ نتأكد من جلب السداسي الحالي من الإعدادات
         supabase.from('system_settings').select('value').eq('key', 'current_semester').single(),
         supabase.from('users').select('group_id').eq('id', userId).single()
     ]);
 
-    const currentSemester = settingsRes.data?.value || 'S1';
+    // القيمة هنا ستكون 'S1' بناءً على صور الداتابايز لديك
+    const currentSemester = settingsRes.data?.value || 'S1'; 
     const groupId = userRes.data?.group_id;
-
     // 2. جلب الامتحانات القادمة (أو التي حدثت اليوم)
     let upcomingExams = {};
     if (groupId) {
@@ -62,8 +63,11 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
     const candidates = lessons.map(lesson => {
       if (progressMap[lesson.id] === 'completed') return null;
 
-      // فلترة السداسي (اختياري)
-      // if (lesson.subjects?.semester && lesson.subjects.semester !== currentSemester) return null;
+      // 🔥🔥🔥 التعديل الحاسم هنا 🔥🔥🔥
+      // قم بإزالة التعليق (Uncomment) عن هذا السطر لكي يرفض أي درس ليس في S1
+      if (lesson.subjects?.semester && lesson.subjects.semester !== currentSemester) {
+          return null; 
+      }
 
       let score = 0;
       const subjectCoeff = lesson.subjects?.coefficient || 1;
