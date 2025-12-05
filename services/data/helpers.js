@@ -661,7 +661,6 @@ async function getLastActiveSessionContext(userId, currentSessionId) {
  
  * 🕵️‍♂️ Super-Chrono: رادار الوقت والأساتذة
  */
-
 async function getStudentScheduleStatus(groupId) {
   if (!groupId) return null;
 
@@ -677,22 +676,18 @@ async function getStudentScheduleStatus(groupId) {
     });
     
     const parts = formatter.formatToParts(now);
-    // تنظيف اسم اليوم من أي فراغات ومطابقته لما في الداتابايز
     const currentDay = parts.find(p => p.type === 'weekday').value.trim(); 
     const currentHour = parseInt(parts.find(p => p.type === 'hour').value, 10);
     const currentMinute = parseInt(parts.find(p => p.type === 'minute').value, 10);
     const currentTotalMins = (currentHour * 60) + currentMinute;
 
-    // 🔥 LOGGING: لنعرف ماذا يرى السيرفر
     console.log(`🕒 EduChrono Check: Group=${groupId}, Day=${currentDay}, Time=${currentHour}:${currentMinute}`);
 
-    // 2. جلب الجدول (مع تجاهل حالة الأحرف في اليوم إذا أمكن، أو التأكد من المطابقة)
-    // نستخدم ilike في supabase لو أردنا تجاهل حالة الأحرف، لكن هنا سنعتمد على المطابقة الدقيقة أولاً
+    // 2. جلب الجدول
     const { data: schedule, error } = await supabase
       .from('group_schedules')
       .select('*')
       .eq('group_id', groupId)
-      // .ilike('day_of_week', currentDay) // إذا أردت أماناً أكثر استخدم ilike
       .eq('day_of_week', currentDay) 
       .order('start_time', { ascending: true });
 
@@ -701,7 +696,6 @@ async function getStudentScheduleStatus(groupId) {
         return null;
     }
 
-    // إذا كانت المصفوفة فارغة، فعلاً لا توجد حصص
     if (!schedule || schedule.length === 0) {
         console.log("⚠️ No schedule found for today.");
         return { state: 'free_day', context: `It is ${currentDay}, a free day. No classes found in DB.` };
@@ -719,58 +713,48 @@ async function getStudentScheduleStatus(groupId) {
       const endMins = (eH * 60) + eM;
       
       const profName = session.professor_name ? `Prof. ${session.professor_name}` : 'الشيخ';
+      
+      // حساب الفرق (تم تعريفه هنا ليتم استخدامه في الشروط)
+      const diff = startMins - currentTotalMins;
 
-      // A. قبل الحصة الأولى (Waiting Mode)
-      // إذا كان الوقت الحالي قبل بداية هذه الحصة، وهذه هي الحصة الأولى أو الحالية
-       if (currentTotalMins >= startMins && currentTotalMins < endMins) {
-        return {
-          state: 'IN_CLASS',
-          subject: session.subject_name,
-          prof: profName, // تأكد أن هذا المتغير يحمل الاسم (مثلاً: "Mme. Adila Ladjeroud")
-          type: session.type,
-          room: session.room,
-          // النص السياقي
-          context: `User is in class: ${session.subject_name} (${session.type}). Teacher: ${profName}. Room: ${session.room}.`
-        };
-      }
-          // إذا بقي وقت طويل (مثل حالتك: 12:46 والحصة 15:00)
-          else {
-              // نرجع هذه الحالة فوراً لأنها "أقرب حصة قادمة"
-              return {
-                  state: 'FREE_GAP',
-                  nextSubject: session.subject_name,
-                  duration: diff,
-                  context: `☕ **WAITING:** User has class "${session.subject_name}" (${session.type}) at ${session.start_time}. Current time is ${currentHour}:${currentMinute}. They have ${Math.floor(diff/60)}h ${diff%60}m free. Suggest preparing.`
-              };
-          }
-      }
-
-      // B. أثناء الحصة
+      // A. أثناء الحصة (Inside Class)
       if (currentTotalMins >= startMins && currentTotalMins < endMins) {
         return {
           state: 'IN_CLASS',
           subject: session.subject_name,
           prof: profName,
           type: session.type,
-          context: `🤫 **WHISPER MODE:** User is currently inside "${session.subject_name}" (${session.type}) in ${session.room}.`
+          room: session.room,
+          context: `User is in class: ${session.subject_name} (${session.type}). Teacher: ${profName}. Room: ${session.room}.`
         };
       }
-    
 
-    // C. انتهى اليوم
+      // B. قبل الحصة القادمة (Waiting Mode)
+      // إذا كان الوقت الحالي قبل بداية هذه الحصة، فهذه هي الحصة القادمة
+      if (currentTotalMins < startMins) {
+          return {
+              state: 'FREE_GAP',
+              nextSubject: session.subject_name,
+              duration: diff,
+              context: `☕ **WAITING:** User has class "${session.subject_name}" (${session.type}) at ${session.start_time}. Current time is ${currentHour}:${currentMinute}. They have ${Math.floor(diff/60)}h ${diff%60}m free. Suggest preparing.`
+          };
+      }
+      
+      // إذا كان الوقت الحالي بعد نهاية الحصة، تستمر الحلقة للحصة التالية
+    }
+
+    // C. انتهى اليوم (إذا انتهت الحلقة ولم نجد حصة حالية أو قادمة)
     const lastSession = schedule[schedule.length - 1];
     return { 
         state: 'DAY_OVER', 
         context: `University is over for today. Last class was ${lastSession.subject_name}.` 
     };
 
-  } catch (err) {
+  } catch (err) { // <--- تم إصلاح القوس المفقود هنا
     console.error('EduChrono Logic Error:', err);
     return null;
   }
 }
-// services/data/helpers.js
-
 /**
  * 🧠 EduChrono: الخوارزمية الصارمة للوعي الزمني
  * تعيد سياقاً جاهزاً للـ AI بناءً على القواعد المنطقية
