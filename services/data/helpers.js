@@ -718,13 +718,14 @@ async function getStudentScheduleStatus(groupId) {
       const diff = startMins - currentTotalMins;
 
       // A. أثناء الحصة (Inside Class)
-      if (currentTotalMins >= startMins && currentTotalMins < endMins) {
+     if (currentTotalMins >= startMins && currentTotalMins < endMins) {
         return {
           state: 'IN_CLASS',
           subject: session.subject_name,
-          prof: profName,
-          type: session.type,
+          prof: profName, // ✅ تأكد أن هذا السطر موجود
           room: session.room,
+          type: session.type,
+          // نضيف السياق النصي أيضاً كاحتياط
           context: `User is in class: ${session.subject_name} (${session.type}). Teacher: ${profName}. Room: ${session.room}.`
         };
       }
