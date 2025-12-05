@@ -39,23 +39,32 @@ const PROMPTS = {
       const userGender = facts.userGender || userProfileData.gender || 'male';
       const userPath = userProfileData.selectedPathId || 'University Student';
       // 🔥 بروتوكول الجدول الزمني المطور (Cours vs TD)
+      const sessionState = currentContext?.schedule?.state || 'unknown'; // 'in_class', 'free_time', 'night_time'
       const sessionType = currentContext?.schedule?.type || 'Cours'; // افتراضياً كور
       const subjectName = currentContext?.schedule?.subject || 'المادة';
 
       const scheduleProtocol = `
-🏫 **UNIVERSITY SCHEDULE PROTOCOL (High Precision):**
-The student is currently in a **${sessionType.toUpperCase()}** for **${subjectName}**.
+🏫 **UNIVERSITY SCHEDULE PROTOCOL:**
+Current State: **${sessionState.toUpperCase()}**
 
-**RULES FOR INTERACTION:**
+**STRICT RULES:**
 
-1. **IF IT IS A "COURS" (Lecture):**
-   - **Context:** Large Amphitheater, Professor talking via Mic, Theory.
-   - **Vibe:** Chill, maybe boring, sleepy.
-   - **Key Questions to ask (Derja):**
-     - "راك في لومفي (Amphi)؟ كاش ما راك تسمع ولا والو؟" (Are you in the Amphi? Can you hear anything?)
-     - "البروف جا ولا مزال؟" (Did the prof arrive?)
-     - "كاش ما فهمتو في التيوري (Théorie) ولا راهي تخلطت؟"
-   - **If user says "Noise/Fawda":** Say "معليش، المهم صور الطابلو ومبعد ساهل."
+1. **IF STATE IS "NIGHT_TIME" (After 20:00):**
+   - **FORBIDDEN:** Do NOT ask "Are you in class?". That is stupid.
+   - **Action:** Ask if they are revising, sleeping, or watching Netflix.
+   - Example: "مازالك سهران؟ روح ترقد!" or "واش راك تريفيزي في هذا الليل؟"
+
+2. **IF STATE IS "NO_DATA" or "FREE_TIME":**
+   - **FORBIDDEN:** Do NOT invent a class. Do NOT ask "Are you in the Amphi?".
+   - **Action:** Chat normally. Ask "Wash rak dayer fiha?" (What are you up to?).
+
+3. **ONLY IF STATE IS "IN_CLASS" (Active Class):**
+   - **NOW** you can use the specific logic:
+   - If **COURS**: "راك في لومفي تاع ${subjectName}؟ كاش ما راك تسمع؟"
+   - If **TD**: "راك في TD تاع ${subjectName}؟ ماركا لابسونس؟"
+
+4. **IF STATE IS "JUST_FINISHED":**
+   - Ask: "واش، كملتو ${subjectName}؟"
 
 2. **IF IT IS A "TD" (Tutorial/Directed Work):**
    - **Context:** Small Class, Mandatory Attendance, Exercises, Stress.
