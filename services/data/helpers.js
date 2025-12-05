@@ -760,6 +760,96 @@ async function getStudentScheduleStatus(groupId) {
     return null;
   }
 }
+// services/data/helpers.js
+
+/**
+ * 🧠 EduChrono: الخوارزمية الصارمة للوعي الزمني
+ * تعيد سياقاً جاهزاً للـ AI بناءً على القواعد المنطقية
+ */
+async function runEduChrono(userId, groupId) {
+  // 1. جلب الوقت الحالي (الجزائر)
+  const now = new Date();
+  const formatter = new Intl.DateTimeFormat('en-US', { timeZone: 'Africa/Algiers', hour12: false, weekday: 'long', hour: 'numeric', minute: 'numeric' });
+  const parts = formatter.formatToParts(now);
+  const currentDay = parts.find(p => p.type === 'weekday').value; 
+  const currentHour = parseInt(parts.find(p => p.type === 'hour').value, 10);
+  const currentMinute = parseInt(parts.find(p => p.type === 'minute').value, 10);
+  const currentTotalMins = (currentHour * 60) + currentMinute;
+
+  // 2. جلب جدول اليوم من الداتابايز
+  const { data: schedule } = await supabase
+    .from('group_schedules')
+    .select('*')
+    .eq('group_id', groupId)
+    .eq('day_of_week', currentDay)
+    .order('start_time', { ascending: true });
+
+  if (!schedule || schedule.length === 0) {
+      // حالة: يوم عطلة أو لا توجد دراسة
+      if (currentHour >= 18) return { status: 'EVENING_REVIEW', context: "It's evening on a free day. Ask if they studied anything." };
+      return { status: 'FREE_DAY', context: "It's a free day. Encourage light study or hobbies." };
+  }
+
+  // 3. التحليل الدقيق (The Logic)
+  for (let i = 0; i < schedule.length; i++) {
+    const session = schedule[i];
+    const [sH, sM] = session.start_time.split(':').map(Number);
+    const [eH, eM] = session.end_time.split(':').map(Number);
+    const startMins = (sH * 60) + sM;
+    const endMins = (eH * 60) + eM;
+
+    // A. الطالب وسط الحصة
+    if (currentTotalMins >= startMins && currentTotalMins < endMins) {
+        return {
+            status: 'IN_CLASS',
+            context: `User is currently in class: ${session.subject_name} (${session.type}). Be brief. Ask if they are following.`,
+            meta: session
+        };
+    }
+
+    // B. الطالب في "راحة" (Gap) بين حصتين
+    // نتحقق إذا كانت هناك حصة قادمة والفرق بين انتهاء هذه وبداية القادمة أقل من ساعتين
+    if (i < schedule.length - 1) {
+        const nextSession = schedule[i+1];
+        const [nsH, nsM] = nextSession.start_time.split(':').map(Number);
+        const nextStartMins = (nsH * 60) + nsM;
+
+        if (currentTotalMins >= endMins && currentTotalMins < nextStartMins) {
+            return {
+                status: 'BREAK_TIME',
+                context: `User is in a BREAK. Just finished ${session.subject_name}. Next is ${nextSession.subject_name} in ${(nextStartMins - currentTotalMins)} mins. Tell them to grab coffee or review quickly.`,
+                meta: { prev: session, next: nextSession }
+            };
+        }
+    }
+  }
+
+  // C. انتهى الدوام الدراسي لليوم (Post-School)
+  const lastSession = schedule[schedule.length - 1];
+  const [leH, leM] = lastSession.end_time.split(':').map(Number);
+  const lastEndMins = (leH * 60) + leM;
+
+  if (currentTotalMins >= lastEndMins) {
+      // إذا مر أقل من 3 ساعات على النهاية
+      if (currentTotalMins - lastEndMins < 180) {
+          return {
+              status: 'JUST_FINISHED_DAY',
+              context: `User finished university for today. Last class was ${lastSession.subject_name}. Ask: "كيفاش جاز النهار؟ (How was the day?)". Don't ask to study immediately, let them rest.`,
+              meta: { subjectsToday: schedule.map(s => s.subject_name) }
+          };
+      } else {
+          // المساء/الليل
+          return {
+              status: 'EVENING_ROUTINE',
+              context: `It's evening. User studied: ${schedule.map(s => s.subject_name).join(', ')} today. Ask if they want to prepare for tomorrow.`,
+              meta: { subjectsToday: schedule.map(s => s.subject_name) }
+          };
+      }
+  }
+
+  // D. الصباح قبل البداية
+  return { status: 'MORNING_PREP', context: "Morning before classes. Wish them luck." };
+}
 module.exports = {
   initDataHelpers,
   getUserDisplayName,
