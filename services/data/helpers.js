@@ -195,11 +195,16 @@ async function formatProgressForAI(userId) {
         if (subjectSemester === currentSemester) {
             // --- المواد الحالية (Active Focus) ---
             let line = `📌 **Subject: ${subjectTitle} (${subjectSemester})**\n`;
-            if (completedTitles.length > 0) line += `   - ✅ DONE: ${completedTitles.join(', ')}.\n`;
-            else line += `   - ⚪ New Subject.\n`;
-            
-            if (nextLessonTitle) line += `   - 🎯 NEXT: "${nextLessonTitle}".`;
-            else line += `   - 🎉 Completed!`;
+             if (completedTitles.length > 0) {
+            statusLine += `   - ✅ DONE: ${completedTitles.join(', ')}.\n`;
+        } else {
+            statusLine += `   - ⚪ Fresh Start (No lessons done yet).\n`; // 👈 تغيير النص
+        }
+
+        if (nextLessonTitle) {
+            // نغير الكلمة من NEXT LESSON إلى CURRENT TARGET
+            statusLine += `   - 🎯 CURRENT TARGET: "${nextLessonTitle}" (Focus on this now).`; 
+        }
             
             activeSemesterText += line + "\n\n";
 
