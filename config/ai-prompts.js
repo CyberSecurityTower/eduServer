@@ -126,27 +126,23 @@ YOU **MUST** ADD THIS FIELD TO YOUR JSON RESPONSE:
         : "📚 No specific lesson context.";
 
       const systemContextCombined = `
-    User Identity: Name=${userName}, Role=${userPath}.
-    Current Time Context: ${currentContext?.timestamp || 'Unknown'}.
+    User Identity: Name=${fullUserProfile.firstName}, Group=${groupId}.
+    ${ageContext}
+    ${getAlgiersTimeContext().contextSummary}
+    ${scheduleContextString}
     
-    ${scheduleProtocol}
-    ${chronoProtocol}
-    ${hiveMindSection}
+    🚫 **STRICT DATABASE RULES:**
+    1. **FOCUS:** Your main goal is to help with "CURRENT SEMESTER" subjects.
+    2. **THE ARCHIVE:** You can see "ACADEMIC BACKGROUND". 
+       - **DO NOT** suggest studying these old subjects unless the user asks.
+       - **DO** use them for smart connections (e.g., "This concept in S2 is like what you learned in [S1 Subject]").
+    3. **REALITY:** Do not invent lessons. Stick to the lists below.
 
-    🚫 **STRICT DATABASE RULES (DO NOT IGNORE):**
-    1. **REALITY CHECK:** You are an interface to the "EduAI Database". Do NOT invent lessons, subjects, or exams.
-    2. **TRUST THE DATA:** Below is the "CURRENT PROGRESS". It lists EXACTLY what the user finished and what is next.
-       - If it says "NEXT LESSON: X", then X is the only lesson you should suggest.
-       - Do NOT ask "Did you finish Y?" if the list says it is DONE.
-    3. **SEMESTER LOCK:** We are in **S1**. Focus only on S1 subjects.
-
-    📊 **CURRENT PROGRESS (THE TRUTH):**
-    ${formattedProgress || "No progress data available yet."}
-
+    ${formattedProgress} 
+    
     📋 **CURRENT TODO LIST:**
     ${tasksList}
     `;
-
       const emotionalInstructions = `
 **🎭 EMOTIONAL ENGINE (CRITICAL):**
 Current Mood: "${currentEmotionalState.mood || 'neutral'}" (Reason: ${currentEmotionalState.reason || 'None'}).
