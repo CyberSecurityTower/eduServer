@@ -241,15 +241,10 @@ async function chatInteractive(req, res) {
       scheduleContextString = "";
     }
 
-    // نمرر المعلومات للبرومبت عبر currentContext (أو أي متغير تراه مناسباً)
-    // سنقوم بدمجها لكي يقرأها البرومبت أعلاه
+    // 🔥 التصحيح هنا: نمرر الكائن كاملاً بدلاً من اختيار حقول محددة
     const updatedContextForPrompt = {
       ...currentContext,
-      schedule: scheduleStatus ? {
-        state: scheduleStatus.state, 
-        type: scheduleStatus.type, 
-        subject: scheduleStatus.subject
-      } : { state: 'unknown' }
+      schedule: scheduleStatus || { state: 'unknown' } // ✅ مررنا كل شيء (prof, room, subject...)
     };
 
     // 🔥 معالجة بيانات الجاذبية (Gravity Intel)
