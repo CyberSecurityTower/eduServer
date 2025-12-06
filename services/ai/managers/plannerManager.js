@@ -3,9 +3,11 @@
 
 const supabase = require('../../data/supabase');
 const logger = require('../../../utils/logger');
+// 👇 1. التأكد من استيراد الدالة هنا
+const { getHumanTimeDiff } = require('../../../utils');
 
 /**
- * Cortex Gravity Engine v2.2 (Fixes: Exam Priority & Completion Check)
+ * Cortex Gravity Engine v2.3 (Updated: Added Human Exam Timing)
  */
 async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
   try {
@@ -101,6 +103,8 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
       score += 50; // بونص لأن الطريق مفتوح
 
       // 🔥 D. وضع الطوارئ (Exam Rescue) 🔥
+      let humanExamTime = null; // متغير جديد لحفظ النص
+
       if (upcomingExams[subjectId]) {
           const examDate = new Date(upcomingExams[subjectId]);
           const now = new Date();
@@ -115,6 +119,9 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
               // خلال أسبوع
               score += 2000;
           }
+
+          // 👇 حساب الوقت البشري عند وجود امتحان
+          humanExamTime = getHumanTimeDiff(examDate);
       }
 
       return {
@@ -125,8 +132,11 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
         meta: {
             relatedLessonId: lesson.id,
             relatedSubjectId: lesson.subject_id, // Original ID
-            relatedLessonTitle: lesson.title,
-            isExamPrep: !!upcomingExams[subjectId]
+            relatedLessonTitle: lesson.title,    // Legacy support
+            lessonTitle: lesson.title,           // Requested Format
+            score: score,                        // Requested Format
+            isExamPrep: !!upcomingExams[subjectId],
+            examTiming: humanExamTime            // 👈 النص الجاهز (مثلاً: "غدوة")
         }
       };
     }).filter(Boolean);
@@ -139,7 +149,7 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
         console.log(`🏆 Top Task: ${candidates[0].title} (Score: ${candidates[0].score})`);
     }
 
-    return { tasks: candidates.slice(0, 5), source: 'GravityAlgorithm_V2.2' };
+    return { tasks: candidates.slice(0, 5), source: 'GravityAlgorithm_V2.3' };
 
   } catch (err) {
     logger.error('Gravity Planner Error:', err.message);
