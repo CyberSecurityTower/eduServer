@@ -505,16 +505,12 @@ const NOTIF_TYPES = {
   CHAT: 'chat'
 };
 
-async function sendUserNotification(userId, notification) {
+async function sendUserNotification(userId, notification, cachedToken = null) {
   try {
     const type = notification.type || NOTIF_TYPES.SYSTEM;
     const meta = notification.meta || {};
 
-    if ((type === NOTIF_TYPES.NEW_LESSON || type === NOTIF_TYPES.LESSON) && !meta.targetId) {
-        console.warn(`⚠️ Warning: Notification of type '${type}' sent without 'targetId'.`);
-    }
-
-    // 1. Save to Inbox
+    // 1. الحفظ في صندوق الوارد (Inbox) - هذا يحدث دائماً لكي يرى المستخدم الإشعار داخل التطبيق
     await supabase.from('user_notifications').insert({
         user_id: userId,
         box_type: 'inbox',
@@ -527,18 +523,26 @@ async function sendUserNotification(userId, notification) {
         meta: meta
     });
 
-    // 2. Send Push
-    const { data: user } = await supabase
-        .from('users')
-        .select('fcm_token')
-        .eq('id', userId)
-        .single();
+    // 2. التحقق من التوكن (Push Notification)
+    let pushToken = cachedToken;
 
-    if (!user || !user.fcm_token) return;
-    const pushToken = user.fcm_token;
+    // إذا لم يتم تمرير التوكن، نحاول جلبه من القاعدة (كخطة بديلة)
+    if (!pushToken) {
+        const { data: user } = await supabase
+            .from('users')
+            .select('fcm_token')
+            .eq('id', userId)
+            .single();
+        pushToken = user?.fcm_token;
+    }
 
-    if (!pushToken.startsWith('ExponentPushToken')) return;
+    // 🛑 نقطة التفتيش: إذا لم يوجد توكن، نتوقف هنا ولا نرسل للـ Expo
+    if (!pushToken || !pushToken.startsWith('ExponentPushToken')) {
+        // logger.warn(`[Notification] Skipped Push for ${userId}: No valid token.`);
+        return; 
+    }
 
+    // 3. الإرسال الفعلي عبر Expo
     const message = {
       to: pushToken,
       sound: 'default',
