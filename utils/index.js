@@ -183,7 +183,8 @@ function getAlgiersTimeContext() {
  * تحويل التاريخ إلى صيغة بشرية جزائرية
  * @param {string|Date} targetDate 
  * @returns {string} مثال: "غدوة الصباح"، "اليوم في الليل"، "السيمانة الجاية"
- */
+ */// utils/index.js
+
 function getHumanTimeDiff(targetDate) {
   const now = new Date();
   const target = new Date(targetDate);
@@ -192,34 +193,24 @@ function getHumanTimeDiff(targetDate) {
 
   // 1. التعامل مع الماضي (إذا الامتحان فات)
   if (diffHours < 0) {
-      // إذا فات بأقل من 5 سوايع نقولو "قبيل"
-      if (diffHours > -5) return "قبيل برك (Tout à l'heure)"; 
-      return "فات الحال (Passé)"; 
+      // إذا فات بأقل من 3 سوايع
+      if (diffHours > -3) return "فات غير كيما (Just finished)";
+      return "فات صايي (Passed)";
   }
 
-  // 2. التحقق هل هو نفس اليوم في التقويم؟ (Is it the same Calendar Day?)
-  const isSameDay = now.getDate() === target.getDate() && 
-                    now.getMonth() === target.getMonth() && 
-                    now.getFullYear() === target.getFullYear();
-
-  // 3. المنطق الدقيق
+  // 2. التحقق إذا كان الوقت أقل من 24 ساعة
   if (diffHours < 24) {
-    if (diffHours < 1) return "درك (Maintenant)";
-    
-    if (isSameDay) {
-        return "اليوم"; // نفس التاريخ (مثلاً 06/12)
-    } else {
-        return "غدوة"; // تاريخ مختلف (مثلاً 07/12) حتى لو الفرق سوايع قليلة
+    // نتحقق إذا كنا في نفس اليوم (مثلاً: رانا الصباح والامتحان العشية)
+    if (now.getDate() === target.getDate()) {
+        return "اليوم (Aujourd'hui)";
     }
+    // إذا أقل من 24 ساعة لكن التاريخ تبدل (مثلاً: رانا 10 تع الليل والامتحان غدوة 8 صباحاً)
+    return "غدوة (Demain)";
   }
 
+  // 3. إذا كان الوقت أكثر من 24 ساعة
   const diffDays = Math.ceil(diffHours / 24);
-  if (diffDays === 1) return "غدوة (Demain)";
-  if (diffDays === 2) return "غير غدوة (Après-demain)";
-  if (diffDays >= 3 && diffDays < 7) return `في هاد ${diffDays} أيام`;
-  if (diffDays >= 7 && diffDays < 14) return "السمانة الجاية";
-  
-  return target.toLocaleDateString('ar-DZ');
+  return `في ${diffDays} أيام`;
 }
 module.exports = {
   sleep,
