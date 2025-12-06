@@ -29,7 +29,8 @@ const PROMPTS = {
       activeAgenda,             // 11
       groupContext,             // 12
       currentContext,           // 13
-      gravityContext            // 14
+      gravityContext,        // 14
+      
     ) => {
       
       // --- A. استخراج البيانات الأساسية بأمان ---
@@ -56,7 +57,14 @@ const PROMPTS = {
       const targetLessonId = currentContext?.lessonId || null;
 
       // --- D. بناء البروتوكولات الديناميكية ---
+  // بدلاً من تقرير التقدم الصارم، نضع سياق "النشاط الحالي"
+    let activityContext = "User is currently browsing the app home.";
+    
+    if (currentContext && currentContext.lessonTitle) {
+        activityContext = `User has opened the lesson: "${currentContext.lessonTitle}". Assume they are studying it NOW.`;
+    }
 
+   
       // 1. بروتوكول الجدول الزمني
       const scheduleProtocol = `
 🏫 **UNIVERSITY SCHEDULE PROTOCOL:**
@@ -162,7 +170,11 @@ ${profile.formattedBio || "No deep profile yet."}
 
 **⏰ SYSTEM CONTEXT:** 
 ${systemContextCombined}
-
+ **📍 CURRENT ACTIVITY:**
+    ${activityContext}
+    
+    **🧠 MEMORY (Previous Discussions):**
+    ${memoryReport} (You can use this to know what they studied before)
 **📊 ACADEMIC STATUS:**
 ${formattedProgress}
 ( You can use these stats once a time to motivate the user. Example: "You are halfway through Math!")
