@@ -309,7 +309,7 @@ async function formatProgressForAI(userId) {
   }
 }
 
-}
+
 
 async function getCachedEducationalPathById(pathId) {
   if (!pathId) return null;
