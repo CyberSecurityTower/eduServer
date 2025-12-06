@@ -5,7 +5,7 @@ const supabase = require('../data/supabase');
 const { sendUserNotification } = require('../data/helpers');
 const { extractTextFromResult } = require('../../utils');
 const logger = require('../../utils/logger');
-
+const { getHumanTimeDiff } = require('../../utils');
 // نحتاج لحقن دالة التوليد (Dependency Injection)
 let generateWithFailoverRef;
 
@@ -89,13 +89,14 @@ if (error || !exams || exams.length === 0) {
   }
 }
 
+
 async function processStudentNotification(student, exam, type) {
   const userId = student.id;
   const subjectName = exam.subjects?.title || 'المادة';
   const examId = exam.id;
+  const examDate = exam.exam_date; // 👈 نحتاج التاريخ هنا
 
   // 🛑 1. فحص التكرار (مهم جداً)
-  // نبحث في الإشعارات السابقة لهذا اليوم
   const { data: existing } = await supabase
     .from('user_notifications')
     .select('id')
@@ -106,7 +107,7 @@ async function processStudentNotification(student, exam, type) {
 
   if (existing && existing.length > 0) return; // تم الإرسال سابقاً
 
-  // 🧠 2. جلب بروفايل الطالب (للتخصيص)
+  // 🧠 2. جلب بروفايل الطالب
   const { data: profile } = await supabase
     .from('ai_memory_profiles')
     .select('facts, emotional_state')
@@ -116,58 +117,72 @@ async function processStudentNotification(student, exam, type) {
   const facts = profile?.facts || {};
   const mood = profile?.emotional_state?.mood || 'neutral';
   
-  // 🎨 3. توليد الرسالة بالذكاء الاصطناعي
-  const message = await generatePersonalizedMessage(student.first_name, subjectName, type, facts, mood);
+  // 🎨 3. توليد الرسالة بالذكاء الاصطناعي (تم تمرير examDate)
+  const message = await generatePersonalizedMessage(
+    student.first_name, 
+    subjectName, 
+    type, 
+    facts, 
+    mood, 
+    examDate // 👈 التعديل هنا
+  );
 
   if (message) {
     // 🚀 4. إرسال الإشعار
     await sendUserNotification(userId, {
-      title: type === 'pre_exam' ? `⏳ بقيت ساعة على ${subjectName}` : `🏁 خلاصت ${subjectName}؟`,
+      title: type === 'pre_exam' ? `⏳ قرب وقت ${subjectName}` : `🏁 خلاصت ${subjectName}؟`,
       message: message,
       type: type,
-      meta: { targetId: examId, subject: subjectName } // نخزن الـ ID لمنع التكرار
+      meta: { targetId: examId, subject: subjectName }
     });
     
     logger.success(`[ExamWorker] Sent ${type} to ${student.first_name} for ${subjectName}`);
   }
 }
-
 // 🤖 مصنع الرسائل الشخصية
-async function generatePersonalizedMessage(name, subject, type, facts, mood) {
+async function generatePersonalizedMessage(name, subject, type, facts, mood, examDate) {
   try {
     if (!generateWithFailoverRef) return null;
 
-    // استخراج صفات للمستخدم (مثلاً: يحب القهوة، يكره الرياضيات...)
+    // 🕒 حساب الوقت البشري للسياق (مثال: "in 55 minutes")
+    // نستخدم الدالة المساعدة أو نحسبها يدوياً لتكون دقيقة للـ Prompt
+    let timeContextStr = "soon";
+    if (examDate) {
+      // نستخدم الدالة المستوردة (تعيد نصاً مثل "خلال ساعة" أو "منذ ساعتين")
+      timeContextStr = getHumanTimeDiff(new Date(examDate)); 
+    }
+
     const userContext = `
     User: ${name}
     Facts: ${JSON.stringify(facts)}
     Current Mood: ${mood}
+    Exam Time Info: ${timeContextStr}
     `;
 
     let prompt = "";
 
     if (type === 'pre_exam') {
       prompt = `
-      You are a close Algerian friend.
-      Context: The exam for "${subject}" starts in 1 hour.
+      You are a supportive Algerian friend.
+      Context: The exam for "${subject}" is happening ${timeContextStr}.
       User Info: ${userContext}
       
-      Task: Write a short notification (max 15 words) in Algerian Derja.
-      - Wish them luck.
-      - Remind them of ONE thing based on context (e.g., "Don't forget your calculator/ID", "Drink water", "Breathe").
-      - If they are anxious type, be calming. If confident, be hyping.
-      - Example: "يا ${name}، ماتنساش الكالكيلاتريس! ربي يوفقك، راك واجد 💪"
+      Task: Write a short, encouraging notification (max 15 words) in Algerian Derja.
+      - If time is very close (less than 1 hour), tell them to get ready/focus.
+      - Wish them luck based on their mood (calm them if anxious, hype them if confident).
+      - Remind them of ONE practical thing (ID card, calculator, water).
+      - Example: "يا ${name}، بقات ساعة! وجد دوزانك وربي يوفقك، راك قدها 💪"
       `;
     } else {
       prompt = `
       You are a close Algerian friend.
-      Context: The exam for "${subject}" finished recently.
+      Context: The exam for "${subject}" finished recently (${timeContextStr}).
       User Info: ${userContext}
       
       Task: Write a short notification (max 15 words) in Algerian Derja.
-      - Ask how it went casually.
-      - Tell them to relax/forget about it.
-      - Example: "واش ${name}؟ المات كان ساهل ولا كلاكم؟ المهم ريح راسك دوكا."
+      - Ask casually how it went.
+      - Tell them to forget it and rest.
+      - Example: "واش ${name}؟ المات كان ساهل؟ المهم ريح راسك دوكا."
       `;
     }
 
@@ -178,9 +193,9 @@ async function generatePersonalizedMessage(name, subject, type, facts, mood) {
   } catch (e) {
     logger.error('AI Gen Error:', e.message);
     
+    // Fallback messages
     if (type === 'pre_exam') return `بالتوفيق يا ${name}! ركز مليح وما تنساش دوزانك.`;
     return `يعطيك الصحة يا ${name}! ارتاح شوية وانسى واش فات.`;
   }
 }
-
 module.exports = { initExamWorker, checkExamTiming };
