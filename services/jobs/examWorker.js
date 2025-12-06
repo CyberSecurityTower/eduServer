@@ -73,13 +73,19 @@ if (error || !exams || exams.length === 0) {
       // 3. جلب طلاب الفوج
       const { data: students } = await supabase
         .from('users')
-        .select('id, first_name')
+        .select('id, first_name, fcm_token') // 👈 أضفنا fcm_token هنا
         .eq('group_id', exam.group_id);
 
       if (!students) continue;
 
       // 4. المعالجة لكل طالب
       for (const student of students) {
+        // 🛑 تحقق سريع قبل حتى الدخول في المعالجة الثقيلة
+        if (!student.fcm_token) {
+             console.log(`⏩ Skipping ${student.first_name} (No Token)`);
+             continue; 
+        }
+        
         await processStudentNotification(student, exam, notificationType);
       }
     }
@@ -128,15 +134,15 @@ async function processStudentNotification(student, exam, type) {
   );
 
   if (message) {
-    // 🚀 4. إرسال الإشعار
-    await sendUserNotification(userId, {
+    // 🚀 4. إرسال الإشعار مع تمرير التوكن
+    await sendUserNotification(student.id, {
       title: type === 'pre_exam' ? `⏳ قرب وقت ${subjectName}` : `🏁 خلاصت ${subjectName}؟`,
       message: message,
       type: type,
       meta: { targetId: examId, subject: subjectName }
-    });
+    }, student.fcm_token); // 👈 مررنا التوكن هنا لتفادي استعلام جديد
     
-    logger.success(`[ExamWorker] Sent ${type} to ${student.first_name} for ${subjectName}`);
+    logger.success(`[ExamWorker] Sent ${type} to ${student.first_name}`);
   }
 }
 // 🤖 مصنع الرسائل الشخصية
