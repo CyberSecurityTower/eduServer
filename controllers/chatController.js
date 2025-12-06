@@ -261,15 +261,19 @@ async function chatInteractive(req, res) {
       });
 
       // 2. التقاط "مهمة الجاذبية القصوى" (Top Priority)
-      const topTask = sortedTasks[0];
+     const topTask = sortedTasks[0];
       const topScore = topTask.meta?.score || 0;
-      const isExamEmergency = topScore > 4000; // سكور الطوارئ الذي وضعناه
+      const isExamEmergency = topScore > 4000;
+
+      // ✅ حساب التوقيت (نضيف هذا السطر)
+      const examTimingCalc = userData.nextExamDate ? getHumanTimeDiff(userData.nextExamDate) : "";
 
       gravityContext = {
         title: topTask.title,
         score: topScore,
         isExam: isExamEmergency,
-        subject: topTask.meta?.subjectId || 'General'
+        subject: topTask.meta?.subjectId || 'General',
+        examTiming: examTimingCalc 
       };
 
       // 3. تنسيق القائمة للعرض العام
@@ -280,6 +284,24 @@ async function chatInteractive(req, res) {
         return `- ${t.title} ${examBadge} (Priority: ${score})`;
       }).join('\n');
     }
+ // ==========================================
+    // 6. بروتوكول الجاذبية (الكود الجديد)
+    // ==========================================
+    let gravitySection = "";
+    let antiSamataProtocol = "";
+      
+    if (gravityContext) {
+        const isExam = gravityContext.isExam || false;
+        // 👇 التعديل هنا: أضفنا (Timing: ...)
+        const timingInfo = gravityContext.examTiming ? `(Timing: ${gravityContext.examTiming})` : "";
+          
+        gravitySection = `🚀 **GRAVITY ENGINE INTEL:** Top Task: "${gravityContext.title}", Score: ${gravityContext.score}, Exam Emergency: ${isExam ? "YES" : "NO"} ${timingInfo}`;
+          
+        if (isExam) {
+            antiSamataProtocol = `🛡️ **PROTOCOL: EXAM EMERGENCY** - User has an EXAM soon (${timingInfo}). Be urgent.`;
+        }
+    }
+    
 // Exam Context
 let examContext = {};
 if (userData.nextExamDate) {
@@ -361,6 +383,9 @@ if (userData.nextExamDate) {
 
     📋 **CURRENT TODO LIST:**
     ${tasksList}
+    
+    ${gravitySection} 
+    ${antiSamataProtocol}
 
     ${examContext.subject ? `🚨 **EXAM ALERT:** Subject: "${examContext.subject}" is happening **${examContext.timingHuman}**. Focus on this immediately!` : ""}
     `;
