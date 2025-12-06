@@ -335,7 +335,6 @@ if (userData.nextExamDate) {
     const activeAgenda = allAgenda.filter(t => t.status === 'pending');
 
     // Exam Context
-    let examContext = {};
     if (userData.nextExamDate) {
       const diffDays = Math.ceil((new Date(userData.nextExamDate) - new Date()) / (1000 * 60 * 60 * 24));
       if (diffDays >= 0 && diffDays < 30) {
