@@ -46,19 +46,16 @@ async function runNightWatch() {
             // جلب طلاب هذا الفوج
             const { data: students } = await supabase
                 .from('users')
-                .select('id, first_name')
+                .select('id, first_name, fcm_token') // 👈 جلبنا التوكن
                 .eq('group_id', groupID);
 
             if (students && students.length > 0) {
-                console.log(`📢 Sending post-exam check to ${students.length} students for ${subjectName}...`);
                 
                 const promises = students.map(student => {
-                    // رسائل عشوائية لطيفة
-                    const messages = [
-                        `كيفاش جاز امتحان ${subjectName}؟ المهم ريح شوية وبدا توجد لغدوة! 💪`,
-                        `تهنيت من ${subjectName}! 🥳 انسى واش فات وركز في الجاي.`,
-                        `بصحتك فوت ${subjectName}! 🧠 ارتاح شوية ومبعد نوض للكراس.`
-                    ];
+                    // 🛑 إذا لم يكن لديه توكن، لا نرسل (أو نرسل فقط للإنبوكس بدون تمرير التوكن)
+                    // هنا سنمرر التوكن للدالة وهي تتكفل بالباقي
+                    
+                    const messages = [ ... ]; // (قائمة الرسائل)
                     const randomMsg = messages[Math.floor(Math.random() * messages.length)];
 
                     return sendUserNotification(student.id, {
@@ -66,7 +63,7 @@ async function runNightWatch() {
                         message: randomMsg,
                         type: "post_exam_check",
                         meta: { subject: subjectName }
-                    });
+                    }, student.fcm_token); // 👈 تمرير التوكن
                 });
 
                 await Promise.all(promises);
