@@ -165,7 +165,7 @@ ${systemContextCombined}
 
 **📊 ACADEMIC STATUS:**
 ${formattedProgress}
-
+( You can use these stats once a time to motivate the user. Example: "You are halfway through Math!")
 ${scheduleProtocol}
 ${gravitySection}
 ${antiSamataProtocol}
