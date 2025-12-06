@@ -103,24 +103,22 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
       score += 50; // بونص لأن الطريق مفتوح
 
       // 🔥 D. وضع الطوارئ (Exam Rescue) 🔥
-      let humanExamTime = null; // متغير جديد لحفظ النص
+     let humanExamTime = null;
 
       if (upcomingExams[subjectId]) {
           const examDate = new Date(upcomingExams[subjectId]);
           const now = new Date();
           const diffHours = (examDate - now) / (1000 * 60 * 60);
 
-          console.log(`🚨 Exam Alert for ${subjectId}: ${diffHours.toFixed(1)} hours left.`);
-
-          if (diffHours > -5 && diffHours <= 48) { 
-              // الامتحان غداً أو بعد غد!
-              score += 10000; // 🚀 رقم فلكي ليظهر في القمة حتماً
-          } else if (diffHours <= 168) { 
-              // خلال أسبوع
-              score += 2000;
+          // 👇 التعديل هنا: نعتبره طوارئ فقط إذا كان في المستقبل أو فات عليه أقل من ساعة
+          // القديم كان: if (diffHours > -5 && diffHours <= 48)
+          if (diffHours > -1 && diffHours <= 48) { 
+              score += 10000; // 🚀 طوارئ حقيقية
+          } else if (diffHours <= 168 && diffHours > -1) { 
+              score += 2000; // تحضير عادي
           }
 
-          // 👇 حساب الوقت البشري عند وجود امتحان
+          // 👇 حساب الوقت البشري
           humanExamTime = getHumanTimeDiff(examDate);
       }
 
