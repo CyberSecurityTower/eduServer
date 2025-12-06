@@ -144,6 +144,9 @@ async function getProgress(userId) {
   }
 }
 
+/**
+ * حساب الإحصائيات الأكاديمية للمسار
+ */
 async function getAcademicStats(pathId, completedLessonIdsSet) {
   try {
     // نستخدم الكاش للمسار التعليمي لتجنب الضغط على القاعدة
@@ -185,29 +188,61 @@ async function getAcademicStats(pathId, completedLessonIdsSet) {
     return null;
   }
 }
+/**
+ * تنسيق تقرير التقدم للذكاء الاصطناعي
+ */
 async function formatProgressForAI(userId) {
   try {
-    // 1. جلب الإعدادات (السداسي الحالي) + التقدم
-    const [settingsRes, progress] = await Promise.all([
+    // 1. جلب الإعدادات (السداسي الحالي) + التقدم + البروفايل
+    const [settingsRes, progress, profile] = await Promise.all([
         supabase.from('system_settings').select('value').eq('key', 'current_semester').single(),
-        getProgress(userId)
+        getProgress(userId),
+        getProfile(userId)
     ]);
 
-    const currentSemester = settingsRes.data?.value || 'S1'; // S1 or S2
+    const currentSemester = settingsRes.data?.value || 'S1'; 
+    const pathId = profile.selectedPathId || 'UAlger3_L1_ITCF';
     const userProgressData = progress.pathProgress || {};
     
     if (Object.keys(userProgressData).length === 0) return 'User has not started any path yet.';
 
+    // 2. بناء مجموعة الدروس المكتملة للإحصائيات
+    const completedSet = new Set();
+    for (const pId in userProgressData) {
+        const subjects = userProgressData[pId].subjects || {};
+        for (const sId in subjects) {
+            const lessons = subjects[sId].lessons || {};
+            for (const lId in lessons) {
+                if (lessons[lId].status === 'completed') {
+                    completedSet.add(lId);
+                }
+            }
+        }
+    }
+
+    // 3. حساب الإحصائيات العامة
+    const stats = await getAcademicStats(pathId, completedSet);
+    let statsReport = "";
+    if (stats) {
+        statsReport = `📊 **ACADEMIC STATS:**\n- Global Progress: ${stats.globalPercentage}% (${stats.totalCompleted}/${stats.totalLessons} lessons).\n`;
+        Object.entries(stats.details).forEach(([subj, det]) => {
+            if (det.percentage > 0) { 
+                statsReport += `- ${subj}: ${det.percentage}% (${det.done}/${det.total})\n`;
+            }
+        });
+    }
+
+    // 4. تحليل التفاصيل (Active vs Archive)
     let activeSemesterText = "";
     let academicArchiveText = "";
 
     const requestedPaths = new Set(Object.keys(userProgressData));
 
-    for (const pathId of requestedPaths) {
-      const educationalPath = await getCachedEducationalPathById(pathId);
+    for (const pId of requestedPaths) {
+      const educationalPath = await getCachedEducationalPathById(pId);
       if (!educationalPath) continue;
 
-      const subjectsProgress = userProgressData[pathId]?.subjects || {};
+      const subjectsProgress = userProgressData[pId]?.subjects || {};
       
       for (const subjectId in subjectsProgress) {
         const subjectData = educationalPath.subjects?.find(s => s.id === subjectId);
@@ -232,26 +267,24 @@ async function formatProgressForAI(userId) {
         }
 
         // 🔥 الفرز الذكي (Active vs Archive) 🔥
-        
         if (subjectSemester === currentSemester) {
             // --- المواد الحالية (Active Focus) ---
-            let line = `📌 **Subject: ${subjectTitle} (${subjectSemester})**\n`;
-             if (completedTitles.length > 0) {
-            statusLine += `   - ✅ DONE: ${completedTitles.join(', ')}.\n`;
-        } else {
-            statusLine += `   - ⚪ Fresh Start (No lessons done yet).\n`; // 👈 تغيير النص
-        }
-
-        if (nextLessonTitle) {
-            // نغير الكلمة من NEXT LESSON إلى CURRENT TARGET
-            statusLine += `   - 🎯 CURRENT TARGET: "${nextLessonTitle}" (Focus on this now).`; 
-        }
+            let statusLine = `📌 **Subject: ${subjectTitle} (${subjectSemester})**\n`;
             
-            activeSemesterText += line + "\n\n";
+            if (completedTitles.length > 0) {
+                statusLine += `   - ✅ DONE: ${completedTitles.join(', ')}.\n`;
+            } else {
+                statusLine += `   - ⚪ Fresh Start (No lessons done yet).\n`; 
+            }
+
+            if (nextLessonTitle) {
+                statusLine += `   - 🎯 CURRENT TARGET: "${nextLessonTitle}" (Focus on this now).`; 
+            }
+            
+            activeSemesterText += statusLine + "\n\n";
 
         } else {
             // --- الأرشيف (Context Only) ---
-            // نعرض فقط المواد التي درسها سابقاً لنعطي سياقاً
             if (completedTitles.length > 0) {
                 academicArchiveText += `🗂️ **${subjectTitle} (${subjectSemester}):** Finished ${completedTitles.length} lessons. (Use for analogies/context only).\n`;
             }
@@ -259,10 +292,10 @@ async function formatProgressForAI(userId) {
       }
     }
 
-    // دمج النصين
-    let finalReport = "";
+    // 5. دمج التقرير النهائي
+    let finalReport = statsReport + "\n";
     if (activeSemesterText) {
-        finalReport += `📊 **CURRENT SEMESTER (${currentSemester}) - ACTIVE FOCUS:**\n${activeSemesterText}`;
+        finalReport += `📝 **CURRENT SEMESTER (${currentSemester}) - ACTIVE FOCUS:**\n${activeSemesterText}`;
     }
     if (academicArchiveText) {
         finalReport += `\n📚 **ACADEMIC BACKGROUND (PREVIOUS SEMESTERS):**\n${academicArchiveText}`;
@@ -274,6 +307,8 @@ async function formatProgressForAI(userId) {
     logger.error('Error in formatProgressForAI:', err.stack);
     return 'Error reading progress.';
   }
+}
+
 }
 
 async function getCachedEducationalPathById(pathId) {
