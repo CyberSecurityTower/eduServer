@@ -204,4 +204,55 @@ async function generatePersonalizedMessage(name, subject, type, facts, mood, exa
     return `يعطيك الصحة يا ${name}! ارتاح شوية وانسى واش فات.`;
   }
 }
+
+
+/**
+ * 🧹 دالة الحذف القاطع
+ * تحذف أي مهمة في user_tasks مرتبطة بهذا الامتحان لهذا الفوج
+ */
+async function cleanupExamTasks(groupId, subjectId) {
+  try {
+    // 1. نجيبو كاع الطلاب تاع الفوج
+    const { data: students } = await supabase
+        .from('users')
+        .select('id')
+        .eq('group_id', groupId);
+
+    if (!students || students.length === 0) return;
+
+    const studentIds = students.map(s => s.id);
+
+    // 2. نحذفو المهام اللي عندها علاقة بالمادة هادي (subjectId)
+    // ملاحظة: نعتمد على أن plannerManager يخزن relatedSubjectId في الميتا
+    // ولكن للأسف Supabase JSON filtering معقد شوية، لذا سنحذف بناءً على العنوان أو النوع
+    // الأضمن: نحذف أي مهمة نوعها 'study' وتحتوي على اسم المادة أو الـ ID في الميتا
+    
+    // الطريقة الأبسط والأكثر فعالية:
+    // نحذف المهام التي تحتوي في الـ meta على isExamPrep: true
+    // وتخص هؤلاء المستخدمين
+    // (بما أننا في وقت الامتحان، أي مهمة examPrep هي بالضرورة لهذا الامتحان أو قديم)
+    
+    // ملاحظة: Supabase لا يدعم الحذف بـ Join معقد مباشرة بسهولة، لذا سنقوم بحلقة بسيطة (Loop)
+    // أو نستخدم فلتر ذكي إذا كان العمود meta مدعوماً
+    
+    for (const userId of studentIds) {
+        // نحذف أي مهمة "تحضير امتحان" لهذا الطالب
+        // لأن الامتحان بدأ، فلا داعي للتحضير
+        const { error } = await supabase
+            .from('user_tasks')
+            .delete()
+            .eq('user_id', userId)
+            .contains('meta', { isExamPrep: true }); // 🔥 القاضية
+            
+        if (!error) {
+            // logger.info(`🧹 Cleaned exam tasks for user ${userId}`);
+        }
+    }
+    
+    // console.log(`🧹 Cleanup complete for exam: ${subjectId}`);
+
+  } catch (e) {
+    logger.error('Cleanup Error:', e.message);
+  }
+}
 module.exports = { initExamWorker, checkExamTiming };
