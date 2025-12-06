@@ -144,6 +144,47 @@ async function getProgress(userId) {
   }
 }
 
+async function getAcademicStats(pathId, completedLessonIdsSet) {
+  try {
+    // نستخدم الكاش للمسار التعليمي لتجنب الضغط على القاعدة
+    const pathData = await getCachedEducationalPathById(pathId);
+    if (!pathData || !pathData.subjects) return null;
+
+    let totalLessons = 0;
+    let totalCompleted = 0;
+    let subjectStats = {};
+
+    pathData.subjects.forEach(subject => {
+      const subjectLessons = subject.lessons || [];
+      const subTotal = subjectLessons.length;
+      let subCompleted = 0;
+
+      subjectLessons.forEach(l => {
+        if (completedLessonIdsSet.has(l.id)) subCompleted++;
+      });
+
+      totalLessons += subTotal;
+      totalCompleted += subCompleted;
+
+      subjectStats[subject.title] = {
+        total: subTotal,
+        done: subCompleted,
+        percentage: subTotal > 0 ? Math.round((subCompleted / subTotal) * 100) : 0
+      };
+    });
+
+    return {
+      totalLessons,
+      totalCompleted,
+      globalPercentage: totalLessons > 0 ? Math.round((totalCompleted / totalLessons) * 100) : 0,
+      details: subjectStats
+    };
+
+  } catch (e) {
+    logger.error('Stats Calc Error:', e);
+    return null;
+  }
+}
 async function formatProgressForAI(userId) {
   try {
     // 1. جلب الإعدادات (السداسي الحالي) + التقدم
