@@ -4,7 +4,6 @@
 const supabase = require('../data/supabase');
 const { sendUserNotification } = require('../data/helpers');
 const CONFIG = require('../../config');
-// تأكد من وجود ملف logger في المسار المحدد، وإلا يمكنك استبداله بـ console
 const logger = require('../../utils/logger'); 
 
 async function runNightWatch() {
@@ -27,14 +26,14 @@ async function runNightWatch() {
     const startOfDay = new Date(now).toISOString();
     const endOfDay = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
 
-    // نفترض وجود جدول 'exams' يحتوي على تواريخ دقيقة
+    // جلب الامتحانات التي تجري اليوم
     const { data: examsToday, error: examsError } = await supabase
         .from('exams')
         .select('group_id, subject_id, subjects(title)')
         .gte('exam_date', startOfDay)
         .lt('exam_date', endOfDay);
 
-    if (examsError) logger.error('Exams Fetch Error:', examsError);
+    if (examsError) logger.error('Exams Fetch Error:', examsError.message);
 
     if (examsToday && examsToday.length > 0) {
         console.log(`🎓 Found ${examsToday.length} exams taking place today.`);
@@ -43,27 +42,31 @@ async function runNightWatch() {
             const groupID = exam.group_id;
             const subjectName = exam.subjects?.title || 'المادة';
 
-            // جلب طلاب هذا الفوج
+            // جلب طلاب هذا الفوج مع التوكن
             const { data: students } = await supabase
                 .from('users')
-                .select('id, first_name, fcm_token') // 👈 جلبنا التوكن
+                .select('id, first_name, fcm_token') 
                 .eq('group_id', groupID);
 
             if (students && students.length > 0) {
+                console.log(`📢 Sending post-exam check to ${students.length} students for ${subjectName}...`);
                 
                 const promises = students.map(student => {
-                    // 🛑 إذا لم يكن لديه توكن، لا نرسل (أو نرسل فقط للإنبوكس بدون تمرير التوكن)
-                    // هنا سنمرر التوكن للدالة وهي تتكفل بالباقي
-                    
-                    const messages = [ ... ]; // (قائمة الرسائل)
+                    // ✅ تم تصحيح المصفوفة هنا
+                    const messages = [
+                        `كيفاش جاز امتحان ${subjectName}؟ المهم ريح شوية وبدا توجد لغدوة! 💪`,
+                        `تهنيت من ${subjectName}! 🥳 انسى واش فات وركز في الجاي.`,
+                        `بصحتك فوت ${subjectName}! 🧠 ارتاح شوية ومبعد نوض للكراس.`
+                    ];
                     const randomMsg = messages[Math.floor(Math.random() * messages.length)];
 
+                    // نمرر التوكن للدالة (تأكد أن sendUserNotification تقبله كمعامل ثالث أو عدلها لتقبله)
                     return sendUserNotification(student.id, {
                         title: "واش، خدمت شوية؟ 👀",
                         message: randomMsg,
                         type: "post_exam_check",
                         meta: { subject: subjectName }
-                    }, student.fcm_token); // 👈 تمرير التوكن
+                    }, student.fcm_token); 
                 });
 
                 await Promise.all(promises);
@@ -76,12 +79,11 @@ async function runNightWatch() {
     // 2️⃣ الجزء القديم: التذكير بالامتحانات القادمة (Upcoming Exams)
     // ============================================================
 
-    // جلب البيانات من study_groups (shared_knowledge)
     const { data: groups, error: groupsError } = await supabase
       .from('study_groups')
       .select('id, shared_knowledge');
 
-    if (groupsError) console.error('❌ Supabase Error (Groups):', groupsError);
+    if (groupsError) console.error('❌ Supabase Error (Groups):', groupsError.message);
     
     if (groups && groups.length > 0) {
         console.log(`🔍 Checking ${groups.length} groups for upcoming exams...`);
@@ -89,9 +91,7 @@ async function runNightWatch() {
         for (const group of groups) {
             const knowledge = group.shared_knowledge;
             
-            if (!knowledge || !knowledge.exams) {
-                continue;
-            }
+            if (!knowledge || !knowledge.exams) continue;
 
             results.groupsChecked++;
 
@@ -113,9 +113,7 @@ async function runNightWatch() {
                         .select('id')
                         .eq('group_id', group.id);
 
-                    if (!students || students.length === 0) {
-                        continue;
-                    }
+                    if (!students || students.length === 0) continue;
 
                     const notifications = students.map(student => 
                         sendUserNotification(student.id, {
@@ -132,9 +130,8 @@ async function runNightWatch() {
     }
 
   } catch (err) {
-    // استخدام logger إذا كان متاحاً، أو console كبديل
     if (logger && logger.error) {
-        logger.error('Night Watch Critical Error:', err);
+        logger.error('Night Watch Critical Error:', err.message);
     } else {
         console.error('Night Watch Critical Error:', err);
     }
