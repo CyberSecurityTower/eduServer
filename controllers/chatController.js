@@ -334,14 +334,6 @@ if (userData.nextExamDate) {
     const allAgenda = Array.isArray(aiProfileData.aiAgenda) ? aiProfileData.aiAgenda : [];
     const activeAgenda = allAgenda.filter(t => t.status === 'pending');
 
-    // Exam Context
-    if (userData.nextExamDate) {
-      const diffDays = Math.ceil((new Date(userData.nextExamDate) - new Date()) / (1000 * 60 * 60 * 24));
-      if (diffDays >= 0 && diffDays < 30) {
-        examContext = { daysUntilExam: diffDays, subject: userData.nextExamSubject || 'General' };
-      }
-    }
-
     // EduNexus Logic
     let sharedContext = "";
     if (CONFIG.ENABLE_EDUNEXUS && groupId) {
@@ -525,7 +517,7 @@ if (userData.nextExamDate) {
       // إذا كان الطالب يتحدث وفي الخلفية يوجد درس مفتوح (currentContext.lessonId)
       if (currentContext && currentContext.lessonId) {
           // نضيف 60 ثانية لكل رسالة (تقدير لوقت القراءة والتفكير)
-          await trackStudyTime(userId, currentContext.lessonId, 60);
+          await trackStudyTime(userId, currentContext.lessonId, 60).catch(err => logger.error('Tracking failed:', err));
       }
 
       // 2. حفظ الشات (الكود القديم)
