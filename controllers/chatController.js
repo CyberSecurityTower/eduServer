@@ -12,7 +12,7 @@ const { markLessonComplete, trackStudyTime } = require('../services/engines/gate
 const { runPlannerManager } = require('../services/ai/managers/plannerManager');
 const { initSessionAnalyzer, analyzeSessionForEvents } = require('../services/ai/managers/sessionAnalyzer');
 const { refreshUserTasks, getLastActiveSessionContext } = require('../services/data/helpers');
-
+const { getHumanTimeDiff } = require('../utils');
 // Utilities
 const { toCamelCase, nowISO } = require('../services/data/dbUtils');
 const {
@@ -280,7 +280,18 @@ async function chatInteractive(req, res) {
         return `- ${t.title} ${examBadge} (Priority: ${score})`;
       }).join('\n');
     }
-
+// Exam Context
+let examContext = {};
+if (userData.nextExamDate) {
+  // 👇 بدلاً من حساب الأيام يدوياً، نستخدم دالتنا الذكية
+  const humanTime = getHumanTimeDiff(userData.nextExamDate);
+  
+  examContext = { 
+      subject: userData.nextExamSubject || 'General',
+      timingHuman: humanTime, // "غدوة"، "السيمانة الجاية"
+      rawDate: userData.nextExamDate
+  };
+}
     const aiProfileData = rawProfile || {};
     const groupId = userData.groupId;
 
@@ -349,7 +360,7 @@ async function chatInteractive(req, res) {
 
     const ageContext = rawProfile.facts?.age ? `User Age: ${rawProfile.facts.age} years old.` : "";
 
-    const systemContextCombined = `
+   const systemContextCombined = `
     User Identity: Name=${fullUserProfile.firstName}, Group=${groupId}, Role=${fullUserProfile.role}.
     ${ageContext}
     ${getAlgiersTimeContext().contextSummary}
@@ -359,8 +370,9 @@ async function chatInteractive(req, res) {
 
     📋 **CURRENT TODO LIST:**
     ${tasksList}
-    `;
 
+    ${examContext.subject ? `🚨 **EXAM ALERT:** Subject: "${examContext.subject}" is happening **${examContext.timingHuman}**. Focus on this immediately!` : ""}
+    `;
     // ---------------------------------------------------------
     // D. AI Generation
     // ---------------------------------------------------------
