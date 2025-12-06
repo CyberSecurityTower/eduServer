@@ -248,10 +248,10 @@ async function chatInteractive(req, res) {
     };
 
     // 🔥 معالجة بيانات الجاذبية (Gravity Intel)
+   // 🔥 معالجة بيانات الجاذبية (Gravity Intel)
     let gravityContext = null;
     let tasksList = "No active tasks.";
 
-    // ✅ FIX 2: Properly structured the IF block and closed it with '}'
     if (userTasksRes && userTasksRes.data && userTasksRes.data.length > 0) {
       // 1. ترتيب المهام حسب السكور (الموجود داخل meta) تنازلياً
       const sortedTasks = userTasksRes.data.sort((a, b) => {
@@ -261,22 +261,24 @@ async function chatInteractive(req, res) {
       });
 
       // 2. التقاط "مهمة الجاذبية القصوى" (Top Priority)
-     const topTask = sortedTasks[0];
+      const topTask = sortedTasks[0];
       const topScore = topTask.meta?.score || 0;
-      const isExamEmergency = topScore > 4000;
+      
+      // ✅ التعديل: نتأكد أن السكور عالي وأن حالة التحضير للامتحان مفعلة
+      const isExamEmergency = topScore > 4000 && topTask.meta?.isExamPrep === true;
 
-      // ✅ حساب التوقيت (نضيف هذا السطر)
-      const examTimingCalc = userData.nextExamDate ? getHumanTimeDiff(userData.nextExamDate) : "";
+      // ✅ التعديل: جلب التوقيت من الميتا مباشرة
+      const timingInfo = topTask.meta?.examTiming || "Unknown time";
 
       gravityContext = {
         title: topTask.title,
         score: topScore,
         isExam: isExamEmergency,
         subject: topTask.meta?.subjectId || 'General',
-        examTiming: examTimingCalc 
+        timing: timingInfo // تخزين التوقيت
       };
 
-      // 3. تنسيق القائمة للعرض العام
+      // 3. تنسيق القائمة للعرض العام (اختياري، يمكن تركه كما هو)
       tasksList = sortedTasks.map(t => {
         const score = t.meta?.score || 0;
         const examBadge = score > 4000 ? "🚨 EXAM TOMORROW" :
@@ -290,17 +292,19 @@ async function chatInteractive(req, res) {
     let gravitySection = "";
     let antiSamataProtocol = "";
       
-    if (gravityContext) {
-        const isExam = gravityContext.isExam || false;
-        // 👇 التعديل هنا: أضفنا (Timing: ...)
-        const timingInfo = gravityContext.examTiming ? `(Timing: ${gravityContext.examTiming})` : "";
+   if (gravityContext) {
+          const isExam = gravityContext.isExam || false;
+          // 👇 نكتب الوقت للـ AI
+          const timeStr = gravityContext.timing ? `(Timing: ${gravityContext.timing})` : "";
+
+          gravitySection = `🚀 **GRAVITY ENGINE:** Top Task: "${gravityContext.title}", Score: ${gravityContext.score}. Emergency: ${isExam ? "YES" : "NO"} ${timeStr}`;
           
-        gravitySection = `🚀 **GRAVITY ENGINE INTEL:** Top Task: "${gravityContext.title}", Score: ${gravityContext.score}, Exam Emergency: ${isExam ? "YES" : "NO"} ${timingInfo}`;
-          
-        if (isExam) {
-            antiSamataProtocol = `🛡️ **PROTOCOL: EXAM EMERGENCY** - User has an EXAM soon (${timingInfo}). Be urgent.`;
-        }
-    }
+          if (isExam) {
+              antiSamataProtocol = `🛡️ **PROTOCOL: EXAM EMERGENCY** - Exam is ${timeStr}. Be urgent!`;
+          } else {
+              antiSamataProtocol = `🛡️ **PROTOCOL: NO SAMATA** - No immediate exam. Chat naturally.`;
+          }
+      }
     
 // Exam Context
 let examContext = {};
