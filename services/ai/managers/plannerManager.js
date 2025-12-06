@@ -5,28 +5,32 @@ const supabase = require('../../data/supabase');
 const logger = require('../../../utils/logger');
 const { getHumanTimeDiff } = require('../../../utils');
 
+/**
+ * Cortex Gravity Engine v3.0 (Fail-Safe Edition)
+ * يضمن عودة مهام دائماً حتى لو لم تكن هناك امتحانات
+ */
 async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
   try {
-    logger.info(`🪐 Gravity Engine Started for ${userId}`);
+    logger.info(`🪐 Gravity Engine Started for ${userId} (Path: ${pathId})`);
 
-    // 1. جلب البيانات
+    // 1. جلب البيانات الأساسية
     const [settingsRes, userRes, progressRes] = await Promise.all([
         supabase.from('system_settings').select('value').eq('key', 'current_semester').single(),
         supabase.from('users').select('group_id').eq('id', userId).single(),
-        supabase.from('user_progress').select('lesson_id, status').eq('user_id', userId)
+        // نجلب آخر تفاعل لنعرف الدروس التي "لمسها" الطالب
+        supabase.from('user_progress').select('lesson_id, last_interaction').eq('user_id', userId)
     ]);
 
     const currentSemester = settingsRes.data?.value || 'S1'; 
     const groupId = userRes.data?.group_id;
     
-    const completedLessons = new Set();
+    // خريطة الدروس التي تفاعل معها الطالب (نعتبرها "جارية" أو "منجزة")
+    const interactedLessons = new Set();
     if (progressRes.data) {
-        progressRes.data.forEach(p => {
-            if (p.status === 'completed') completedLessons.add(p.lesson_id);
-        });
+        progressRes.data.forEach(p => interactedLessons.add(p.lesson_id));
     }
 
-    // 2. جلب الامتحانات (اختياري)
+    // 2. جلب الامتحانات (إن وجدت)
     let upcomingExams = {};
     if (groupId) {
         const todayStart = new Date();
@@ -45,54 +49,61 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
         }
     }
 
-    // 3. جلب كل الدروس
-     const { data: lessons } = await supabase
+    // 3. جلب كل الدروس المرتبطة بالمسار
+    // ⚠️ ملاحظة: تأكد أن pathId صحيح وموجود في جدول lessons عبر العلاقة subjects
+     const { data: lessons, error } = await supabase
       .from('lessons')
       .select(`
-        id, title, subject_id, prerequisites, has_content, order_index,
-        subjects!subject_id ( id, title, coefficient, semester ) 
+        id, title, subject_id, has_content, order_index,
+        subjects!subject_id ( id, title, coefficient, semester, path_id ) 
       `)
       .eq('subjects.path_id', pathId)
-      .order('order_index', { ascending: true }); // ترتيب تسلسلي
+      .order('order_index', { ascending: true }); // الترتيب مهم جداً
 
-    if (!lessons) return { tasks: [] };
+    if (error) {
+        logger.error('Gravity DB Error:', error);
+        return { tasks: [] };
+    }
 
-    // 4. تصفية وحساب النقاط
+    if (!lessons || lessons.length === 0) {
+        logger.warn(`⚠️ No lessons found for path: ${pathId}`);
+        return { tasks: [] };
+    }
+
+    // 4. حساب النقاط (Scoring)
     let candidates = lessons.map(lesson => {
-      // تجاهل المكتمل
-      if (completedLessons.has(lesson.id)) return null;
-      // تجاهل السداسي الخطأ (إلا إذا كان استدراك)
-      if (lesson.subjects?.semester && lesson.subjects.semester !== currentSemester) return null;
-
-      let score = 0;
-      const subjectCoeff = lesson.subjects?.coefficient || 1;
-      const subjectId = lesson.subject_id ? lesson.subject_id.trim().toLowerCase() : '';
-
-      // Base Score
-      score += subjectCoeff * 10;
-      
-      // الترتيب التسلسلي (الدروس الأولى لها أولوية أعلى قليلاً بشكل طبيعي)
-      score += (1000 - (lesson.order_index || 0));
-
-      // المتطلبات
-      if (lesson.prerequisites && lesson.prerequisites.length > 0) {
-        const unmet = lesson.prerequisites.some(preId => !completedLessons.has(preId));
-        if (unmet) return null; // مغلق
+      // فلتر السداسي (اختياري: يمكن تخفيفه)
+      if (lesson.subjects?.semester && lesson.subjects.semester !== currentSemester) {
+          return null; 
       }
 
-      // Gravity (Exams)
+      let score = 100; // نقاط أساسية
+      const subjectId = lesson.subject_id ? lesson.subject_id.trim().toLowerCase() : '';
+
+      // أ. هل تفاعل معه سابقاً؟
+      // إذا تفاعل معه، نقلل النقاط قليلاً لأننا نريد اقتراح الجديد، 
+      // إلا إذا كان هناك امتحان قريب فنرفع النقاط للمراجعة
+      if (interactedLessons.has(lesson.id)) {
+          score -= 50; 
+      } else {
+          // درس جديد: نعطيه أولوية حسب ترتيبه (الدروس الأولى أهم)
+          score += (1000 - (lesson.order_index || 0));
+      }
+
+      // ب. الطوارئ (Exams)
       let humanExamTime = null;
       let isExamPrep = false;
+
       if (upcomingExams[subjectId]) {
           const examDate = new Date(upcomingExams[subjectId]);
           const now = new Date();
           const diffHours = (examDate - now) / (1000 * 60 * 60);
 
-          if (diffHours > 0 && diffHours <= 72) { // خلال 3 أيام
-              score += 50000; // أولوية قصوى
+          if (diffHours > 0 && diffHours <= 72) { 
+              score += 50000; // طوارئ قصوى
               isExamPrep = true;
-          } else if (diffHours > 0 && diffHours <= 168) { // خلال أسبوع
-              score += 10000;
+          } else if (diffHours > 0 && diffHours <= 168) { 
+              score += 10000; // تحضير أسبوعي
               isExamPrep = true;
           }
           humanExamTime = getHumanTimeDiff(examDate);
@@ -112,41 +123,39 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
             examTiming: humanExamTime
         }
       };
-    }).filter(Boolean);
+    }).filter(Boolean); // حذف الـ null
 
-    // 5. الترتيب والقص
+    // 5. الترتيب النهائي
     candidates.sort((a, b) => b.score - a.score); 
 
-    // 🔥 Fallback Logic (الحل لمشكلة الخطط الفارغة)
-    // إذا لم نجد مهام "جاذبية" كافية، نملأ الفراغ بالدروس المتاحة التالية
-    if (candidates.length < 3) {
-        const existingIds = new Set(candidates.map(c => c.id));
-        
-        // البحث عن دروس لم تكتمل ولم تضف بعد
-        const fillers = lessons
-            .filter(l => !completedLessons.has(l.id) && !existingIds.has(l.id))
-            .slice(0, 3 - candidates.length)
-            .map(l => ({
-                id: l.id,
-                title: l.title,
-                type: 'study',
-                score: 100, // سكور عادي
-                meta: {
-                    relatedLessonId: l.id,
-                    relatedSubjectId: l.subject_id,
-                    lessonTitle: l.title,
-                    score: 100,
-                    isExamPrep: false
-                }
-            }));
-            
-        candidates = [...candidates, ...fillers];
+    // 🔥🔥 FALLBACK MECHANISM (شبكة الأمان) 🔥🔥
+    // إذا كانت المصفوفة فارغة (مثلاً بسبب فلتر السداسي)، نجلب أي درس
+    if (candidates.length === 0 && lessons.length > 0) {
+        logger.warn('Gravity returned 0 tasks. Activating Fallback Mode.');
+        // نأخذ أول 3 دروس من القائمة الأصلية بغض النظر عن السداسي
+        candidates = lessons.slice(0, 3).map(l => ({
+            id: l.id,
+            title: l.title,
+            type: 'study',
+            score: 50,
+            meta: {
+                relatedLessonId: l.id,
+                relatedSubjectId: l.subject_id,
+                lessonTitle: l.title,
+                score: 50,
+                isExamPrep: false
+            }
+        }));
     }
 
-    return { tasks: candidates.slice(0, 5), source: 'Gravity_V2.5_WithFallback' };
+    // نأخذ أفضل 3 مهام
+    const finalTasks = candidates.slice(0, 3);
+    
+    logger.info(`🏆 Gravity Generated ${finalTasks.length} tasks.`);
+    return { tasks: finalTasks, source: 'Gravity_V3' };
 
   } catch (err) {
-    logger.error('Gravity Planner Error:', err.message);
+    logger.error('Gravity Planner Critical Error:', err.message);
     return { tasks: [] };
   }
 }
