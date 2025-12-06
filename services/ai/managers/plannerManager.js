@@ -56,11 +56,11 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
     console.log("📅 Upcoming Exams Map:", upcomingExams);
 
     // 3. جلب الدروس
-    const { data: lessons, error } = await supabase
+     const { data: lessons, error } = await supabase
       .from('lessons')
       .select(`
         id, title, subject_id, prerequisites, has_content, order_index,
-        subjects ( id, title, coefficient, semester )
+        subjects!subject_id ( id, title, coefficient, semester ) 
       `)
       .eq('subjects.path_id', pathId);
 
