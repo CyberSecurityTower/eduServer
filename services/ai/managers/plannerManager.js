@@ -103,37 +103,38 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
       score += 50; // بونص لأن الطريق مفتوح
 
       // 🔥 D. وضع الطوارئ (Exam Rescue) 🔥
-     let humanExamTime = null;
+      let humanExamTime = null;
 
       if (upcomingExams[subjectId]) {
           const examDate = new Date(upcomingExams[subjectId]);
           const now = new Date();
           const diffHours = (examDate - now) / (1000 * 60 * 60);
 
-          // 👇 التعديل هنا: نعتبره طوارئ فقط إذا كان في المستقبل أو فات عليه أقل من ساعة
-          // القديم كان: if (diffHours > -5 && diffHours <= 48)
-          if (diffHours > -1 && diffHours <= 48) { 
-              score += 10000; // 🚀 طوارئ حقيقية
-          } else if (diffHours <= 168 && diffHours > -1) { 
+          // 👇 التغيير هنا: درنا 0 عوض -5
+          // معناها: إذا فات وقت الامتحان (أصبح بالسالب)، سي بون ما بقاش طوارئ
+          if (diffHours > 0 && diffHours <= 48) { 
+              score += 10000; // طوارئ حقيقية (المستقبل)
+          } else if (diffHours <= 168 && diffHours > 0) { 
               score += 2000; // تحضير عادي
           }
 
-          // 👇 حساب الوقت البشري
+          // 👇 هذا السطر مهم جداً: نمرر الوقت البشري للميتا
           humanExamTime = getHumanTimeDiff(examDate);
       }
 
       return {
         id: lesson.id,
-        title: `درس: ${lesson.title} (${lesson.subjects?.title || 'مادة'})`, 
+        title: `درس: ${lesson.title}`, 
         type: lesson.has_content ? 'study' : 'ghost_explain',
         score: score,
         meta: {
+          
             relatedLessonId: lesson.id,
             relatedSubjectId: lesson.subject_id, // Original ID
             relatedLessonTitle: lesson.title,    // Legacy support
             lessonTitle: lesson.title,           // Requested Format
             score: score,                        // Requested Format
-            isExamPrep: !!upcomingExams[subjectId],
+            isExamPrep: (diffHours > 0),
             examTiming: humanExamTime            // 👈 النص الجاهز (مثلاً: "غدوة")
         }
       };
