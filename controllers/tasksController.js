@@ -12,11 +12,14 @@ async function generateDailyTasks(req, res) {
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId required' });
 
-    // 🔥 هنا التغيير الجذري: نستخدم refreshUserTasks بدلاً من generateSmartTodos
-    // هذه الدالة هي التي تطبق خوارزمية الجاذبية وتجلب الدروس العربية
+    // استدعاء دالة التحديث (التي تستدعي PlannerManager داخلياً)
     const tasks = await refreshUserTasks(userId);
 
-    return res.status(200).json({ success: true, tasks: tasks });
+    // ✅ التأكد من إرجاع المصفوفة حتى لو كانت فارغة (وهو ما لن يحدث مع الكود الجديد)
+    return res.status(200).json({ 
+        success: true, 
+        tasks: tasks || [] 
+    });
 
   } catch (err) {
     logger.error('Generate Tasks Error:', err.message);
