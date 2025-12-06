@@ -189,23 +189,31 @@ function getHumanTimeDiff(targetDate) {
   const target = new Date(targetDate);
   const diffMs = target - now;
   const diffHours = diffMs / (1000 * 60 * 60);
-  const diffDays = Math.round(diffHours / 24);
 
-  if (diffHours < 0) return "فات الحال (Passé)"; // للماضي
-
-  // خلال 24 ساعة
-  if (diffHours < 24) {
-    const targetHour = target.getHours();
-    if (diffHours < 1) return "درك (Maintenant)";
-    if (diffHours < 3) return "مبعد شوية";
-    
-    // تحديد الفترة
-    if (targetHour >= 5 && targetHour < 12) return "غدوة الصباح" (if tomorrow) or "اليوم الصباح";
-    // لتبسيط المنطق، سنعتمد على الساعات المتبقية
-    if (diffHours < 12) return "اليوم";
-    return "غدوة";
+  // 1. التعامل مع الماضي (إذا الامتحان فات)
+  if (diffHours < 0) {
+      // إذا فات بأقل من 5 سوايع نقولو "قبيل"
+      if (diffHours > -5) return "قبيل برك (Tout à l'heure)"; 
+      return "فات الحال (Passé)"; 
   }
 
+  // 2. التحقق هل هو نفس اليوم في التقويم؟ (Is it the same Calendar Day?)
+  const isSameDay = now.getDate() === target.getDate() && 
+                    now.getMonth() === target.getMonth() && 
+                    now.getFullYear() === target.getFullYear();
+
+  // 3. المنطق الدقيق
+  if (diffHours < 24) {
+    if (diffHours < 1) return "درك (Maintenant)";
+    
+    if (isSameDay) {
+        return "اليوم"; // نفس التاريخ (مثلاً 06/12)
+    } else {
+        return "غدوة"; // تاريخ مختلف (مثلاً 07/12) حتى لو الفرق سوايع قليلة
+    }
+  }
+
+  const diffDays = Math.ceil(diffHours / 24);
   if (diffDays === 1) return "غدوة (Demain)";
   if (diffDays === 2) return "غير غدوة (Après-demain)";
   if (diffDays >= 3 && diffDays < 7) return `في هاد ${diffDays} أيام`;
