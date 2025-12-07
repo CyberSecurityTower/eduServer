@@ -50,13 +50,12 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
     }
 
     // 3. جلب كل الدروس المرتبطة بالمسار
-    // ⚠️ ملاحظة: تأكد أن pathId صحيح وموجود في جدول lessons عبر العلاقة subjects
      const { data: lessons, error } = await supabase
       .from('lessons')
       .select(`
         id, title, subject_id, has_content, order_index,
-        subjects!subject_id ( id, title, coefficient, semester, path_id ) 
-      `)
+        subjects!fk_subject ( id, title, coefficient, semester, path_id ) 
+      `) // 👈 التغيير هنا: حددنا اسم العلاقة بدقة
       .eq('subjects.path_id', pathId)
       .order('order_index', { ascending: true }); // الترتيب مهم جداً
 
