@@ -13,7 +13,9 @@ const supabase = require('../services/data/supabase');
 const { runNightWatch } = require('../services/jobs/nightWatch'); // استيراد الدالة
 const { scanAndFillEmptyLessons } = require('../services/engines/ghostTeacher'); 
 const { checkExamTiming } = require('../services/jobs/examWorker');
-const db = getFirestoreInstance(); 
+const db = getFirestoreInstance();
+const { addDiscoveryMission } = require('../services/data/helpers');
+
 let generateWithFailoverRef; 
 
 function initAdminController(dependencies) {
@@ -21,6 +23,35 @@ function initAdminController(dependencies) {
   logger.info('Admin Controller initialized.');
 }
 
+async function pushDiscoveryMission(req, res) {
+  try {
+    const { targetUserId, missionContent, isGlobal } = req.body;
+    
+    // حماية بسيطة
+    if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    if (isGlobal) {
+        // إرسال للجميع (عملية ثقيلة، يفضل استخدام Queue في الإنتاج الفعلي)
+        // هنا سنرسل لأول 100 مستخدم نشط كمثال
+        const { data: users } = await supabase.from('users').select('id').limit(100);
+        for (const user of users) {
+            await addDiscoveryMission(user.id, missionContent, 'admin', 'high');
+        }
+        return res.json({ message: `Mission pushed to ${users.length} users.` });
+    } else if (targetUserId) {
+        await addDiscoveryMission(targetUserId, missionContent, 'admin', 'high');
+        return res.json({ message: 'Mission pushed to target user.' });
+    }
+
+    res.status(400).json({ error: 'Specify targetUserId or isGlobal' });
+
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+}
 // --- Helpers for Strings (Added to prevent ReferenceErrors) ---
 function escapeForPrompt(str) {
   return str ? str.replace(/"/g, '\\"').replace(/\n/g, ' ') : '';
@@ -423,5 +454,6 @@ module.exports = {
   triggerFullIndexing,
   triggerNightWatch,
   triggerGhostScan,
-  triggerExamCheck 
+  triggerExamCheck,
+  pushDiscoveryMission
 };
