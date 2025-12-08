@@ -373,7 +373,20 @@ async function chatInteractive(req, res) {
               antiSamataProtocol = `🛡️ **PROTOCOL: NO SAMATA** - No immediate exam. Chat naturally.`;
           }
       }
+   // تأكد من جلب last_active_at مع بيانات المستخدم
+const lastActive = userData.last_active_at ? new Date(userData.last_active_at) : null;
+let absenceContext = "";
+
+if (lastActive) {
+    const daysSinceActive = (Date.now() - lastActive.getTime()) / (1000 * 60 * 60 * 24);
     
+    if (daysSinceActive > 3) {
+        absenceContext = `
+        👻 **GHOST ALERT:** User hasn't opened the app for ${Math.floor(daysSinceActive)} days.
+        👉 **INSTRUCTION:** Start by guilt-tripping them playfully: "يا أهلا! وين كنت غاطس هاد الأيام؟ توحشناك (زعما)".
+        `;
+    }
+}
     // Exam Context
     let examContext = {};
     if (userData.nextExamDate) {
