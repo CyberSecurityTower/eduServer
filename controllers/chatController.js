@@ -285,17 +285,26 @@ async function chatInteractive(req, res) {
 
     // B. First Time User
     // Now we have both 'history' and 'userData' populated
-    const isFirstTimeUser = (history.length === 0 && !userData.lastActiveAt);
+     const isFirstTimeUser = (history.length === 0 && !userData.lastActiveAt);
     let welcomeContext = "";
     
     if (isFirstTimeUser) {
+        // هنا السحر: نوجه الـ AI ليكون عاطفياً وفضولياً جداً
         welcomeContext = `
-        🎉 **NEW USER ALERT:** This is the VERY FIRST time ${userData.firstName} talks to you.
-        👉 **INSTRUCTION:**
-        1. Welcome them warmly to the EduApp family.
-        2. Introduce yourself briefly as their new companion.
-        3. Ask them: "واش هو التخصص تاعك؟" or "واش راك حاب تراجع اليوم؟".
-        4. Don't be too pushy about tasks yet.
+        🎉 **NEW USER ALERT: FIRST CONTACT**
+        This is the VERY FIRST time this user opens the app.
+        
+        **YOUR MISSION:**
+        1. Ignore academic lessons for now. Focus on **CONNECTION**.
+        2. **Greeting:** Warm, enthusiastic Algerian welcome (e.g., "مرحبا بيك في العائلة!").
+        3. **Data Extraction:** You need to fill their profile. Ask casually about:
+           - Their **Name** (if not set).
+           - Their **Ambition** (Dream job/Goal).
+           - Their **Struggle** (Hardest subject).
+        
+        **Output Instruction:**
+        - Ask ONE question at a time. Don't overwhelm them.
+        - Example Opener: "أهلاً! أنا EduAI، رفيقك الجديد في القراية. واش، كاش قراية ولا والو؟ ... بالمناسبة، كيفاش نعيطلك؟"
         `;
     }
 
