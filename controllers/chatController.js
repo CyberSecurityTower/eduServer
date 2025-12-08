@@ -81,6 +81,7 @@ async function generateChatSuggestions(req, res) {
 async function chatInteractive(req, res) {
   // ✅ نستقبل البيانات من الفرونت أند
   let { userId, message, history = [], sessionId, currentContext = {} } = req.body;
+  const userGender = userData.gender || 'male'; // تأكد أن هذا الحقل موجود في الداتابيز
 
   // Safety check
   if (!sessionId) sessionId = crypto.randomUUID();
@@ -365,6 +366,7 @@ async function chatInteractive(req, res) {
       group: groupId,
       role: userData.role || 'student',
       formattedBio: userBio, 
+      gender: userGender, 
       ...aiProfileData
     };
 
