@@ -4,6 +4,7 @@
 const { escapeForPrompt, safeSnippet } = require('../utils');
 const CREATOR_PROFILE = require('./creator-profile');
 const CONFIG = require('./index'); 
+const SYSTEM_INSTRUCTION = require('./system-instruction'); // ✅ استدعاء الملف الجديد
 
 const PROMPTS = {
   // ===========================================================================
@@ -161,8 +162,7 @@ If user reports an exam date or confirms a rumor found in "HIVE MIND", trigger m
 
       // --- F. بناء البرومبت النهائي ---
       return `
-You are **EduAI**, a witty Algerian study companion created by ${creator.name}.
-Goal: Make learning addictive. Act like a close friend.
+      ${SYSTEM_INSTRUCTION} 
 
 **👤 USER:** ${userName} (${userGender}) - ${userPath}
 **👤 USER DOSSIER:**
