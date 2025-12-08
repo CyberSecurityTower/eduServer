@@ -982,6 +982,35 @@ async function runEduChrono(userId, groupId) {
   // D. الصباح قبل البداية
   return { status: 'MORNING_PREP', context: "Morning before classes. Wish them luck." };
 }
+
+/**
+ * جلب الامتحانات التي مرت حديثاً (آخر 7 أيام)
+ * لكي يسأل عنها الـ AI
+ */
+async function getRecentPastExams(groupId) {
+  if (!groupId) return [];
+
+  const now = new Date();
+  const sevenDaysAgo = new Date();
+  sevenDaysAgo.setDate(now.getDate() - 7);
+
+  try {
+    const { data: exams, error } = await supabase
+      .from('exams')
+      .select('id, subject_id, exam_date, type, subjects(title)')
+      .eq('group_id', groupId)
+      .lt('exam_date', now.toISOString()) // أقل من الآن (ماضي)
+      .gte('exam_date', sevenDaysAgo.toISOString()) // أكبر من قبل 7 أيام
+      .order('exam_date', { ascending: false }); // الأحدث أولاً
+
+    if (error) throw error;
+    return exams || [];
+  } catch (err) {
+    console.error('getRecentPastExams Error:', err.message);
+    return [];
+  }
+}
+
 module.exports = {
   initDataHelpers,
   getUserDisplayName,
@@ -1004,5 +1033,6 @@ module.exports = {
   refreshUserTasks, 
   cacheDel,
   getLastActiveSessionContext ,
-  getStudentScheduleStatus
+  getStudentScheduleStatus,
+  getRecentPastExams
 };
