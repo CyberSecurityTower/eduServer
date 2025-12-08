@@ -90,7 +90,6 @@ async function chatInteractive(req, res) {
     // =========================================================
     // 1. SMART HISTORY RESTORATION & BRIDGING
     // =========================================================
-    // 🛑 التعديل هنا: إذا كان الهيستوري فارغاً، نحاول جلبه من الداتابيز
     if (!history || history.length === 0) {
       // أ. محاولة جلب الجلسة الحالية (Refresh Scenario)
       const { data: sessionData } = await supabase
@@ -100,13 +99,11 @@ async function chatInteractive(req, res) {
         .single();
 
       if (sessionData && sessionData.messages && sessionData.messages.length > 0) {
-        // تحويل صيغة الداتابيز (author) إلى صيغة الـ AI (role)
         history = sessionData.messages.map(m => ({
           role: m.author === 'bot' ? 'model' : 'user',
           text: m.text,
           timestamp: m.timestamp
         }));
-        // نأخذ آخر 10 رسائل فقط لتوفير التوكنز
         history = history.slice(-10);
       } else {
         // ب. إذا لم توجد جلسة حالية، نحاول جلب سياق من جلسة سابقة (Bridging Scenario)
@@ -116,7 +113,27 @@ async function chatInteractive(req, res) {
         }
       }
     }
-     // ✅ 1. جلب الامتحانات الماضية
+
+    // =========================================================
+    // 2. Data Aggregation (Identity First)
+    // =========================================================
+    // 🛑 MOVED UP: We must fetch user data first before using userData.groupId
+    const { data: userRaw, error: userError } = await supabase
+      .from('users')
+      .select('*, group_id, role')
+      .eq('id', userId)
+      .single();
+
+    if (userError || !userRaw) {
+      return res.status(404).json({ reply: "عذراً، لم أتمكن من العثور على حسابك." });
+    }
+
+    let userData = toCamelCase(userRaw);
+
+    // =========================================================
+    // ✅ 2.1 PAST EXAMS LOGIC (Moved Here)
+    // =========================================================
+    // Now userData is defined, so we can access userData.groupId safeley
     const recentPastExams = await getRecentPastExams(userData.groupId);
     
     let pastExamsContext = "";
@@ -129,21 +146,6 @@ async function chatInteractive(req, res) {
         });
         pastExamsContext += "👉 INSTRUCTION: If you haven't asked yet, ask casually: 'How did the [Subject] exam go?'\n";
     }
-
-    // =========================================================
-    // 2. Data Aggregation (Identity First)
-    // =========================================================
-    const { data: userRaw, error: userError } = await supabase
-      .from('users')
-      .select('*, group_id, role')
-      .eq('id', userId)
-      .single();
-
-    if (userError || !userRaw) {
-      return res.status(404).json({ reply: "عذراً، لم أتمكن من العثور على حسابك." });
-    }
-
-    let userData = toCamelCase(userRaw);
 
     // =========================================================
     // 3. GROUP ENFORCEMENT LOGIC
@@ -228,7 +230,6 @@ async function chatInteractive(req, res) {
     }
 
     // Fetch Context Data (Parallel)
-    // ✅ FIX 1: Renamed 'currentTasks' to 'userTasksRes' to match usage below
     const [rawProfile, memoryReport, curriculumReport, weaknessesRaw, formattedProgress, userTasksRes] = await Promise.all([
       getProfile(userId).catch(() => ({})),
       runMemoryAgent(userId, message).catch(() => ''),
@@ -257,11 +258,10 @@ async function chatInteractive(req, res) {
     // 🔥 التصحيح هنا: نمرر الكائن كاملاً بدلاً من اختيار حقول محددة
     const updatedContextForPrompt = {
       ...currentContext,
-      schedule: scheduleStatus || { state: 'unknown' } // ✅ مررنا كل شيء (prof, room, subject...)
+      schedule: scheduleStatus || { state: 'unknown' } 
     };
 
     // 🔥 معالجة بيانات الجاذبية (Gravity Intel)
-   // 🔥 معالجة بيانات الجاذبية (Gravity Intel)
     let gravityContext = null;
     let tasksList = "No active tasks.";
 
@@ -299,13 +299,14 @@ async function chatInteractive(req, res) {
         return `- ${t.title} ${examBadge} (Priority: ${score})`;
       }).join('\n');
     }
- // ==========================================
-    // 6. بروتوكول الجاذبية (الكود الجديد)
+
+    // ==========================================
+    // 6. بروتوكول الجاذبية
     // ==========================================
     let gravitySection = "";
     let antiSamataProtocol = "";
       
-   if (gravityContext) {
+    if (gravityContext) {
           const isExam = gravityContext.isExam || false;
           // 👇 نكتب الوقت للـ AI
           const timeStr = gravityContext.timing ? `(Timing: ${gravityContext.timing})` : "";
@@ -319,18 +320,19 @@ async function chatInteractive(req, res) {
           }
       }
     
-// Exam Context
-let examContext = {};
-if (userData.nextExamDate) {
-  // 👇 بدلاً من حساب الأيام يدوياً، نستخدم دالتنا الذكية
-  const humanTime = getHumanTimeDiff(userData.nextExamDate);
-  
-  examContext = { 
-      subject: userData.nextExamSubject || 'General',
-      timingHuman: humanTime, // "غدوة"، "السيمانة الجاية"
-      rawDate: userData.nextExamDate
-  };
-}
+    // Exam Context
+    let examContext = {};
+    if (userData.nextExamDate) {
+      // 👇 بدلاً من حساب الأيام يدوياً، نستخدم دالتنا الذكية
+      const humanTime = getHumanTimeDiff(userData.nextExamDate);
+      
+      examContext = { 
+          subject: userData.nextExamSubject || 'General',
+          timingHuman: humanTime, // "غدوة"، "السيمانة الجاية"
+          rawDate: userData.nextExamDate
+      };
+    }
+
     const aiProfileData = rawProfile || {};
     const groupId = userData.groupId;
 
@@ -362,7 +364,7 @@ if (userData.nextExamDate) {
       lastName: userData.lastName || '',
       group: groupId,
       role: userData.role || 'student',
-      formattedBio: userBio, // نرسل هذا للبرومبت
+      formattedBio: userBio, 
       ...aiProfileData
     };
 
@@ -390,7 +392,7 @@ if (userData.nextExamDate) {
 
     const ageContext = rawProfile.facts?.age ? `User Age: ${rawProfile.facts.age} years old.` : "";
 
-   const systemContextCombined = `
+    const systemContextCombined = `
     User Identity: Name=${fullUserProfile.firstName}, Group=${groupId}, Role=${fullUserProfile.role}.
     ${ageContext}
     ${getAlgiersTimeContext().contextSummary}
@@ -406,6 +408,7 @@ if (userData.nextExamDate) {
     ${pastExamsContext}
     ${examContext.subject ? `🚨 **EXAM ALERT:** Subject: "${examContext.subject}" is happening **${examContext.timingHuman}**. Focus on this immediately!` : ""}
     `;
+
     // ---------------------------------------------------------
     // D. AI Generation
     // ---------------------------------------------------------
@@ -420,7 +423,6 @@ if (userData.nextExamDate) {
 
     const safeHistoryStr = history.map(h => {
       const timeTag = h.timestamp ? `[${formatTimeShort(h.timestamp)}] ` : '';
-      // تأكد من التعامل مع role أو author
       const speaker = (h.role === 'model' || h.author === 'bot') ? 'EduAI' : 'User';
       return `${timeTag}${speaker}: ${h.text}`;
     }).join('\n');
@@ -438,7 +440,7 @@ if (userData.nextExamDate) {
       examContext,
       activeAgenda,
       sharedContext,
-      updatedContextForPrompt, // <--- pass updated context with schedule info
+      updatedContextForPrompt,
       gravityContext
     );
 
@@ -456,37 +458,28 @@ if (userData.nextExamDate) {
     if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'complete') {
       const signal = parsedResponse.lesson_signal;
 
-      // أ. تسجيل الإكمال في القاعدة
       await markLessonComplete(userId, signal.id, signal.score || 100);
-
-      // ب. تحديث المهام (Gravity Engine)
       const newDbTasks = await refreshUserTasks(userId);
 
-      // 🔥 FIX 1: استبعاد الدرس الذي انتهى للتو من القائمة الجديدة
-      // حتى لو القاعدة مازالت تقول أنه غير مكتمل، نحن نعلم أنه انتهى الآن
       const validNextTasks = (newDbTasks || []).filter(t => t.meta?.relatedLessonId !== signal.id);
       const nextTask = validNextTasks.length > 0 ? validNextTasks[0] : null;
 
-      // 🔥 FIX 2: منطق "روح ترقد" (Sleep Guard)
-      const algiersTime = getAlgiersTimeContext(); // دالة موجودة في utils
+      const algiersTime = getAlgiersTimeContext(); 
       const currentHour = algiersTime.hour;
-      const isLateNight = currentHour >= 22 || currentHour < 5; // بعد 10 ليلاً
-      const isExamEmergency = gravityContext?.isExam; // هل غداً امتحان؟
+      const isLateNight = currentHour >= 22 || currentHour < 5; 
+      const isExamEmergency = gravityContext?.isExam; 
 
       let recommendationText = "";
 
-      // السيناريو 1: غداً امتحان + وقت متأخر = أمر بالنوم
       if (isExamEmergency && isLateNight) {
         recommendationText = `\n\n🛑 **حبس هنا!** غدوة عندك امتحان والوقت راه روطار. **روح ترقد دوكا** باش مخك يثبت المعلومات. تصبح على خير! 😴`;
 
-        // نلغي أي زر "ابدأ الدرس" ونضع زر الخروج
         parsedResponse.widgets = (parsedResponse.widgets || []).filter(w => w.type !== 'action_button');
         parsedResponse.widgets.push({
           type: 'action_button',
           data: { label: 'إغلاق التطبيق والنوم 🌙', action: 'close_app' }
         });
       }
-      // السيناريو 2: وقت عادي = اقترح الدرس التالي
       else if (nextTask) {
         recommendationText = `\n\n💡 **الخطوة التالية:** ${nextTask.title}`;
         parsedResponse.widgets = parsedResponse.widgets || [];
@@ -495,7 +488,6 @@ if (userData.nextExamDate) {
           data: { label: `ابدأ: ${nextTask.title}`, action: 'navigate', targetId: nextTask.meta?.relatedLessonId }
         });
       }
-      // السيناريو 3: لا توجد مهام
       else {
         recommendationText = `\n\n🎉 كملت كلش لليوم! ارتاح.`;
       }
@@ -552,17 +544,14 @@ if (userData.nextExamDate) {
       mood: parsedResponse.newMood
     });
 
-  // Background processing
-    setImmediate(async () => { // 👈 أضفنا async هنا
-      
+    // Background processing
+    setImmediate(async () => { 
       // 🔥 1. تتبع وقت الدراسة عبر الشات
-      // إذا كان الطالب يتحدث وفي الخلفية يوجد درس مفتوح (currentContext.lessonId)
       if (currentContext && currentContext.lessonId) {
-          // نضيف 60 ثانية لكل رسالة (تقدير لوقت القراءة والتفكير)
           await trackStudyTime(userId, currentContext.lessonId, 60).catch(err => logger.error('Tracking failed:', err));
       }
 
-      // 2. حفظ الشات (الكود القديم)
+      // 2. حفظ الشات
       const updatedHistory = [
         ...history,
         { role: 'user', text: message, timestamp: nowISO() },
