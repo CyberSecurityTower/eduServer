@@ -1,3 +1,4 @@
+// controllers/chatController.js
 'use strict';
 
 // ==========================================
@@ -8,40 +9,40 @@ const CONFIG = require('../config');
 const supabase = require('../services/data/supabase');
 const logger = require('../utils/logger');
 const PROMPTS = require('../config/ai-prompts');
+
+// Engines & Managers
 const { markLessonComplete, trackStudyTime } = require('../services/engines/gatekeeper'); 
 const { runPlannerManager } = require('../services/ai/managers/plannerManager');
 const { initSessionAnalyzer, analyzeSessionForEvents } = require('../services/ai/managers/sessionAnalyzer');
-const { refreshUserTasks, getLastActiveSessionContext, getRecentPastExams  } = require('../services/data/helpers');
-const { getHumanTimeDiff } = require('../utils');
+const { runMemoryAgent, analyzeAndSaveMemory } = require('../services/ai/managers/memoryManager');
+const { runCurriculumAgent } = require('../services/ai/managers/curriculumManager');
+const { runSuggestionManager } = require('../services/ai/managers/suggestionManager');
+const { explainLessonContent } = require('../services/engines/ghostTeacher');
+const { getNexusMemory, updateNexusKnowledge } = require('../services/ai/eduNexus');
+
 // Utilities
 const { toCamelCase, nowISO } = require('../services/data/dbUtils');
+const { getHumanTimeDiff } = require('../utils');
 const {
   getAlgiersTimeContext,
   extractTextFromResult,
   ensureJsonOrRepair,
   safeSnippet
 } = require('../utils');
-const isFirstTimeUser = (history.length === 0 && !userData.last_active_at);
-// Helpers
+
+// Data Helpers (Consolidated)
 const {
   getProfile,
   formatProgressForAI,
   saveChatSession,
   fetchUserWeaknesses,
   updateAiAgenda,
-  getStudentScheduleStatus // <-- added helper import
+  getStudentScheduleStatus,
+  refreshUserTasks,
+  getLastActiveSessionContext,
+  getProgress,         // ✅ Added
+  getRecentPastExams   // ✅ Added
 } = require('../services/data/helpers');
-
-// AI Managers
-const { runMemoryAgent, analyzeAndSaveMemory } = require('../services/ai/managers/memoryManager');
-const { runCurriculumAgent } = require('../services/ai/managers/curriculumManager');
-const { runSuggestionManager } = require('../services/ai/managers/suggestionManager');
-
-// ✅ Engines
-const { explainLessonContent } = require('../services/engines/ghostTeacher');
-
-// ✅ EduNexus
-const { getNexusMemory, updateNexusKnowledge } = require('../services/ai/eduNexus');
 
 let generateWithFailoverRef;
 
@@ -79,9 +80,8 @@ async function generateChatSuggestions(req, res) {
 // 4. Main Logic: Chat Interactive
 // ==========================================
 async function chatInteractive(req, res) {
-  // ✅ نستقبل البيانات من الفرونت أند
+  // ✅ Receive data from frontend
   let { userId, message, history = [], sessionId, currentContext = {} } = req.body;
-  const userGender = userData.gender || 'male'; // تأكد أن هذا الحقل موجود في الداتابيز
 
   // Safety check
   if (!sessionId) sessionId = crypto.randomUUID();
@@ -92,7 +92,7 @@ async function chatInteractive(req, res) {
     // 1. SMART HISTORY RESTORATION & BRIDGING
     // =========================================================
     if (!history || history.length === 0) {
-      // أ. محاولة جلب الجلسة الحالية (Refresh Scenario)
+      // A. Try to fetch current session (Refresh Scenario)
       const { data: sessionData } = await supabase
         .from('chat_sessions')
         .select('messages')
@@ -107,7 +107,7 @@ async function chatInteractive(req, res) {
         }));
         history = history.slice(-10);
       } else {
-        // ب. إذا لم توجد جلسة حالية، نحاول جلب سياق من جلسة سابقة (Bridging Scenario)
+        // B. If no current session, try bridging from last active session
         const bridgeContext = await getLastActiveSessionContext(userId, sessionId);
         if (bridgeContext) {
           history = bridgeContext.messages;
@@ -118,7 +118,6 @@ async function chatInteractive(req, res) {
     // =========================================================
     // 2. Data Aggregation (Identity First)
     // =========================================================
-    // 🛑 MOVED UP: We must fetch user data first before using userData.groupId
     const { data: userRaw, error: userError } = await supabase
       .from('users')
       .select('*, group_id, role')
@@ -130,23 +129,6 @@ async function chatInteractive(req, res) {
     }
 
     let userData = toCamelCase(userRaw);
-
-    // =========================================================
-    // ✅ 2.1 PAST EXAMS LOGIC (Moved Here)
-    // =========================================================
-    // Now userData is defined, so we can access userData.groupId safeley
-    const recentPastExams = await getRecentPastExams(userData.groupId);
-    
-    let pastExamsContext = "";
-    if (recentPastExams.length > 0) {
-        pastExamsContext = "🗓️ **RECENT PAST EXAMS (Ask user about results):**\n";
-        recentPastExams.forEach(ex => {
-            const dateStr = new Date(ex.exam_date).toLocaleDateString('en-US');
-            const subject = ex.subjects?.title || ex.subject_id;
-            pastExamsContext += `- Finished Exam: "${subject}" (${ex.type}) on ${dateStr}.\n`;
-        });
-        pastExamsContext += "👉 INSTRUCTION: If you haven't asked yet, ask casually: 'How did the [Subject] exam go?'\n";
-    }
 
     // =========================================================
     // 3. GROUP ENFORCEMENT LOGIC
@@ -184,20 +166,7 @@ async function chatInteractive(req, res) {
         });
       }
     }
-//WELCOME WITH NEW USER//
-    
-let welcomeContext = "";
-if (isFirstTimeUser) {
-    welcomeContext = `
-    🎉 **NEW USER ALERT:** This is the VERY FIRST time ${userData.firstName} talks to you.
-    👉 **INSTRUCTION:**
-    1. Welcome them warmly to the EduApp family.
-    2. Introduce yourself briefly as their new close companion.
-    3. Ask them to share some info with you or he wanna say something or struggles..etc.
-    4. Don't be too pushy about tasks yet or revision unless the exams are so far.
-    `;
-}
-//-------------WELCOME END----------------//
+
     // ---------------------------------------------------------
     // ✅ B. Context Injection & Ghost Teacher Logic
     // ---------------------------------------------------------
@@ -219,7 +188,7 @@ if (isFirstTimeUser) {
             const ghostResult = await explainLessonContent(lessonData.id, userId);
             const replyText = `👻 **المعلم الشبح:**\n\n${ghostResult.content}`;
 
-            // حفظ فوري
+            // Save immediately
             saveChatSession(sessionId, userId, message, [
               ...history,
               { role: 'user', text: message, timestamp: nowISO() },
@@ -244,19 +213,25 @@ if (isFirstTimeUser) {
     }
 
     // Fetch Context Data (Parallel)
-    const [rawProfile, memoryReport, curriculumReport, weaknessesRaw, formattedProgress, userTasksRes] = await Promise.all([
+    const [
+      rawProfile,
+      memoryReport,
+      curriculumReport,
+      weaknessesRaw,
+      formattedProgress,
+      userTasksRes,
+      progressData // ✅ Progress for Streak
+    ] = await Promise.all([
       getProfile(userId).catch(() => ({})),
       runMemoryAgent(userId, message).catch(() => ''),
       runCurriculumAgent(userId, message).catch(() => ''),
       fetchUserWeaknesses(userId).catch(() => []),
       formatProgressForAI(userId).catch(() => ''),
-      supabase.from('user_tasks')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('status', 'pending')
+      supabase.from('user_tasks').select('*').eq('user_id', userId).eq('status', 'pending'),
+      getProgress(userId) 
     ]);
 
-    // ✅ NEW: جلب حالة الجدول الزمني
+    // ✅ Schedule Status
     let scheduleStatus = null;
     let scheduleContextString = "";
     try {
@@ -269,32 +244,28 @@ if (isFirstTimeUser) {
       scheduleContextString = "";
     }
 
-    // 🔥 التصحيح هنا: نمرر الكائن كاملاً بدلاً من اختيار حقول محددة
     const updatedContextForPrompt = {
       ...currentContext,
-      schedule: scheduleStatus || { state: 'unknown' } 
+      schedule: scheduleStatus || { state: 'unknown' }
     };
 
-    // 🔥 معالجة بيانات الجاذبية (Gravity Intel)
+    // 🔥 Gravity Intel
     let gravityContext = null;
     let tasksList = "No active tasks.";
 
     if (userTasksRes && userTasksRes.data && userTasksRes.data.length > 0) {
-      // 1. ترتيب المهام حسب السكور (الموجود داخل meta) تنازلياً
+      // 1. Sort by score
       const sortedTasks = userTasksRes.data.sort((a, b) => {
         const scoreA = a.meta?.score || 0;
         const scoreB = b.meta?.score || 0;
-        return scoreB - scoreA; // الأكبر أولاً
+        return scoreB - scoreA;
       });
 
-      // 2. التقاط "مهمة الجاذبية القصوى" (Top Priority)
+      // 2. Capture Top Priority
       const topTask = sortedTasks[0];
       const topScore = topTask.meta?.score || 0;
       
-      // ✅ التعديل: نتأكد أن السكور عالي وأن حالة التحضير للامتحان مفعلة
       const isExamEmergency = topScore > 4000 && topTask.meta?.isExamPrep === true;
-
-      // ✅ التعديل: جلب التوقيت من الميتا مباشرة
       const timingInfo = topTask.meta?.examTiming || "Unknown time";
 
       gravityContext = {
@@ -302,10 +273,10 @@ if (isFirstTimeUser) {
         score: topScore,
         isExam: isExamEmergency,
         subject: topTask.meta?.subjectId || 'General',
-        timing: timingInfo // تخزين التوقيت
+        timing: timingInfo
       };
 
-      // 3. تنسيق القائمة للعرض العام (اختياري، يمكن تركه كما هو)
+      // 3. Format list
       tasksList = sortedTasks.map(t => {
         const score = t.meta?.score || 0;
         const examBadge = score > 4000 ? "🚨 EXAM TOMORROW" :
@@ -315,14 +286,91 @@ if (isFirstTimeUser) {
     }
 
     // ==========================================
-    // 6. بروتوكول الجاذبية
+    // 🌟 IMPROVEMENTS LOGIC (Context Enhancements)
+    // ==========================================
+
+    // 1. Gender Awareness
+    const userGender = userData.gender || 'male';
+
+    // 2. First Time User
+    // Check if history is empty AND lastActiveAt is null/undefined
+    const isFirstTimeUser = (history.length === 0 && !userData.lastActiveAt);
+    let welcomeContext = "";
+    if (isFirstTimeUser) {
+        welcomeContext = `
+        🎉 **NEW USER ALERT:** This is the VERY FIRST time ${userData.firstName} talks to you.
+        👉 **INSTRUCTION:**
+        1. Welcome them warmly to the EduApp family.
+        2. Introduce yourself briefly as their new companion.
+        3. Ask them: "واش هو التخصص تاعك؟" or "واش راك حاب تراجع اليوم؟".
+        4. Don't be too pushy about tasks yet.
+        `;
+    }
+
+    // 3. Dry Text Detector
+    const isShortMessage = message && message.trim().length < 4;
+    let conversationalContext = "";
+    if (isShortMessage) {
+        conversationalContext = `
+        ⚠️ **INTERACTION ALERT:** The user sent a very short/dry message ("${message}").
+        👉 **INSTRUCTION:** 
+        - They might be bored, tired, or busy.
+        - STOP explaining lessons immediately.
+        - Ask an open-ended question to re-engage them (e.g., "راك عيان؟", "كاش ما صرا؟").
+        - Keep your reply VERY short too.
+        `;
+    }
+
+    // 4. Streak Hype
+    const streak = progressData?.streakCount || 0;
+    const bestStreak = progressData?.bestStreak || 0;
+    let streakContext = "";
+    if (streak >= 3) {
+        streakContext = `🔥 **STREAK ALERT:** User is on a ${streak}-day streak! Mention this proudly!`;
+    } else if (streak === 0 && bestStreak > 5) {
+        streakContext = `💔 **STREAK BROKEN:** User lost a long streak (${bestStreak} days). Be gentle and encourage them.`;
+    }
+
+    // 5. Distraction Detector
+    let distractionContext = "";
+    if (history.length > 0) {
+        const lastMsg = history[history.length - 1];
+        const lastTime = new Date(lastMsg.timestamp).getTime();
+        const now = Date.now();
+        const diffMinutes = (now - lastTime) / (1000 * 60);
+        if (diffMinutes > 10 && diffMinutes < 60) {
+            distractionContext = `⏱️ **DISTRACTION DETECTED:** User went silent for ${Math.floor(diffMinutes)} mins. Tease them playfully!`;
+        }
+    }
+
+    // 6. Fatigue Switch
+    const sessionLength = history.length;
+    let fatigueContext = "";
+    if (sessionLength > 20 && sessionLength % 10 === 0) {
+        fatigueContext = `🧠 **FATIGUE CHECK:** Long session (${sessionLength} msgs). Suggest a break or switching subjects.`;
+    }
+
+    // 7. Recent Past Exams (Retroactive Awareness)
+    const recentPastExams = await getRecentPastExams(userData.groupId);
+    let pastExamsContext = "";
+    if (recentPastExams.length > 0) {
+        pastExamsContext = "🗓️ **RECENT PAST EXAMS (Ask user about results):**\n";
+        recentPastExams.forEach(ex => {
+            const dateStr = new Date(ex.exam_date).toLocaleDateString('en-US');
+            const subject = ex.subjects?.title || ex.subject_id;
+            pastExamsContext += `- Finished Exam: "${subject}" (${ex.type}) on ${dateStr}.\n`;
+        });
+        pastExamsContext += "👉 INSTRUCTION: If you haven't asked yet, ask casually: 'How did the [Subject] exam go?'\n";
+    }
+
+    // ==========================================
+    // 6. Gravity Protocol & Context Assembly
     // ==========================================
     let gravitySection = "";
     let antiSamataProtocol = "";
       
     if (gravityContext) {
           const isExam = gravityContext.isExam || false;
-          // 👇 نكتب الوقت للـ AI
           const timeStr = gravityContext.timing ? `(Timing: ${gravityContext.timing})` : "";
 
           gravitySection = `🚀 **GRAVITY ENGINE:** Top Task: "${gravityContext.title}", Score: ${gravityContext.score}. Emergency: ${isExam ? "YES" : "NO"} ${timeStr}`;
@@ -337,12 +385,10 @@ if (isFirstTimeUser) {
     // Exam Context
     let examContext = {};
     if (userData.nextExamDate) {
-      // 👇 بدلاً من حساب الأيام يدوياً، نستخدم دالتنا الذكية
       const humanTime = getHumanTimeDiff(userData.nextExamDate);
-      
       examContext = { 
           subject: userData.nextExamSubject || 'General',
-          timingHuman: humanTime, // "غدوة"، "السيمانة الجاية"
+          timingHuman: humanTime,
           rawDate: userData.nextExamDate
       };
     }
@@ -350,9 +396,8 @@ if (isFirstTimeUser) {
     const aiProfileData = rawProfile || {};
     const groupId = userData.groupId;
 
-    // 🔥 تحويل الـ JSON الجديد إلى نص مقروء (Narrative)
+    // Narrative Profile
     const facts = aiProfileData.facts || {};
-    
     let userBio = "User Profile:\n";
     
     if (facts.identity) {
@@ -378,14 +423,11 @@ if (isFirstTimeUser) {
       lastName: userData.lastName || '',
       group: groupId,
       role: userData.role || 'student',
+      gender: userGender, // ✅ Added Gender
       formattedBio: userBio, 
-      gender: userGender, 
       ...aiProfileData
     };
 
-    // ---------------------------------------------------------
-    // C. Context Preparation
-    // ---------------------------------------------------------
     let currentEmotionalState = aiProfileData.emotional_state || { mood: 'happy', angerLevel: 0, reason: '' };
     const allAgenda = Array.isArray(aiProfileData.aiAgenda) ? aiProfileData.aiAgenda : [];
     const activeAgenda = allAgenda.filter(t => t.status === 'pending');
@@ -406,21 +448,30 @@ if (isFirstTimeUser) {
     }
 
     const ageContext = rawProfile.facts?.age ? `User Age: ${rawProfile.facts.age} years old.` : "";
+    const currentSemester = 'S1'; // Default
 
     const systemContextCombined = `
     User Identity: Name=${fullUserProfile.firstName}, Group=${groupId}, Role=${fullUserProfile.role}.
     ${ageContext}
+    📅 **ACADEMIC SEASON:** We are currently in **${currentSemester}**.
     ${getAlgiersTimeContext().contextSummary}
     ${scheduleContextString}
     ${sharedContext}
     ${activeLessonContext}
+
+    ${welcomeContext}
+    ${conversationalContext}
+    ${streakContext}
+    ${distractionContext}
+    ${fatigueContext}
+    ${pastExamsContext}
 
     📋 **CURRENT TODO LIST:**
     ${tasksList}
     
     ${gravitySection} 
     ${antiSamataProtocol}
-    ${pastExamsContext}
+    
     ${examContext.subject ? `🚨 **EXAM ALERT:** Subject: "${examContext.subject}" is happening **${examContext.timingHuman}**. Focus on this immediately!` : ""}
     `;
 
@@ -429,7 +480,7 @@ if (isFirstTimeUser) {
     // ---------------------------------------------------------
     const safeMessage = message || '';
 
-    // ✅ تنسيق الهيستوري المحدث للـ Prompt
+    // Format history for Prompt
     const formatTimeShort = (isoString) => {
       if (!isoString) return '';
       const date = new Date(isoString);
@@ -561,12 +612,12 @@ if (isFirstTimeUser) {
 
     // Background processing
     setImmediate(async () => { 
-      // 🔥 1. تتبع وقت الدراسة عبر الشات
+      // 1. Study time tracking
       if (currentContext && currentContext.lessonId) {
           await trackStudyTime(userId, currentContext.lessonId, 60).catch(err => logger.error('Tracking failed:', err));
       }
 
-      // 2. حفظ الشات
+      // 2. Save Chat
       const updatedHistory = [
         ...history,
         { role: 'user', text: message, timestamp: nowISO() },
@@ -576,11 +627,15 @@ if (isFirstTimeUser) {
       saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory)
         .catch(e => logger.error(e));
 
+      // 3. Memory & Analysis
       analyzeAndSaveMemory(userId, updatedHistory)
         .catch(e => logger.error(e));
 
       analyzeSessionForEvents(userId, updatedHistory)
         .catch(e => logger.error('SessionAnalyzer Fail:', e));
+
+      // 4. Update Last Active At (Important for First Time detection)
+      supabase.from('users').update({ last_active_at: nowISO() }).eq('id', userId).then();
     });
 
   } catch (err) {
