@@ -6,25 +6,28 @@ const logger = require('../../../utils/logger');
 const { getHumanTimeDiff, getAlgiersTimeContext } = require('../../../utils');
 
 /**
- * 🪐 CORTEX GRAVITY ENGINE V4.0 (GOD MODE)
- * Features: SRS, Time-Awareness, Weakness Targeting, Smart Labeling.
+ * 🪐 CORTEX GRAVITY ENGINE V4.5 (Infinite Loop Mode)
+ * التعديلات:
+ * 1. إصلاح مشكلة المصفوفة الفارغة.
+ * 2. اقتراح مراجعة الدروس القديمة حتى لو كانت مكتملة.
+ * 3. تخفيف قيود السداسي (Semester).
  */
 async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
   try {
-    logger.info(`🪐 Gravity Engine V4 (God Mode) Started for ${userId}`);
+    logger.info(`🪐 Gravity Engine V4.5 Started for ${userId} (Path: ${pathId})`);
 
-    // 1. جلب البيانات الغنية (Rich Data Fetching)
+    // 1. جلب البيانات الغنية
     const [settingsRes, userRes, progressRes] = await Promise.all([
         supabase.from('system_settings').select('value').eq('key', 'current_semester').single(),
         supabase.from('users').select('group_id').eq('id', userId).single(),
-        // نجلب: الحالة، آخر تفاعل، ونقاط الإتقان
         supabase.from('user_progress').select('lesson_id, status, last_interaction, mastery_score').eq('user_id', userId)
     ]);
 
-    const currentSemester = settingsRes.data?.value || 'S1'; 
+    // تنظيف السداسي (مثلاً تحويل "Semester 1" إلى "S1" للمقارنة)
+    let currentSemester = settingsRes.data?.value || 'S1'; 
     const groupId = userRes.data?.group_id;
     
-    // خريطة ذكية للتقدم
+    // خريطة التقدم
     const progressMap = new Map();
     if (progressRes.data) {
         progressRes.data.forEach(p => {
@@ -36,10 +39,9 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
         });
     }
 
-    // 2. جلب الامتحانات (Intel Gathering) - تعديل لجلب الماضي والمستقبل
-    let examEvents = {}; // نغير الاسم ليكون أشمل
+    // 2. جلب الامتحانات
+    let examEvents = {};
     if (groupId) {
-        // نجلب الامتحانات من "أمس" وحتى المستقبل
         const yesterday = new Date();
         yesterday.setDate(yesterday.getDate() - 1); 
         
@@ -47,7 +49,7 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
             .from('exams')
             .select('subject_id, exam_date')
             .eq('group_id', groupId)
-            .gte('exam_date', yesterday.toISOString()); // نعدل الشرط ليشمل الماضي القريب جداً
+            .gte('exam_date', yesterday.toISOString());
 
         if (exams) {
             exams.forEach(ex => {
@@ -56,13 +58,13 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
             });
         }
     }
-    // 3. تحليل الوقت البيولوجي (Bio-Rhythm)
+
+    // 3. الوقت البيولوجي
     const timeCtx = getAlgiersTimeContext();
     const currentHour = timeCtx.hour;
-    // هل الوقت مناسب للمواد الثقيلة (صباحاً) أم الخفيفة (مساءً)؟
     const isDeepWorkTime = (currentHour >= 5 && currentHour <= 12); 
 
-    // 4. جلب الدروس
+    // 4. جلب الدروس (مع التحقق من وجود بيانات)
      const { data: lessons, error } = await supabase
       .from('lessons')
       .select(`
@@ -72,53 +74,72 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
       .eq('subjects.path_id', pathId)
       .order('order_index', { ascending: true });
 
-    if (error || !lessons) return { tasks: [] };
+    if (error) {
+        logger.error('Gravity DB Error:', error.message);
+        return { tasks: [] };
+    }
+    
+    if (!lessons || lessons.length === 0) {
+        logger.warn(`⚠️ Gravity: No lessons found for path ${pathId}`);
+        return { tasks: [] };
+    }
 
-    // 5. 🧠 الخوارزمية المركزية (The Core Algorithm)
+    // 5. 🧠 الخوارزمية المركزية
     let candidates = lessons.map(lesson => {
-      // فلتر السداسي
-      if (lesson.subjects?.semester && lesson.subjects.semester !== currentSemester) return null;
+      // 🛡️ فلتر السداسي (مرن أكثر)
+      // إذا كان الدرس لديه سداسي محدد والنظام لديه سداسي محدد، وهما مختلفان -> تجاهل
+      // لكن إذا كان أحدهما غير محدد، اسمح بالمرور لتجنب القوائم الفارغة
+      if (lesson.subjects?.semester && currentSemester) {
+          const lessonSem = lesson.subjects.semester.trim().toUpperCase(); // S1
+          const sysSem = currentSemester.trim().toUpperCase(); // S1
+          // مقارنة بسيطة (S1 vs S1) أو (Semester 1 vs S1)
+          if (!lessonSem.includes(sysSem) && !sysSem.includes(lessonSem)) {
+              return null; 
+          }
+      }
 
-      let gravityScore = 100; // نقاط البداية
-      let taskType = 'new';   // new | review | fix
+      let gravityScore = 100; 
+      let taskType = 'new';   
       let displayTitle = lesson.title;
       
       const subjectId = lesson.subject_id ? lesson.subject_id.trim().toLowerCase() : '';
       const userState = progressMap.get(lesson.id);
 
-      // --- العامل 1: الحالة السابقة (The History Factor) ---
+      // --- العامل 1: الحالة السابقة (History) ---
       if (userState) {
           const daysSince = (Date.now() - userState.lastInteraction) / (1000 * 60 * 60 * 24);
           
           if (userState.score < 50) {
-              // 🚨 حالة طوارئ: الطالب ضعيف في هذا الدرس
+              // 🚨 ضعيف جداً
               gravityScore += 5000; 
               taskType = 'fix';
               displayTitle = `تصحيح مسار: ${lesson.title}`;
           } else if (daysSince > 3 && daysSince < 7) {
-              // 🔄 تكرار متباعد (Spaced Repetition) - مراجعة خفيفة
+              // 🔄 مراجعة دورية
               gravityScore += 2000;
               taskType = 'review';
               displayTitle = `مراجعة: ${lesson.title}`;
           } else if (daysSince >= 7) {
-              // 🧠 تكرار متباعد - مراجعة عميقة (النسيان بدأ)
+              // 🧠 استرجاع (نسيان)
               gravityScore += 4000;
               taskType = 'review';
               displayTitle = `استرجاع ذاكرة: ${lesson.title}`;
           } else {
-              // تمت دراسته قريباً وبدرجة جيدة -> نخفض الأولوية جداً
-              gravityScore -= 5000;
-              taskType = 'done';
+              // ✅ تم إنجازه حديثاً (هنا كان الخلل)
+              // بدلاً من جعله سالباً وإخفائه، نعطيه نقاطاً منخفضة لكن موجبة
+              // ليظهر في القائمة إذا لم يكن هناك غيره
+              gravityScore = 10; // نقاط قليلة جداً
+              taskType = 'review'; // نعتبره مراجعة إضافية
+              displayTitle = `تثبيت معلومات: ${lesson.title}`;
           }
       } else {
-          // درس جديد كلياً
-          gravityScore += 1000; // نفضل الجديد
-          // نضيف نقاط الترتيب (الدروس الأولى أولى)
-          gravityScore += (500 - (lesson.order_index || 0));
+          // درس جديد
+          gravityScore += 1000; 
+          gravityScore += (500 - (lesson.order_index || 0)); // ترتيب الدروس
           displayTitle = `درس جديد: ${lesson.title}`;
       }
 
-      // --- العامل 2: الامتحانات (The Exam Factor) ---
+      // --- العامل 2: الامتحانات ---
       let humanExamTime = null;
       let isExamPrep = false;
       
@@ -127,74 +148,61 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
           const now = new Date();
           const diffHours = (examDate - now) / (1000 * 60 * 60);
 
-          // A. امتحان قادم (Future)
           if (diffHours > 0 && diffHours <= 72) { 
-              gravityScore += 100000; 
+              gravityScore += 100000; // أولوية قصوى
               isExamPrep = true;
               displayTitle = `🔥 طوارئ امتحان: ${lesson.title}`;
           } 
-          // B. امتحان فات للتو (Past - Post Exam) ✅ الإضافة الجديدة
           else if (diffHours <= 0 && diffHours > -48) { 
-              // الامتحان فات منذ أقل من 48 ساعة
-              gravityScore += 5000; // أولوية متوسطة
-              taskType = 'review'; // نوع المهمة مراجعة/تصحيح
-              displayTitle = `تصحيح موضوع: ${lesson.title}`; // نغير العنوان
+              gravityScore += 5000; 
+              taskType = 'review'; 
+              displayTitle = `تصحيح موضوع: ${lesson.title}`;
           }
-          
           humanExamTime = getHumanTimeDiff(examDate);
-      }
-
-      // --- العامل 3: الوقت البيولوجي (Bio-Rhythm Factor) ---
-      // إذا كان الصباح، نرفع سكور المواد الأساسية (المعامل العالي)
-      const coeff = lesson.subjects?.coefficient || 1;
-      if (isDeepWorkTime && coeff >= 3) {
-          gravityScore += 500;
-      } 
-      // إذا كان الليل، نرفع سكور المراجعة
-      else if (!isDeepWorkTime && taskType === 'review') {
-          gravityScore += 500;
       }
 
       return {
         id: lesson.id,
-        title: displayTitle, // ✅ العنوان الذكي
+        title: displayTitle,
         type: taskType === 'new' ? 'study' : 'review',
         score: gravityScore,
         meta: {
             relatedLessonId: lesson.id,
             relatedSubjectId: lesson.subject_id,
-            lessonTitle: lesson.title, // العنوان الأصلي
-            displayTitle: displayTitle, // العنوان المعدل
+            relatedLessonTitle: lesson.title, // العنوان الأصلي مهم
             score: gravityScore,
             isExamPrep: isExamPrep,
             examTiming: humanExamTime,
             mastery: userState?.score || 0
         }
       };
-    }).filter(Boolean);
+    }).filter(Boolean); // حذف الـ nulls
 
     // 6. الترتيب النهائي
     candidates.sort((a, b) => b.score - a.score); 
 
-    // 7. Fallback (شبكة الأمان)
+    // 7. Fallback (شبكة الأمان القصوى)
+    // إذا كانت المصفوفة فارغة تماماً (بسبب فلتر السداسي مثلاً)، نجلب أي درس عشوائي
     if (candidates.length === 0 && lessons.length > 0) {
+        logger.warn(`⚠️ Gravity: Candidates empty after filter. Using fallback.`);
         candidates = lessons.slice(0, 3).map(l => ({
             id: l.id,
-            title: `استكشاف: ${l.title}`,
-            type: 'study',
-            score: 50,
-            meta: { relatedLessonId: l.id, isExamPrep: false }
+            title: `مراجعة عامة: ${l.title}`,
+            type: 'review',
+            score: 5,
+            meta: { relatedLessonId: l.id, relatedLessonTitle: l.title, isExamPrep: false }
         }));
     }
 
     // نأخذ أفضل 3 مهام
     const finalTasks = candidates.slice(0, 3);
     
-    logger.success(`🏆 Gravity V4 generated tasks for ${userId}. Top: ${finalTasks[0]?.title}`);
-    return { tasks: finalTasks, source: 'Gravity_V4_GodMode' };
+    logger.success(`🏆 Gravity V4.5 generated ${finalTasks.length} tasks for ${userId}. Top: ${finalTasks[0]?.title}`);
+    return { tasks: finalTasks, source: 'Gravity_V4.5' };
 
   } catch (err) {
-    logger.error('Gravity Planner V4 Error:', err.message);
+    logger.error('Gravity Planner Error:', err.message);
+    // إرجاع مصفوفة فارغة في حالة الخطأ الكارثي فقط
     return { tasks: [] };
   }
 }
