@@ -24,7 +24,7 @@ const PROMPTS = {
       weaknesses,               // 6
       currentEmotionalState,    // 7
       fullUserProfile,          // 8
-      systemContextCombined,    // 9 (يحتوي الآن على رسالة الترحيب والوقت)
+      systemContextCombined,    // 9 
       examContext,              // 10
       activeAgenda,             // 11
       groupContext,             // 12
@@ -242,9 +242,16 @@ ${eduNexusProtocolInstructions}
     traffic: (message) => `Analyze: { "language": "Ar/En/Fr", "title": "Short Title", "intent": "study|chat|admin" }. Msg: "${escapeForPrompt(safeSnippet(message, 200))}"`,
     
     memoryExtractor: (currentFacts, chatHistory) => `
-    You are the "Memory Architect".
+   You are the "Memory Architect".
     **Current Facts:** ${JSON.stringify(currentFacts)}
     **Chat Stream:** ${chatHistory}
+    
+    **Task:** Extract PERMANENT user facts.
+    - If user says "My name is Ahmed", save {"name": "Ahmed"}.
+    - If user says "I hate Math", save {"weakness": "Math"}.
+    - If user says "I want to be a manager", save {"dream": "Manager"}.
+    - If user says "I am lazy", save {"behavior": "lazy"}.
+    ....etc
     **Output JSON ONLY:** { "newFacts": {}, "deleteKeys": [], "vectorContent": "..." }
     `,
 
