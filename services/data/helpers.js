@@ -1011,6 +1011,47 @@ async function getRecentPastExams(groupId) {
   }
 }
 
+// ✅ إضافة مهمة استكشاف جديدة
+async function addDiscoveryMission(userId, content, source = 'auto', priority = 'low') {
+  const { data: user } = await supabase.from('users').select('ai_discovery_missions').eq('id', userId).single();
+  let missions = user?.ai_discovery_missions || [];
+
+  // منع التكرار
+  if (missions.some(m => m.content === content)) return;
+
+  const newMission = {
+    id: crypto.randomUUID(),
+    content: content,
+    source: source, // 'admin' or 'auto'
+    priority: priority, // 'high' (Admin) or 'low' (Auto)
+    created_at: new Date().toISOString()
+  };
+
+  // مهام الأدمين دائماً في المقدمة
+  if (source === 'admin') {
+      missions.unshift(newMission);
+  } else {
+      missions.push(newMission);
+  }
+
+  await supabase.from('users').update({ ai_discovery_missions: missions }).eq('id', userId);
+}
+
+// ✅ حذف مهمة (عند اكتمالها)
+async function completeDiscoveryMission(userId, missionContentPartial) {
+  const { data: user } = await supabase.from('users').select('ai_discovery_missions').eq('id', userId).single();
+  let missions = user?.ai_discovery_missions || [];
+
+  const initialLength = missions.length;
+  // نحذف المهمة التي يحتوي نصها على الكلمة المفتاحية (بحث ذكي)
+  missions = missions.filter(m => !m.content.includes(missionContentPartial));
+
+  if (missions.length !== initialLength) {
+      await supabase.from('users').update({ ai_discovery_missions: missions }).eq('id', userId);
+      console.log(`✅ Mission Completed & Removed for ${userId}`);
+  }
+}
+
 module.exports = {
   initDataHelpers,
   getUserDisplayName,
@@ -1034,5 +1075,7 @@ module.exports = {
   cacheDel,
   getLastActiveSessionContext ,
   getStudentScheduleStatus,
-  getRecentPastExams
+  getRecentPastExams,
+   addDiscoveryMission,
+  completeDiscoveryMission
 };
