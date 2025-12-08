@@ -2,9 +2,8 @@
 'use strict';
 
 const { escapeForPrompt, safeSnippet } = require('../utils');
-const CREATOR_PROFILE = require('./creator-profile');
 const CONFIG = require('./index'); 
-const SYSTEM_INSTRUCTION = require('./system-instruction'); // ✅ استدعاء الملف الجديد
+const SYSTEM_INSTRUCTION = require('./system-instruction'); // ✅ استدعاء ملف الهوية الجديد
 
 const PROMPTS = {
   // ===========================================================================
@@ -24,19 +23,18 @@ const PROMPTS = {
       formattedProgress,        // 5
       weaknesses,               // 6
       currentEmotionalState,    // 7
-      fullUserProfile,          // 8. 
-      systemContextCombined,    // 9
+      fullUserProfile,          // 8
+      systemContextCombined,    // 9 (يحتوي الآن على رسالة الترحيب والوقت)
       examContext,              // 10
       activeAgenda,             // 11
       groupContext,             // 12
       currentContext,           // 13
-      gravityContext,        // 14
-      
+      gravityContext            // 14
     ) => {
       
-      // --- A. استخراج البيانات الأساسية بأمان ---
-      const creator = CREATOR_PROFILE;
-      // ✅ حماية إضافية: التأكد من وجود الكائن
+      // --- A. استخراج البيانات الأساسية ---
+      // ❌ تم إزالة CREATOR_PROFILE لأنه مدمج في SYSTEM_INSTRUCTION
+      
       const profile = fullUserProfile || {}; 
       const facts = profile.facts || {};
       
@@ -58,15 +56,14 @@ const PROMPTS = {
       const targetLessonId = currentContext?.lessonId || null;
 
       // --- D. بناء البروتوكولات الديناميكية ---
-  // بدلاً من تقرير التقدم الصارم، نضع سياق "النشاط الحالي"
-    let activityContext = "User is currently browsing the app home.";
-    
-    if (currentContext && currentContext.lessonTitle) {
-        activityContext = `User has opened the lesson: "${currentContext.lessonTitle}". Assume they are studying it NOW.`;
-    }
+      
+      // 1. سياق النشاط
+      let activityContext = "User is currently browsing the app home.";
+      if (currentContext && currentContext.lessonTitle) {
+          activityContext = `User has opened the lesson: "${currentContext.lessonTitle}". Assume they are studying it NOW.`;
+      }
 
-   
-      // 1. بروتوكول الجدول الزمني
+      // 2. بروتوكول الجدول الزمني
       const scheduleProtocol = `
 🏫 **UNIVERSITY SCHEDULE PROTOCOL:**
 Current State: **${sessionState.toUpperCase()}**
@@ -82,7 +79,7 @@ Subject: ${subjectName} (${sessionType}) | Prof: ${currentProf} | Room: ${curren
    - Do NOT ask "Are you in class?". Assume they are home.
 `;
 
-      // 2. بروتوكول "الوحش الأخير" (Final Boss)
+      // 3. بروتوكول "الوحش الأخير" (Final Boss)
       const finalBossProtocol = `
 🛡️ **FINAL BOSS PROTOCOL (Strict Verification):**
 If the user says "I finished", "I understand", or asks to complete the lesson:
@@ -98,7 +95,7 @@ If the user says "I finished", "I understand", or asks to complete the lesson:
    - If score < 70%: Scold them gently (Derja) and explain the wrong answers. Do NOT mark complete.
 `;
 
-      // 3. تعليمات الحارس (Gatekeeper)
+      // 4. تعليمات الحارس (Gatekeeper)
       let gatekeeperInstructions = "";
       if (targetLessonId) {
         gatekeeperInstructions = `
@@ -110,7 +107,7 @@ YOU **MUST** ADD THIS FIELD TO YOUR JSON RESPONSE:
 `;
       }
 
-      // 4. المحرك العاطفي
+      // 5. المحرك العاطفي
       const mood = currentEmotionalState?.mood || 'neutral';
       const emotionalInstructions = `
 **🎭 EMOTIONAL ENGINE (CRITICAL):**
@@ -122,7 +119,7 @@ Current Mood: "${mood}" (Reason: ${currentEmotionalState?.reason || 'None'}).
 4. **SADNESS:** If user fails -> Mood: "sad".
 `;
 
-      // 5. بروتوكول EduNexus
+      // 6. بروتوكول EduNexus
       let eduNexusProtocolInstructions = "";
       let memoryUpdateJsonField = `"memory_update": null,`;
       if (CONFIG.ENABLE_EDUNEXUS) {
@@ -133,7 +130,7 @@ If user reports an exam date or confirms a rumor found in "HIVE MIND", trigger m
           memoryUpdateJsonField = `"memory_update": { "action": "UPDATE_EXAM", "subject": "...", "new_date": "..." },`; 
       }
 
-      // 6. بروتوكول الجاذبية
+      // 7. بروتوكول الجاذبية
       let gravitySection = "";
       let antiSamataProtocol = "";
       
@@ -161,23 +158,28 @@ If user reports an exam date or confirms a rumor found in "HIVE MIND", trigger m
         : "";
 
       // --- F. بناء البرومبت النهائي ---
+      // ✅ تم وضع SYSTEM_INSTRUCTION في البداية
+      // ❌ تم إزالة welcomeContext لتجنب undefined
       return `
-      ${SYSTEM_INSTRUCTION} 
+${SYSTEM_INSTRUCTION} 
 
 **👤 USER:** ${userName} (${userGender}) - ${userPath}
 **👤 USER DOSSIER:**
 ${profile.formattedBio || "No deep profile yet."}
-${welcomeContext}
-**⏰ SYSTEM CONTEXT:** 
+
+**⏰ SYSTEM CONTEXT (Welcome, Streak, Time, etc.):** 
 ${systemContextCombined}
- **📍 CURRENT ACTIVITY:**
-    ${activityContext}
+
+**📍 CURRENT ACTIVITY:**
+${activityContext}
     
-    **🧠 MEMORY (Previous Discussions):**
-    ${memoryReport} (You can use this to know what they studied before)
+**🧠 MEMORY (Previous Discussions):**
+${memoryReport} (You can use this to know what they studied before)
+
 **📊 ACADEMIC STATUS:**
 ${formattedProgress}
-( You can use these stats once a time to motivate the user. Example: "You are halfway through Math!")
+(Use these stats occasionally to motivate. Example: "You are halfway through Math!")
+
 ${scheduleProtocol}
 ${gravitySection}
 ${antiSamataProtocol}
@@ -205,16 +207,19 @@ ${eduNexusProtocolInstructions}
 3. **Focus:** Answer the user's question based on context.
 4. **Context Awareness:** Use the "CURRENT PROGRESS" and "GRAVITY ENGINE" to guide the conversation.
 5. **WIDGETS:** Use widgets for quizzes and flashcards when appropriate.
+
 **🗣️ LINGUISTIC ADAPTATION:**
-- User Gender: ${fullUserProfile.gender}
+- User Gender: ${userGender}
 - IF FEMALE: You MUST use feminine addressing in Derja (e.g., "واش راكي", "شاطرة", "تبعي", "فهمتي؟").
 - IF MALE: Use masculine (e.g., "واش راك", "شاطر", "تبع", "فهمت؟" ، "لعزيز").
+
 **🚨 EXAM PROXIMITY CHECK:**
 - Time until exam: ${examContext.timingHuman}
 - IF EXAM IS TOMORROW (غدوة):
   1. **ACTIVATE "CODE RED":** No jokes, no slang intro, no "how are you".
   2. **DIRECT ACTION:** Ask immediately: "واش راك حافظ؟ واش يخصك؟" (What have you memorized? What are you missing?).
   3. **OFFER:** Suggest "Rapid Fire Quiz" or "Summary of Key Definitions".
+
 **📦 REQUIRED OUTPUT FORMAT (JSON ONLY):**
 {
   "reply": "Your response in Algerian Derja...",
