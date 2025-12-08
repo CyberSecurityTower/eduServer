@@ -6,22 +6,21 @@ const logger = require('../../../utils/logger');
 const { getHumanTimeDiff, getAlgiersTimeContext } = require('../../../utils');
 
 /**
- * 🪐 CORTEX GRAVITY ENGINE V5.0 (DEBUG & RESCUE MODE)
- * هذا الإصدار مصمم لكشف سبب عودة المصفوفة فارغة.
+ * 🪐 CORTEX GRAVITY ENGINE V5.1 (Manual Join Fix)
+ * حل مشكلة العلاقات المتعددة عن طريق فصل الاستعلامات.
  */
 async function runPlannerManager(userId, pathId) {
   try {
-    // 1. التأكد من وجود PathId
     const safePathId = pathId || 'UAlger3_L1_ITCF';
-    logger.info(`🪐 Gravity V5 Debug: User=${userId}, Path=${safePathId}`);
+    logger.info(`🪐 Gravity V5.1: User=${userId}, Path=${safePathId}`);
 
-    // 2. جلب الإعدادات والتقدم
+    // 1. جلب الإعدادات والتقدم
     const [settingsRes, progressRes] = await Promise.all([
         supabase.from('system_settings').select('value').eq('key', 'current_semester').maybeSingle(),
         supabase.from('user_progress').select('lesson_id, status, last_interaction, mastery_score').eq('user_id', userId)
     ]);
 
-    const currentSemester = settingsRes.data?.value || null; // نجعله null إذا لم يوجد لتجنب الفلترة الخاطئة
+    const currentSemester = settingsRes.data?.value || null;
     
     // خريطة التقدم
     const progressMap = new Map();
@@ -35,52 +34,65 @@ async function runPlannerManager(userId, pathId) {
         });
     }
 
-    // 3. 🔥 محاولة جلب الدروس (التصحيح هنا) 🔥
-    // قمنا بإزالة "!fk_subject" لأنها تسبب مشاكل إذا اختلف اسم العلاقة في الداتابيز
-    const { data: lessons, error } = await supabase
-      .from('lessons')
-      .select(`
-        id, title, subject_id, has_content, order_index,
-        subjects ( id, title, coefficient, semester, path_id ) 
-      `)
-      .eq('subjects.path_id', safePathId)
-      .order('order_index', { ascending: true });
+    // ============================================================
+    // 🔥 الحل الجذري: فصل الاستعلام (Manual Join) 🔥
+    // ============================================================
 
-    // 🛑 فحص الأخطاء في الجلب
-    if (error) {
-        logger.error('❌ Gravity DB Error:', error.message);
-        // مهمة طوارئ تخبرك بالخطأ
-        return { 
-            tasks: [{ 
-                title: "خطأ في قاعدة البيانات", 
-                type: "fix", 
-                meta: { displayTitle: "DB Error: " + error.message } 
-            }] 
-        };
+    // أ. نجلب المواد (Subjects) الخاصة بهذا المسار أولاً
+    const { data: subjects, error: subjError } = await supabase
+        .from('subjects')
+        .select('id, title, coefficient, semester, path_id, type')
+        .eq('path_id', safePathId);
+
+    if (subjError || !subjects || subjects.length === 0) {
+        logger.error('❌ Gravity: No subjects found or DB Error.', subjError?.message);
+        return { tasks: [] };
     }
+
+    // ب. ننشئ خريطة للمواد ليسهل الوصول إليها لاحقاً
+    // ونستخرج قائمة الـ IDs لجلب الدروس
+    const subjectsMap = {};
+    const subjectIds = [];
     
-    // 🛑 فحص إذا كانت الدروس فارغة
-    if (!lessons || lessons.length === 0) {
-        logger.warn(`⚠️ Gravity: No lessons found for path "${safePathId}". Check your DB 'lessons' table.`);
-        // مهمة طوارئ تخبرك أن المسار فارغ
-        return { 
-            tasks: [{ 
-                title: "لا توجد دروس في هذا المسار", 
-                type: "study", 
-                meta: { displayTitle: "No lessons found for " + safePathId } 
-            }] 
-        };
+    subjects.forEach(sub => {
+        subjectsMap[sub.id] = sub;
+        subjectIds.push(sub.id);
+    });
+
+    // ج. نجلب الدروس التي تتبع هذه المواد فقط
+    const { data: lessonsRaw, error: lessonsError } = await supabase
+        .from('lessons')
+        .select('id, title, subject_id, has_content, order_index')
+        .in('subject_id', subjectIds) // نفلتر حسب المواد التي جلبناها
+        .order('order_index', { ascending: true });
+
+    if (lessonsError) {
+        logger.error('❌ Gravity: Lessons DB Error:', lessonsError.message);
+        return { tasks: [] };
     }
 
-    console.log(`✅ Gravity: Found ${lessons.length} lessons. Processing...`);
+    // د. الدمج اليدوي (Re-attach subjects to lessons)
+    // لكي يبقى شكل البيانات كما يتوقعه باقي الكود والفرونت أند
+    const lessons = lessonsRaw.map(l => ({
+        ...l,
+        subjects: subjectsMap[l.subject_id] // نضع كائن المادة هنا يدوياً
+    }));
+
+    // ============================================================
+    // نهاية الحل الجذري - الباقي هو نفس الخوارزمية
+    // ============================================================
+
+    if (lessons.length === 0) {
+        logger.warn(`⚠️ Gravity: No lessons found for path "${safePathId}".`);
+        return { tasks: [] };
+    }
 
     // 4. الخوارزمية
     let candidates = lessons.map(lesson => {
-      // فلتر السداسي (متسامح جداً الآن)
+      // فلتر السداسي
       if (currentSemester && lesson.subjects?.semester) {
           const lSem = lesson.subjects.semester.toString().toLowerCase();
           const sSem = currentSemester.toString().toLowerCase();
-          // إذا لم يتطابقا، نتجاوز الدرس
           if (!lSem.includes(sSem) && !sSem.includes(lSem)) return null;
       }
 
@@ -91,19 +103,16 @@ async function runPlannerManager(userId, pathId) {
       const userState = progressMap.get(lesson.id);
 
       if (userState) {
-          // إذا درسها الطالب سابقاً
           if (userState.score < 50) {
-              gravityScore += 5000; // يحتاج تصحيح
+              gravityScore += 5000; 
               displayTitle = `تصحيح: ${lesson.title}`;
           } else {
-              // ✅ هنا الحل للمراجعة اللانهائية
-              // نعطي نقاطاً موجبة (10) بدلاً من سالبة، ليظهر الدرس إذا لم يوجد غيره
+              // ✅ مراجعة لا نهائية (نقاط موجبة)
               gravityScore = 10; 
               taskType = 'review';
               displayTitle = `مراجعة: ${lesson.title}`;
           }
       } else {
-          // درس جديد
           gravityScore += 1000;
           displayTitle = `درس جديد: ${lesson.title}`;
       }
@@ -126,10 +135,8 @@ async function runPlannerManager(userId, pathId) {
     // 5. الترتيب
     candidates.sort((a, b) => b.score - a.score);
 
-    // 6. شبكة الأمان (Fallback)
-    // إذا كانت المصفوفة فارغة بعد الفلترة، نأخذ أول 3 دروس من القائمة الأصلية
+    // 6. Fallback
     if (candidates.length === 0) {
-        logger.warn(`⚠️ Gravity: Filter removed all lessons. Using Fallback.`);
         candidates = lessons.slice(0, 3).map(l => ({
             id: l.id,
             title: `مراجعة عامة: ${l.title}`,
@@ -140,18 +147,13 @@ async function runPlannerManager(userId, pathId) {
     }
 
     const finalTasks = candidates.slice(0, 3);
-    return { tasks: finalTasks, source: 'Gravity_V5_Rescue' };
+    logger.success(`🏆 Gravity V5.1 Generated ${finalTasks.length} tasks.`);
+    
+    return { tasks: finalTasks, source: 'Gravity_V5.1_ManualJoin' };
 
   } catch (err) {
     logger.error('Gravity Critical Error:', err.message);
-    // مهمة طوارئ عند انهيار الكود
-    return { 
-        tasks: [{ 
-            title: "حدث خطأ في النظام", 
-            type: "fix", 
-            meta: { displayTitle: "System Error" } 
-        }] 
-    };
+    return { tasks: [] };
   }
 }
 
