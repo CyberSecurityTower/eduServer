@@ -36,25 +36,26 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
         });
     }
 
-    // 2. جلب الامتحانات (Intel Gathering)
-    let upcomingExams = {};
+    // 2. جلب الامتحانات (Intel Gathering) - تعديل لجلب الماضي والمستقبل
+    let examEvents = {}; // نغير الاسم ليكون أشمل
     if (groupId) {
-        const todayStart = new Date();
-        todayStart.setHours(0, 0, 0, 0);
+        // نجلب الامتحانات من "أمس" وحتى المستقبل
+        const yesterday = new Date();
+        yesterday.setDate(yesterday.getDate() - 1); 
+        
         const { data: exams } = await supabase
             .from('exams')
             .select('subject_id, exam_date')
             .eq('group_id', groupId)
-            .gte('exam_date', todayStart.toISOString());
+            .gte('exam_date', yesterday.toISOString()); // نعدل الشرط ليشمل الماضي القريب جداً
 
         if (exams) {
             exams.forEach(ex => {
                 const cleanId = ex.subject_id ? ex.subject_id.trim().toLowerCase() : '';
-                if (cleanId) upcomingExams[cleanId] = new Date(ex.exam_date);
+                if (cleanId) examEvents[cleanId] = new Date(ex.exam_date);
             });
         }
     }
-
     // 3. تحليل الوقت البيولوجي (Bio-Rhythm)
     const timeCtx = getAlgiersTimeContext();
     const currentHour = timeCtx.hour;
@@ -120,20 +121,26 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
       // --- العامل 2: الامتحانات (The Exam Factor) ---
       let humanExamTime = null;
       let isExamPrep = false;
-      if (upcomingExams[subjectId]) {
-          const examDate = new Date(upcomingExams[subjectId]);
+      
+      if (examEvents[subjectId]) {
+          const examDate = new Date(examEvents[subjectId]);
           const now = new Date();
           const diffHours = (examDate - now) / (1000 * 60 * 60);
 
+          // A. امتحان قادم (Future)
           if (diffHours > 0 && diffHours <= 72) { 
-              gravityScore += 100000; // 💣 نووي: الامتحان قريب جداً
+              gravityScore += 100000; 
               isExamPrep = true;
               displayTitle = `🔥 طوارئ امتحان: ${lesson.title}`;
-          } else if (diffHours > 0 && diffHours <= 168) { 
-              gravityScore += 20000; 
-              isExamPrep = true;
-              displayTitle = `تحضير امتحان: ${lesson.title}`;
+          } 
+          // B. امتحان فات للتو (Past - Post Exam) ✅ الإضافة الجديدة
+          else if (diffHours <= 0 && diffHours > -48) { 
+              // الامتحان فات منذ أقل من 48 ساعة
+              gravityScore += 5000; // أولوية متوسطة
+              taskType = 'review'; // نوع المهمة مراجعة/تصحيح
+              displayTitle = `تصحيح موضوع: ${lesson.title}`; // نغير العنوان
           }
+          
           humanExamTime = getHumanTimeDiff(examDate);
       }
 
