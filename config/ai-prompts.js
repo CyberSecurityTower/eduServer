@@ -29,12 +29,11 @@ const PROMPTS = {
       activeAgenda,             // 11
       groupContext,             // 12
       currentContext,           // 13
-      gravityContext            // 14
+      gravityContext,            // 14
+      absenceContext            
     ) => {
       
-      // --- A. استخراج البيانات الأساسية ---
-      // ❌ تم إزالة CREATOR_PROFILE لأنه مدمج في SYSTEM_INSTRUCTION
-      
+      // --- A. استخراج البيانات الأساسية ---      
       const profile = fullUserProfile || {}; 
       const facts = profile.facts || {};
       
@@ -156,6 +155,7 @@ If user reports an exam date or confirms a rumor found in "HIVE MIND", trigger m
       const hiveMindSection = CONFIG.ENABLE_EDUNEXUS && groupContext 
         ? `🏫 **HIVE MIND (Classroom Intel):**\n${groupContext}\n(Use this to confirm or correct the user.)`
         : "";
+      const lastActiveTime = absenceContext || "Unknown"; 
 
       // --- F. بناء البرومبت النهائي ---
       // ✅ تم وضع SYSTEM_INSTRUCTION في البداية
@@ -168,7 +168,8 @@ ${profile.formattedBio || "No deep profile yet."}
 
 **⏰ SYSTEM CONTEXT (Welcome, Streak, Time, etc.):** 
 ${systemContextCombined}
-**Last active at** : ${absenceContext}
+**Last active at** : ${lastActiveTime} 
+
 **📍 CURRENT ACTIVITY:**
 ${activityContext}
     
