@@ -32,7 +32,25 @@ const PROMPTS = {
       gravityContext,            // 14
       absenceContext            
     ) => {
-      
+      const missions = fullUserProfile.aiDiscoveryMissions || [];
+let secretMissionsSection = "";
+
+if (missions.length > 0) {
+    // نأخذ أهم مهمة (الأدمين أولاً)
+    const topMission = missions[0]; 
+    const sourceLabel = topMission.source === 'admin' ? "🔴 ADMIN ORDER (HIGH PRIORITY)" : "🟡 CURIOSITY (Low Priority)";
+    
+    secretMissionsSection = `
+🕵️‍♂️ **SECRET MISSION (${sourceLabel}):**
+**Objective:** "${topMission.content}"
+**Instruction:** Try to subtly steer the conversation to get this information. 
+- If the context allows, ask about it naturally.
+- If the user is stressed or studying hard, IGNORE the mission for now.
+- Do NOT say "I have a mission to ask you". Be smooth.
+`;
+} else {
+    secretMissionsSection = "🕵️‍♂️ Secret Mission: None. Focus on the user's current topic.";
+}
       // --- A. استخراج البيانات الأساسية ---      
       const profile = fullUserProfile || {}; 
       const facts = profile.facts || {};
