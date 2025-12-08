@@ -9,14 +9,14 @@ const { getHumanTimeDiff, getAlgiersTimeContext } = require('../../../utils');
  * 🪐 CORTEX GRAVITY ENGINE V4.5 (Infinite Loop Mode)
  * التعديلات:
  * 1. إصلاح مشكلة المصفوفة الفارغة.
- * 2. اقتراح مراجعة الدروس القديمة حتى لو كانت مكتملة.
- * 3. تخفيف قيود السداسي (Semester).
+ * 2. اقتراح مراجعة الدروس القديمة حتى لو كانت مكتملة (نقاط موجبة بدل سالبة).
+ * 3. تخفيف قيود السداسي (Semester) لتجنب الفلترة الخاطئة.
  */
 async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
   try {
     logger.info(`🪐 Gravity Engine V4.5 Started for ${userId} (Path: ${pathId})`);
 
-    // 1. جلب البيانات الغنية
+    // 1. جلب البيانات الغنية (Rich Data Fetching)
     const [settingsRes, userRes, progressRes] = await Promise.all([
         supabase.from('system_settings').select('value').eq('key', 'current_semester').single(),
         supabase.from('users').select('group_id').eq('id', userId).single(),
@@ -39,7 +39,7 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
         });
     }
 
-    // 2. جلب الامتحانات
+    // 2. جلب الامتحانات (Intel Gathering)
     let examEvents = {};
     if (groupId) {
         const yesterday = new Date();
@@ -88,17 +88,17 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
     let candidates = lessons.map(lesson => {
       // 🛡️ فلتر السداسي (مرن أكثر)
       // إذا كان الدرس لديه سداسي محدد والنظام لديه سداسي محدد، وهما مختلفان -> تجاهل
-      // لكن إذا كان أحدهما غير محدد، اسمح بالمرور لتجنب القوائم الفارغة
+      // لكن نستخدم includes بدلاً من المطابقة التامة لتجنب مشاكل مثل "S1" vs "Semester 1"
       if (lesson.subjects?.semester && currentSemester) {
           const lessonSem = lesson.subjects.semester.trim().toUpperCase(); // S1
           const sysSem = currentSemester.trim().toUpperCase(); // S1
-          // مقارنة بسيطة (S1 vs S1) أو (Semester 1 vs S1)
+          
           if (!lessonSem.includes(sysSem) && !sysSem.includes(lessonSem)) {
               return null; 
           }
       }
 
-      let gravityScore = 100; 
+      let gravityScore = 100; // نقاط البداية
       let taskType = 'new';   
       let displayTitle = lesson.title;
       
@@ -110,7 +110,7 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
           const daysSince = (Date.now() - userState.lastInteraction) / (1000 * 60 * 60 * 24);
           
           if (userState.score < 50) {
-              // 🚨 ضعيف جداً
+              // 🚨 ضعيف جداً -> أولوية قصوى
               gravityScore += 5000; 
               taskType = 'fix';
               displayTitle = `تصحيح مسار: ${lesson.title}`;
@@ -126,7 +126,7 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
               displayTitle = `استرجاع ذاكرة: ${lesson.title}`;
           } else {
               // ✅ تم إنجازه حديثاً (هنا كان الخلل)
-              // بدلاً من جعله سالباً وإخفائه، نعطيه نقاطاً منخفضة لكن موجبة
+              // بدلاً من جعله سالباً (-5000) وإخفائه، نعطيه نقاطاً منخفضة لكن موجبة
               // ليظهر في القائمة إذا لم يكن هناك غيره
               gravityScore = 10; // نقاط قليلة جداً
               taskType = 'review'; // نعتبره مراجعة إضافية
@@ -160,6 +160,12 @@ async function runPlannerManager(userId, pathId = 'UAlger3_L1_ITCF') {
           }
           humanExamTime = getHumanTimeDiff(examDate);
       }
+
+      // --- العامل 3: الوقت البيولوجي ---
+      const coeff = lesson.subjects?.coefficient || 1;
+      if (isDeepWorkTime && coeff >= 3) {
+          gravityScore += 500;
+      } 
 
       return {
         id: lesson.id,
