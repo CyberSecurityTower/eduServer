@@ -6,13 +6,14 @@ const logger = require('../../../utils/logger');
 const { getHumanTimeDiff, getAlgiersTimeContext } = require('../../../utils');
 
 /**
- * 🪐 CORTEX GRAVITY ENGINE V5.1 (Manual Join Fix)
- * حل مشكلة العلاقات المتعددة عن طريق فصل الاستعلامات.
+ * 🪐 CORTEX GRAVITY ENGINE V5.2 (Final Fix)
+ * - تم إزالة العمود 'type' المسبب للمشاكل.
+ * - إضافة نظام إبلاغ عن الأخطاء داخل التطبيق.
  */
 async function runPlannerManager(userId, pathId) {
   try {
     const safePathId = pathId || 'UAlger3_L1_ITCF';
-    logger.info(`🪐 Gravity V5.1: User=${userId}, Path=${safePathId}`);
+    logger.info(`🪐 Gravity V5.2: User=${userId}, Path=${safePathId}`);
 
     // 1. جلب الإعدادات والتقدم
     const [settingsRes, progressRes] = await Promise.all([
@@ -22,7 +23,6 @@ async function runPlannerManager(userId, pathId) {
 
     const currentSemester = settingsRes.data?.value || null;
     
-    // خريطة التقدم
     const progressMap = new Map();
     if (progressRes.data) {
         progressRes.data.forEach(p => {
@@ -35,59 +35,80 @@ async function runPlannerManager(userId, pathId) {
     }
 
     // ============================================================
-    // 🔥 الحل الجذري: فصل الاستعلام (Manual Join) 🔥
+    // 🔥 الخطوة أ: جلب المواد (بدون عمود type) 🔥
     // ============================================================
-
-    // أ. نجلب المواد (Subjects) الخاصة بهذا المسار أولاً
     const { data: subjects, error: subjError } = await supabase
         .from('subjects')
-        .select('id, title, coefficient, semester, path_id, type')
+        .select('id, title, coefficient, semester, path_id') // ✅ تم حذف 'type'
         .eq('path_id', safePathId);
 
-    if (subjError || !subjects || subjects.length === 0) {
-        logger.error('❌ Gravity: No subjects found or DB Error.', subjError?.message);
-        return { tasks: [] };
+    // 🛑 كشف الأخطاء وإرسالها للتطبيق
+    if (subjError) {
+        logger.error('❌ Gravity Subject Error:', subjError.message);
+        return { 
+            tasks: [{ 
+                title: `خطأ تقني: ${subjError.message}`, 
+                type: 'fix', 
+                meta: { score: 9999, displayTitle: "DB Error" } 
+            }] 
+        };
     }
 
-    // ب. ننشئ خريطة للمواد ليسهل الوصول إليها لاحقاً
-    // ونستخرج قائمة الـ IDs لجلب الدروس
+    if (!subjects || subjects.length === 0) {
+        return { 
+            tasks: [{ 
+                title: `تنبيه: لا توجد مواد في المسار ${safePathId}`, 
+                type: 'fix', 
+                meta: { score: 9999 } 
+            }] 
+        };
+    }
+
+    // ب. تحضير خريطة المواد
     const subjectsMap = {};
     const subjectIds = [];
-    
     subjects.forEach(sub => {
         subjectsMap[sub.id] = sub;
         subjectIds.push(sub.id);
     });
 
-    // ج. نجلب الدروس التي تتبع هذه المواد فقط
+    // ============================================================
+    // 🔥 الخطوة ج: جلب الدروس 🔥
+    // ============================================================
     const { data: lessonsRaw, error: lessonsError } = await supabase
         .from('lessons')
         .select('id, title, subject_id, has_content, order_index')
-        .in('subject_id', subjectIds) // نفلتر حسب المواد التي جلبناها
+        .in('subject_id', subjectIds)
         .order('order_index', { ascending: true });
 
     if (lessonsError) {
-        logger.error('❌ Gravity: Lessons DB Error:', lessonsError.message);
-        return { tasks: [] };
+        logger.error('❌ Gravity Lessons Error:', lessonsError.message);
+        return { 
+            tasks: [{ 
+                title: `خطأ في الدروس: ${lessonsError.message}`, 
+                type: 'fix', 
+                meta: { score: 9999 } 
+            }] 
+        };
     }
 
-    // د. الدمج اليدوي (Re-attach subjects to lessons)
-    // لكي يبقى شكل البيانات كما يتوقعه باقي الكود والفرونت أند
+    // د. الدمج اليدوي
     const lessons = lessonsRaw.map(l => ({
         ...l,
-        subjects: subjectsMap[l.subject_id] // نضع كائن المادة هنا يدوياً
+        subjects: subjectsMap[l.subject_id]
     }));
 
-    // ============================================================
-    // نهاية الحل الجذري - الباقي هو نفس الخوارزمية
-    // ============================================================
-
     if (lessons.length === 0) {
-        logger.warn(`⚠️ Gravity: No lessons found for path "${safePathId}".`);
-        return { tasks: [] };
+        return { 
+            tasks: [{ 
+                title: "لا توجد دروس مسجلة بعد", 
+                type: 'study', 
+                meta: { score: 100 } 
+            }] 
+        };
     }
 
-    // 4. الخوارزمية
+    // 4. الخوارزمية (مع المراجعة اللانهائية)
     let candidates = lessons.map(lesson => {
       // فلتر السداسي
       if (currentSemester && lesson.subjects?.semester) {
@@ -107,7 +128,7 @@ async function runPlannerManager(userId, pathId) {
               gravityScore += 5000; 
               displayTitle = `تصحيح: ${lesson.title}`;
           } else {
-              // ✅ مراجعة لا نهائية (نقاط موجبة)
+              // ✅ مراجعة لا نهائية: نقاط موجبة (10) لتظهر في القائمة
               gravityScore = 10; 
               taskType = 'review';
               displayTitle = `مراجعة: ${lesson.title}`;
@@ -147,13 +168,19 @@ async function runPlannerManager(userId, pathId) {
     }
 
     const finalTasks = candidates.slice(0, 3);
-    logger.success(`🏆 Gravity V5.1 Generated ${finalTasks.length} tasks.`);
+    logger.success(`🏆 Gravity V5.2 Generated ${finalTasks.length} tasks.`);
     
-    return { tasks: finalTasks, source: 'Gravity_V5.1_ManualJoin' };
+    return { tasks: finalTasks, source: 'Gravity_V5.2' };
 
   } catch (err) {
     logger.error('Gravity Critical Error:', err.message);
-    return { tasks: [] };
+    return { 
+        tasks: [{ 
+            title: `خطأ نظام: ${err.message}`, 
+            type: 'fix', 
+            meta: { score: 9999 } 
+        }] 
+    };
   }
 }
 
