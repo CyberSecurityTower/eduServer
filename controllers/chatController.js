@@ -21,7 +21,7 @@ const {
   ensureJsonOrRepair,
   safeSnippet
 } = require('../utils');
-
+const isFirstTimeUser = (history.length === 0 && !userData.last_active_at);
 // Helpers
 const {
   getProfile,
@@ -184,7 +184,20 @@ async function chatInteractive(req, res) {
         });
       }
     }
-
+//WELCOME WITH NEW USER//
+    
+let welcomeContext = "";
+if (isFirstTimeUser) {
+    welcomeContext = `
+    🎉 **NEW USER ALERT:** This is the VERY FIRST time ${userData.firstName} talks to you.
+    👉 **INSTRUCTION:**
+    1. Welcome them warmly to the EduApp family.
+    2. Introduce yourself briefly as their new companion.
+    3. Ask them: "واش هو التخصص تاعك؟" or "واش راك حاب تراجع اليوم؟".
+    4. Don't be too pushy about tasks yet.
+    `;
+}
+//-------------WELCOME END----------------//
     // ---------------------------------------------------------
     // ✅ B. Context Injection & Ghost Teacher Logic
     // ---------------------------------------------------------
