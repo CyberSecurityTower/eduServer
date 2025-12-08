@@ -501,7 +501,8 @@ if (lastActive) {
       activeAgenda,
       sharedContext,
       updatedContextForPrompt,
-      gravityContext
+      gravityContext,
+      absenceContext
     );
 
     const modelResp = await generateWithFailoverRef('chat', finalPrompt, { label: 'MasterChat', timeoutMs: CONFIG.TIMEOUTS.chat });
