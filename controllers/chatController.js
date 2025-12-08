@@ -11,7 +11,7 @@ const PROMPTS = require('../config/ai-prompts');
 const { markLessonComplete, trackStudyTime } = require('../services/engines/gatekeeper'); 
 const { runPlannerManager } = require('../services/ai/managers/plannerManager');
 const { initSessionAnalyzer, analyzeSessionForEvents } = require('../services/ai/managers/sessionAnalyzer');
-const { refreshUserTasks, getLastActiveSessionContext } = require('../services/data/helpers');
+const { refreshUserTasks, getLastActiveSessionContext, getRecentPastExams  } = require('../services/data/helpers');
 const { getHumanTimeDiff } = require('../utils');
 // Utilities
 const { toCamelCase, nowISO } = require('../services/data/dbUtils');
@@ -115,6 +115,19 @@ async function chatInteractive(req, res) {
           history = bridgeContext.messages;
         }
       }
+    }
+     // ✅ 1. جلب الامتحانات الماضية
+    const recentPastExams = await getRecentPastExams(userData.groupId);
+    
+    let pastExamsContext = "";
+    if (recentPastExams.length > 0) {
+        pastExamsContext = "🗓️ **RECENT PAST EXAMS (Ask user about results):**\n";
+        recentPastExams.forEach(ex => {
+            const dateStr = new Date(ex.exam_date).toLocaleDateString('en-US');
+            const subject = ex.subjects?.title || ex.subject_id;
+            pastExamsContext += `- Finished Exam: "${subject}" (${ex.type}) on ${dateStr}.\n`;
+        });
+        pastExamsContext += "👉 INSTRUCTION: If you haven't asked yet, ask casually: 'How did the [Subject] exam go?'\n";
     }
 
     // =========================================================
@@ -390,7 +403,7 @@ if (userData.nextExamDate) {
     
     ${gravitySection} 
     ${antiSamataProtocol}
-
+    ${pastExamsContext}
     ${examContext.subject ? `🚨 **EXAM ALERT:** Subject: "${examContext.subject}" is happening **${examContext.timingHuman}**. Focus on this immediately!` : ""}
     `;
     // ---------------------------------------------------------
