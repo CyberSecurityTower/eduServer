@@ -16,8 +16,9 @@ router.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date
 // ✅ The Main Brain Route
 router.post('/chat-interactive', chatController.chatInteractive);
 router.post('/admin/run-night-watch', adminController.triggerNightWatch);
+ router.post('/admin/push-mission', adminController.pushDiscoveryMission);
 
-router.post('/generate-chat-suggestions', chatController.generateChatSuggestions); // تأكد من تصديرها في chatController
+router.post('/generate-chat-suggestions', chatController.generateChatSuggestions); 
 router.get('/get-daily-tasks', tasksController.getDailyTasks); 
 router.post('/admin/trigger-indexing', adminController.triggerFullIndexing);
 router.post('/log-event', analyticsController.logEvent);
