@@ -159,7 +159,6 @@ If user reports an exam date or confirms a rumor found in "HIVE MIND", trigger m
 
       // --- F. بناء البرومبت النهائي ---
       // ✅ تم وضع SYSTEM_INSTRUCTION في البداية
-      // ❌ تم إزالة welcomeContext لتجنب undefined
       return `
 ${SYSTEM_INSTRUCTION} 
 
@@ -169,7 +168,7 @@ ${profile.formattedBio || "No deep profile yet."}
 
 **⏰ SYSTEM CONTEXT (Welcome, Streak, Time, etc.):** 
 ${systemContextCombined}
-
+**Last active at** : ${absenceContext}
 **📍 CURRENT ACTIVITY:**
 ${activityContext}
     
