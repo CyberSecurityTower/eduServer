@@ -167,7 +167,7 @@ If user reports an exam date or confirms a rumor found in "HIVE MIND", trigger m
 **👤 USER:** ${userName} (${userGender}) - ${userPath}
 **👤 USER DOSSIER:**
 ${profile.formattedBio || "No deep profile yet."}
-
+${welcomeContext}
 **⏰ SYSTEM CONTEXT:** 
 ${systemContextCombined}
  **📍 CURRENT ACTIVITY:**
