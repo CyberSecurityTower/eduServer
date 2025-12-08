@@ -30,7 +30,7 @@ const {
   safeSnippet
 } = require('../utils');
 
-// Data Helpers (Consolidated)
+// Data Helpers
 const {
   getProfile,
   formatProgressForAI,
@@ -40,8 +40,8 @@ const {
   getStudentScheduleStatus,
   refreshUserTasks,
   getLastActiveSessionContext,
-  getProgress,         // ✅ Added
-  getRecentPastExams   // ✅ Added
+  getProgress,         
+  getRecentPastExams   
 } = require('../services/data/helpers');
 
 let generateWithFailoverRef;
@@ -80,7 +80,7 @@ async function generateChatSuggestions(req, res) {
 // 4. Main Logic: Chat Interactive
 // ==========================================
 async function chatInteractive(req, res) {
-  // ✅ Receive data from frontend
+  // ✅ 1. Receive data from frontend
   let { userId, message, history = [], sessionId, currentContext = {} } = req.body;
 
   // Safety check
@@ -89,10 +89,10 @@ async function chatInteractive(req, res) {
 
   try {
     // =========================================================
-    // 1. SMART HISTORY RESTORATION & BRIDGING
+    // 2. SMART HISTORY RESTORATION & BRIDGING
     // =========================================================
+    // We do this EARLY because we need 'history' to define isFirstTimeUser later
     if (!history || history.length === 0) {
-      // A. Try to fetch current session (Refresh Scenario)
       const { data: sessionData } = await supabase
         .from('chat_sessions')
         .select('messages')
@@ -107,7 +107,6 @@ async function chatInteractive(req, res) {
         }));
         history = history.slice(-10);
       } else {
-        // B. If no current session, try bridging from last active session
         const bridgeContext = await getLastActiveSessionContext(userId, sessionId);
         if (bridgeContext) {
           history = bridgeContext.messages;
@@ -116,7 +115,7 @@ async function chatInteractive(req, res) {
     }
 
     // =========================================================
-    // 2. Data Aggregation (Identity First)
+    // 3. FETCH USER DATA (The Fix: Do this BEFORE logic checks)
     // =========================================================
     const { data: userRaw, error: userError } = await supabase
       .from('users')
@@ -131,7 +130,7 @@ async function chatInteractive(req, res) {
     let userData = toCamelCase(userRaw);
 
     // =========================================================
-    // 3. GROUP ENFORCEMENT LOGIC
+    // 4. GROUP ENFORCEMENT LOGIC
     // =========================================================
     if (!userData.groupId) {
       const groupMatch = message.match(/(?:فوج|group|groupe|g)\s*(\d+)/i);
@@ -168,7 +167,7 @@ async function chatInteractive(req, res) {
     }
 
     // ---------------------------------------------------------
-    // ✅ B. Context Injection & Ghost Teacher Logic
+    // 5. Context Injection & Ghost Teacher Logic
     // ---------------------------------------------------------
     let activeLessonContext = "";
 
@@ -180,7 +179,6 @@ async function chatInteractive(req, res) {
         .single();
 
       if (lessonData) {
-        // 👻 Ghost Teacher Logic
         if (!lessonData.has_content) {
           const isRequestingExplanation = message.toLowerCase().includes('explain') || message.includes('اشرح') || (message.length < 50 && message.includes('?'));
 
@@ -188,7 +186,6 @@ async function chatInteractive(req, res) {
             const ghostResult = await explainLessonContent(lessonData.id, userId);
             const replyText = `👻 **المعلم الشبح:**\n\n${ghostResult.content}`;
 
-            // Save immediately
             saveChatSession(sessionId, userId, message, [
               ...history,
               { role: 'user', text: message, timestamp: nowISO() },
@@ -212,7 +209,9 @@ async function chatInteractive(req, res) {
       }
     }
 
-    // Fetch Context Data (Parallel)
+    // =========================================================
+    // 6. Data Aggregation (Parallel Fetching)
+    // =========================================================
     const [
       rawProfile,
       memoryReport,
@@ -220,7 +219,7 @@ async function chatInteractive(req, res) {
       weaknessesRaw,
       formattedProgress,
       userTasksRes,
-      progressData // ✅ Progress for Streak
+      progressData // ✅ Now we have progress data available for streaks
     ] = await Promise.all([
       getProfile(userId).catch(() => ({})),
       runMemoryAgent(userId, message).catch(() => ''),
@@ -231,7 +230,7 @@ async function chatInteractive(req, res) {
       getProgress(userId) 
     ]);
 
-    // ✅ Schedule Status
+    // Schedule Status
     let scheduleStatus = null;
     let scheduleContextString = "";
     try {
@@ -249,19 +248,12 @@ async function chatInteractive(req, res) {
       schedule: scheduleStatus || { state: 'unknown' }
     };
 
-    // 🔥 Gravity Intel
+    // 🔥 Gravity Intel (Task Prioritization)
     let gravityContext = null;
     let tasksList = "No active tasks.";
 
     if (userTasksRes && userTasksRes.data && userTasksRes.data.length > 0) {
-      // 1. Sort by score
-      const sortedTasks = userTasksRes.data.sort((a, b) => {
-        const scoreA = a.meta?.score || 0;
-        const scoreB = b.meta?.score || 0;
-        return scoreB - scoreA;
-      });
-
-      // 2. Capture Top Priority
+      const sortedTasks = userTasksRes.data.sort((a, b) => (b.meta?.score || 0) - (a.meta?.score || 0));
       const topTask = sortedTasks[0];
       const topScore = topTask.meta?.score || 0;
       
@@ -276,7 +268,6 @@ async function chatInteractive(req, res) {
         timing: timingInfo
       };
 
-      // 3. Format list
       tasksList = sortedTasks.map(t => {
         const score = t.meta?.score || 0;
         const examBadge = score > 4000 ? "🚨 EXAM TOMORROW" :
@@ -286,16 +277,17 @@ async function chatInteractive(req, res) {
     }
 
     // ==========================================
-    // 🌟 IMPROVEMENTS LOGIC (Context Enhancements)
+    // 🌟 7. IMPROVEMENTS LOGIC (The Fix: Logic applied AFTER Data is ready)
     // ==========================================
 
-    // 1. Gender Awareness
+    // A. Gender Awareness
     const userGender = userData.gender || 'male';
 
-    // 2. First Time User
-    // Check if history is empty AND lastActiveAt is null/undefined
+    // B. First Time User
+    // Now we have both 'history' and 'userData' populated
     const isFirstTimeUser = (history.length === 0 && !userData.lastActiveAt);
     let welcomeContext = "";
+    
     if (isFirstTimeUser) {
         welcomeContext = `
         🎉 **NEW USER ALERT:** This is the VERY FIRST time ${userData.firstName} talks to you.
@@ -307,7 +299,7 @@ async function chatInteractive(req, res) {
         `;
     }
 
-    // 3. Dry Text Detector
+    // C. Dry Text Detector
     const isShortMessage = message && message.trim().length < 4;
     let conversationalContext = "";
     if (isShortMessage) {
@@ -321,7 +313,7 @@ async function chatInteractive(req, res) {
         `;
     }
 
-    // 4. Streak Hype
+    // D. Streak Hype
     const streak = progressData?.streakCount || 0;
     const bestStreak = progressData?.bestStreak || 0;
     let streakContext = "";
@@ -331,7 +323,7 @@ async function chatInteractive(req, res) {
         streakContext = `💔 **STREAK BROKEN:** User lost a long streak (${bestStreak} days). Be gentle and encourage them.`;
     }
 
-    // 5. Distraction Detector
+    // E. Distraction Detector
     let distractionContext = "";
     if (history.length > 0) {
         const lastMsg = history[history.length - 1];
@@ -343,14 +335,14 @@ async function chatInteractive(req, res) {
         }
     }
 
-    // 6. Fatigue Switch
+    // F. Fatigue Switch
     const sessionLength = history.length;
     let fatigueContext = "";
     if (sessionLength > 20 && sessionLength % 10 === 0) {
         fatigueContext = `🧠 **FATIGUE CHECK:** Long session (${sessionLength} msgs). Suggest a break or switching subjects.`;
     }
 
-    // 7. Recent Past Exams (Retroactive Awareness)
+    // G. Recent Past Exams
     const recentPastExams = await getRecentPastExams(userData.groupId);
     let pastExamsContext = "";
     if (recentPastExams.length > 0) {
@@ -364,7 +356,7 @@ async function chatInteractive(req, res) {
     }
 
     // ==========================================
-    // 6. Gravity Protocol & Context Assembly
+    // 8. Gravity Protocol & Context Assembly
     // ==========================================
     let gravitySection = "";
     let antiSamataProtocol = "";
@@ -400,21 +392,11 @@ async function chatInteractive(req, res) {
     const facts = aiProfileData.facts || {};
     let userBio = "User Profile:\n";
     
-    if (facts.identity) {
-        userBio += `- Name: ${facts.identity.name} (${facts.identity.role}, ${facts.identity.age}yo).\n`;
-    }
-    if (facts.social) {
-        userBio += `- Circle: Friend ${facts.social.best_friend}, GF ${facts.social.girlfriend}.\n`;
-    }
-    if (facts.interests) {
-        userBio += `- Loves: ${facts.interests.music?.join(', ')} and ${facts.interests.animal}.\n`;
-    }
-    if (facts.education) {
-        userBio += `- Study: ${facts.education.study_style}. Weak in ${facts.education.weaknesses?.[0]}. Strong in ${facts.education.strengths?.[0]}.\n`;
-    }
-    if (facts.behavior) {
-        userBio += `- Style: ${facts.behavior.tone}. Procrastinates by ${facts.behavior.procrastination}.\n`;
-    }
+    if (facts.identity) userBio += `- Name: ${facts.identity.name} (${facts.identity.role}, ${facts.identity.age}yo).\n`;
+    if (facts.social) userBio += `- Circle: Friend ${facts.social.best_friend}, GF ${facts.social.girlfriend}.\n`;
+    if (facts.interests) userBio += `- Loves: ${facts.interests.music?.join(', ')} and ${facts.interests.animal}.\n`;
+    if (facts.education) userBio += `- Study: ${facts.education.study_style}. Weak in ${facts.education.weaknesses?.[0]}. Strong in ${facts.education.strengths?.[0]}.\n`;
+    if (facts.behavior) userBio += `- Style: ${facts.behavior.tone}. Procrastinates by ${facts.behavior.procrastination}.\n`;
 
     // 🔥 Identity Injection
     const fullUserProfile = {
@@ -423,7 +405,7 @@ async function chatInteractive(req, res) {
       lastName: userData.lastName || '',
       group: groupId,
       role: userData.role || 'student',
-      gender: userGender, // ✅ Added Gender
+      gender: userGender, // ✅ Correctly populated now
       formattedBio: userBio, 
       ...aiProfileData
     };
@@ -448,7 +430,7 @@ async function chatInteractive(req, res) {
     }
 
     const ageContext = rawProfile.facts?.age ? `User Age: ${rawProfile.facts.age} years old.` : "";
-    const currentSemester = 'S1'; // Default
+    const currentSemester = 'S1'; 
 
     const systemContextCombined = `
     User Identity: Name=${fullUserProfile.firstName}, Group=${groupId}, Role=${fullUserProfile.role}.
@@ -476,11 +458,10 @@ async function chatInteractive(req, res) {
     `;
 
     // ---------------------------------------------------------
-    // D. AI Generation
+    // 9. AI Generation
     // ---------------------------------------------------------
     const safeMessage = message || '';
 
-    // Format history for Prompt
     const formatTimeShort = (isoString) => {
       if (!isoString) return '';
       const date = new Date(isoString);
@@ -517,10 +498,10 @@ async function chatInteractive(req, res) {
     if (!parsedResponse?.reply) parsedResponse = { reply: rawText || "Error.", widgets: [] };
 
     // ---------------------------------------------------------
-    // E. Action Layer & Agenda Updates
+    // 10. Action Layer & Agenda Updates
     // ---------------------------------------------------------
 
-    // 1. Handle Lesson Completion
+    // Handle Lesson Completion
     if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'complete') {
       const signal = parsedResponse.lesson_signal;
 
@@ -564,7 +545,7 @@ async function chatInteractive(req, res) {
       parsedResponse.widgets.push({ type: 'celebration', data: { message: 'إنجاز عظيم! 🚀' } });
     }
 
-    // 2. EduNexus Updates
+    // EduNexus Updates
     if (CONFIG.ENABLE_EDUNEXUS && parsedResponse.memory_update && groupId) {
       const action = parsedResponse.memory_update;
       if (action.action === 'UPDATE_EXAM' && action.subject && action.new_date) {
@@ -572,7 +553,7 @@ async function chatInteractive(req, res) {
       }
     }
 
-    // 3. Agenda Actions
+    // Agenda Actions
     if (parsedResponse.agenda_actions && Array.isArray(parsedResponse.agenda_actions)) {
       let currentAgenda = [...allAgenda];
       let agendaUpdated = false;
@@ -592,7 +573,7 @@ async function chatInteractive(req, res) {
       if (agendaUpdated) await updateAiAgenda(userId, currentAgenda);
     }
 
-    // 4. Mood Update
+    // Mood Update
     if (parsedResponse.newMood) {
       supabase.from('ai_memory_profiles').update({
         emotional_state: { mood: parsedResponse.newMood, reason: parsedResponse.moodReason || '' },
@@ -601,7 +582,7 @@ async function chatInteractive(req, res) {
     }
 
     // ---------------------------------------------------------
-    // F. Response & Background Saving
+    // 11. Response & Background Saving
     // ---------------------------------------------------------
     res.status(200).json({
       reply: parsedResponse.reply,
@@ -612,12 +593,12 @@ async function chatInteractive(req, res) {
 
     // Background processing
     setImmediate(async () => { 
-      // 1. Study time tracking
+      // Study time tracking
       if (currentContext && currentContext.lessonId) {
           await trackStudyTime(userId, currentContext.lessonId, 60).catch(err => logger.error('Tracking failed:', err));
       }
 
-      // 2. Save Chat
+      // Save Chat
       const updatedHistory = [
         ...history,
         { role: 'user', text: message, timestamp: nowISO() },
@@ -627,14 +608,14 @@ async function chatInteractive(req, res) {
       saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory)
         .catch(e => logger.error(e));
 
-      // 3. Memory & Analysis
+      // Memory & Analysis
       analyzeAndSaveMemory(userId, updatedHistory)
         .catch(e => logger.error(e));
 
       analyzeSessionForEvents(userId, updatedHistory)
         .catch(e => logger.error('SessionAnalyzer Fail:', e));
 
-      // 4. Update Last Active At (Important for First Time detection)
+      // Update Last Active At (Important for future First Time detection)
       supabase.from('users').update({ last_active_at: nowISO() }).eq('id', userId).then();
     });
 
