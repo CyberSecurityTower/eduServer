@@ -39,11 +39,22 @@ class KeyManager {
     this.isInitialized = true;
   }
 
-   _addKeyToMemory(keyStr, nickname = 'Unknown', fails = 0, usage = 0, inputTokens = 0, outputTokens = 0) {
+_addKeyToMemory(keyStr, nickname = 'Unknown', fails = 0, usage = 0, inputTokens = 0, outputTokens = 0, todayCount = 0, lastReset = null) {
     if (this.keys.has(keyStr)) return;
     
     const { GoogleGenerativeAI } = require('@google/generative-ai'); 
     
+    // منطق تصفير العداد اليومي
+    let currentTodayCount = todayCount;
+    const now = new Date();
+    const lastResetDate = lastReset ? new Date(lastReset) : new Date();
+    
+    // إذا مر يوم مختلف، نصفر العداد
+    if (lastResetDate.getDate() !== now.getDate()) {
+        currentTodayCount = 0;
+        // (ملاحظة: التحديث في الداتابيز سيتم عند أول استخدام)
+    }
+
     this.keys.set(keyStr, {
       key: keyStr,
       nickname,
@@ -53,10 +64,13 @@ class KeyManager {
       usage: usage,
       inputTokens: inputTokens || 0,
       outputTokens: outputTokens || 0,
+      // 👇 الإضافات الجديدة
+      todayRequests: currentTodayCount,
+      rpdLimit: 20, // القيمة الافتراضية حسب الصورة
+      rpmLimit: 5,
       lastUsed: null
     });
-  }
-
+}
   // 2. طلب مفتاح (Check-Out)
   async acquireKey() {
     return new Promise((resolve) => {
