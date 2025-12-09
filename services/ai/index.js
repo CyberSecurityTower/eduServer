@@ -87,10 +87,4 @@ module.exports = {
   initializeModelPools,
   _callModelInstance
 };
-// تصدير
-module.exports = {
-  initializeModelPools,
-  _callModelInstance,
-  modelPools: {}, 
-  keyStates: {} 
-};
+
