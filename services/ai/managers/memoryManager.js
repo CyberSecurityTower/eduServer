@@ -1,4 +1,3 @@
-
 // services/ai/managers/memoryManager.js
 'use strict';
 
@@ -7,7 +6,8 @@ const { nowISO } = require('../../data/dbUtils');
 const { extractTextFromResult, ensureJsonOrRepair, safeSnippet } = require('../../../utils');
 const logger = require('../../../utils/logger');
 const PROMPTS = require('../../../config/ai-prompts');
-const { getProfile } = require('../../data/helpers');
+// ✅ Added completeDiscoveryMission to imports
+const { getProfile, completeDiscoveryMission } = require('../../data/helpers');
 
 let embeddingServiceRef = null;
 let generateWithFailoverRef = null;
@@ -23,8 +23,8 @@ function initMemoryManager(initConfig = {}) {
   logger.info('Memory Manager Initialized (Smart Hybrid Mode).');
 }
 
-// دالة مساعدة لحفظ الفيكتور
-async function saveMemoryChunk(userId, content, type="General") {
+// Helper function to save vector embeddings
+async function saveMemoryChunk(userId, content, type = "General") {
   try {
     if (!embeddingServiceRef) return;
     const embedding = await embeddingServiceRef.generateEmbedding(content);
@@ -70,22 +70,28 @@ async function runMemoryAgent(userId, userMessage, topK = 4) {
   }
 }
 
-// 2. Structured Memory (Wrapper around helper)
-// 2. دالة الحفظ الذكية (هنا التغيير الجوهري)
-
+// 2. Smart Save Function (Structured Memory + Discovery Missions)
 async function analyzeAndSaveMemory(userId, history) {
   try {
     if (!generateWithFailoverRef) return;
 
-    // 1. جلب الحقائق الحالية
-    const profile = await getProfile(userId); // تأكد أن هذه الدالة تجلب الـ facts
-    const currentFacts = profile.facts || {};
+    // 1. Fetch Current Facts + Active Missions in parallel
+    // ✅ Using Promise.all for better performance
+    const [profile, userDoc] = await Promise.all([
+        getProfile(userId),
+        supabase.from('users').select('ai_discovery_missions').eq('id', userId).single()
+    ]);
 
-    // 2. تحضير الشات
+    const currentFacts = profile.facts || {};
+    // ✅ Extract active missions safely
+    const activeMissions = userDoc.data?.ai_discovery_missions || [];
+
+    // 2. Prepare Chat Context
     const recentChat = history.slice(-10).map(m => `${m.role}: ${m.text}`).join('\n');
 
-    // 3. استدعاء الـ AI
-    const prompt = PROMPTS.managers.memoryExtractor(currentFacts, recentChat);
+    // 3. Call AI (Passing activeMissions to the prompt)
+    // ✅ Updated Prompt Call
+    const prompt = PROMPTS.managers.memoryExtractor(currentFacts, recentChat, activeMissions);
     
     const res = await generateWithFailoverRef('analysis', prompt, { label: 'MemoryExtraction' });
     const text = await extractTextFromResult(res);
@@ -96,7 +102,7 @@ async function analyzeAndSaveMemory(userId, history) {
     let hasChanges = false;
     let finalFacts = { ...currentFacts };
 
-    // A. حذف المفاتيح القديمة أو الخاطئة
+    // A. Delete old or incorrect keys
     if (result.deleteKeys && Array.isArray(result.deleteKeys)) {
         result.deleteKeys.forEach(key => {
             if (finalFacts[key]) {
@@ -107,14 +113,28 @@ async function analyzeAndSaveMemory(userId, history) {
         });
     }
 
-    // B. إضافة/تحديث الحقائق الجديدة
+    // B. Add/Update new facts
+    // ✅ Fixed brace nesting: This block is now correctly outside the deleteKeys block
     if (result.newFacts && Object.keys(result.newFacts).length > 0) {
         finalFacts = { ...finalFacts, ...result.newFacts };
         hasChanges = true;
         logger.success(`💾 Memory: Added/Updated facts for ${userId}`, result.newFacts);
     }
 
-    // 4. الحفظ فقط إذا كان هناك تغيير
+    // C. Handle Completed Missions
+    // ✅ Iterate and complete missions if returned by AI
+    if (result.completedMissions && Array.isArray(result.completedMissions)) {
+        for (const missionContent of result.completedMissions) {
+            try {
+                await completeDiscoveryMission(userId, missionContent);
+                logger.success(`🕵️‍♂️ Mission Accomplished: "${missionContent}" for user ${userId}`);
+            } catch (missionErr) {
+                logger.error(`❌ Failed to complete mission: ${missionContent}`, missionErr);
+            }
+        }
+    }
+
+    // 4. Save only if facts changed
     if (hasChanges) {
         const { error } = await supabase.from('ai_memory_profiles').upsert({
             user_id: userId,
@@ -123,13 +143,13 @@ async function analyzeAndSaveMemory(userId, history) {
         });
         
         if (!error) {
-            // تفريغ الكاش لكي يقرأ التحديثات فوراً
+            // Clear cache to read updates immediately
             const { cacheDel } = require('../../data/helpers');
             await cacheDel('profile', userId); 
         }
     }
 
-    // 5. التعامل مع القصص (Vector Embeddings) - كما كان سابقاً
+    // 5. Handle User Stories (Vector Embeddings)
     if (result.vectorContent && result.vectorContent.length > 10) {
         await saveMemoryChunk(userId, result.vectorContent, "User Story");
     }
@@ -140,12 +160,12 @@ async function analyzeAndSaveMemory(userId, history) {
 }
 
 /**
- * 🧠 دالة تنظيف الذاكرة (Memory Garbage Collector)
- * تقوم بدمج الحقائق المتكررة وحذف التناقضات
+ * 🧠 Memory Garbage Collector
+ * Consolidates duplicate facts and removes contradictions
  */
 async function consolidateUserFacts(userId) {
   try {
-    // 1. جلب الحقائق الحالية
+    // 1. Fetch current facts
     const { data } = await supabase
         .from('ai_memory_profiles')
         .select('facts')
@@ -155,12 +175,12 @@ async function consolidateUserFacts(userId) {
     const currentFacts = data?.facts || {};
     const keys = Object.keys(currentFacts);
 
-    // إذا كانت الحقائق قليلة، لا داعي للدمج
+    // If facts are few, no need to consolidate
     if (keys.length < 5) return;
 
     logger.info(`🧹 Consolidating memory for user ${userId}...`);
 
-    // 2. البرومبت الذكي
+    // 2. Optimization Prompt
     const prompt = `
     You are a Database Optimizer. I have a JSON of user facts that might contain duplicates or outdated info.
     
@@ -173,13 +193,12 @@ async function consolidateUserFacts(userId) {
     4. Output ONLY the cleaned JSON.
     `;
 
-    // نستخدم موديل ذكي (Pro) لهذه العملية الدقيقة
     const res = await generateWithFailoverRef('analysis', prompt, { label: 'MemoryConsolidation' });
     const text = await extractTextFromResult(res);
     const cleanedFacts = await ensureJsonOrRepair(text, 'analysis');
 
     if (cleanedFacts && Object.keys(cleanedFacts).length > 0) {
-        // 3. تحديث القاعدة
+        // 3. Update Database
         await supabase
             .from('ai_memory_profiles')
             .update({ 
@@ -202,5 +221,4 @@ module.exports = {
   runMemoryAgent,
   analyzeAndSaveMemory,
   consolidateUserFacts
-  
 };
