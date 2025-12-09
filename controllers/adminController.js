@@ -1,4 +1,3 @@
-
 // controllers/adminController.js
 'use strict';
 
@@ -10,12 +9,14 @@ const logger = require('../utils/logger');
 const { generateSmartStudyStrategy } = require('../services/data/helpers'); 
 const embeddingService = require('../services/embeddings'); 
 const supabase = require('../services/data/supabase'); 
-const { runNightWatch } = require('../services/jobs/nightWatch'); // استيراد الدالة
+const { runNightWatch } = require('../services/jobs/nightWatch'); 
 const { scanAndFillEmptyLessons } = require('../services/engines/ghostTeacher'); 
 const { checkExamTiming } = require('../services/jobs/examWorker');
-const db = getFirestoreInstance();
 const { addDiscoveryMission } = require('../services/data/helpers');
 const keyManager = require('../services/ai/keyManager');
+const { calculateSmartPrimeTime } = require('../services/engines/chronoV2'); // Import moved to top
+
+const db = getFirestoreInstance();
 
 let generateWithFailoverRef; 
 
@@ -28,14 +29,13 @@ async function pushDiscoveryMission(req, res) {
   try {
     const { targetUserId, missionContent, isGlobal } = req.body;
     
-    // حماية بسيطة
+    // Simple protection
     if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
         return res.status(401).json({ error: 'Unauthorized' });
     }
 
     if (isGlobal) {
-        // إرسال للجميع (عملية ثقيلة، يفضل استخدام Queue في الإنتاج الفعلي)
-        // هنا سنرسل لأول 100 مستخدم نشط كمثال
+        // Send to everyone (Heavy operation, use Queue in production)
         const { data: users } = await supabase.from('users').select('id').limit(100);
         for (const user of users) {
             await addDiscoveryMission(user.id, missionContent, 'admin', 'high');
@@ -53,7 +53,8 @@ async function pushDiscoveryMission(req, res) {
     res.status(500).json({ error: e.message });
   }
 }
-// --- Helpers for Strings (Added to prevent ReferenceErrors) ---
+
+// --- Helpers for Strings ---
 function escapeForPrompt(str) {
   return str ? str.replace(/"/g, '\\"').replace(/\n/g, ' ') : '';
 }
@@ -61,7 +62,6 @@ function safeSnippet(str, length) {
   return str && str.length > length ? str.substring(0, length) + '...' : str;
 }
 async function extractTextFromResult(result) {
-  // Adjust based on your actual AI response structure
   return result?.text || result?.content || result || '';
 }
 
@@ -89,7 +89,7 @@ async function runNightlyAnalysis(req, res) {
       analysisPromises.push(runNightlyAnalysisForUser(doc.id));
     });
 
-    await Promise.allSettled(analysisPromises); // Use allSettled so one error doesn't stop others
+    await Promise.allSettled(analysisPromises);
     logger.info(`[CRON] Finished analysis.`);
 
   } catch (error) {
@@ -190,7 +190,7 @@ async function indexSpecificLesson(req, res) {
     
     // Clear old embeddings
     const oldEmbeddings = await db.collection('curriculum_embeddings')
-      .where('metadata.lesson_id', '==', lessonId) // Updated to match structure below
+      .where('metadata.lesson_id', '==', lessonId)
       .get();
       
     oldEmbeddings.forEach(doc => batch.delete(doc.ref));
@@ -211,7 +211,7 @@ async function indexSpecificLesson(req, res) {
         },
         created_at: admin.firestore.FieldValue.serverTimestamp()
       });
-    } // <--- Fixed: Missing closing brace added here
+    } 
 
     await batch.commit();
     return res.json({ success: true, message: `Indexed ${chunks.length} chunks for lesson ${lessonId}` });
@@ -297,7 +297,7 @@ async function triggerFullIndexing(req, res) {
   try {
     console.log('🚨 STARTING CONTEXTUAL INDEXING 🚨');
 
-    // 1. جلب المحتوى
+    // 1. Fetch Content
     const { data: contents, error: contentError } = await supabase
       .from('lessons_content')
       .select('*');
@@ -307,16 +307,13 @@ async function triggerFullIndexing(req, res) {
       return;
     }
 
-    // 2. جلب العناوين (Meta Data) من جدول lessons
-    // سنقوم بجلب كل الدروس ونضعها في Map للسرعة
+    // 2. Fetch Titles (Meta Data)
     const { data: lessonsMeta, error: metaError } = await supabase
-      .from('lessons') // تأكد أن اسم الجدول lessons في Supabase
+      .from('lessons')
       .select('id, title');
 
     if (metaError) console.error('⚠️ Could not fetch titles:', metaError);
 
-    // تحويل المصفوفة إلى Map ليسهل البحث فيها
-    // النتيجة: { 'les_eco_1': 'مدخل إلى الاقتصاد', ... }
     const titlesMap = {};
     if (lessonsMeta) {
         lessonsMeta.forEach(l => { titlesMap[l.id] = l.title; });
@@ -330,35 +327,30 @@ async function triggerFullIndexing(req, res) {
       const rawContent = item.content;
       const lessonId = item.id;
       
-      // هنا السحر: نجلب العنوان الخاص بهذا الدرس
       const lessonTitle = titlesMap[lessonId] || 'درس تعليمي'; 
 
       if (!rawContent || rawContent.length < 5) continue;
 
-      // التقطيع
       const chunks = rawContent.match(/[\s\S]{1,1000}/g) || [rawContent];
 
       for (const chunk of chunks) {
         
-        // 🔥 التعديل الجوهري: دمج العنوان مع المحتوى 🔥
-        // هذا النص هو الذي سيقرأه الـ AI ويفهمه
+        // Enrich context with title
         const richText = `عنوان الدرس: ${lessonTitle}\n---\n${chunk}`;
 
-        // توليد الفيكتور للنص "الغني"
         const vector = await embeddingService.generateEmbedding(richText);
 
         if (!vector || vector.length === 0) continue;
 
-        // الحفظ
         const { error: insertError } = await supabase
           .from('curriculum_embeddings')
           .insert({
-            path_id: 'UAlger3_L1_ITCF', // يمكنك تحسين هذا لاحقاً لجلبه ديناميكياً
-            content: richText, // نحفظ النص الغني ليراه الـ AI في الرد
+            path_id: 'UAlger3_L1_ITCF',
+            content: richText,
             embedding: vector,
             metadata: {
               lesson_id: lessonId,
-              lesson_title: lessonTitle, // نضيف العنوان في الميتادات أيضا
+              lesson_title: lessonTitle,
               subject_id: item.subject_id,
               source: 'contextual_indexer'
             },
@@ -383,17 +375,14 @@ async function triggerFullIndexing(req, res) {
 
 async function triggerNightWatch(req, res) {
   try {
-    // 👇 إضافة الشرط هنا
     if (!CONFIG.ENABLE_EDUNEXUS) {
         return res.status(200).json({ message: 'EduNexus Night Watch is currently disabled.' });
     }
-    // حماية الرابط بمفتاح سري (ضعه في Environment Variables لاحقاً)
     const secret = req.headers['x-cron-secret'];
     if (secret !== process.env.CRON_SECRET && secret !== 'my-super-secret-cron-key') {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    // تشغيل الحارس (بدون await إذا أردت استجابة سريعة، أو مع await للتقرير)
     const report = await runNightWatch();
     
     res.status(200).json({ success: true, report });
@@ -402,19 +391,14 @@ async function triggerNightWatch(req, res) {
     res.status(500).json({ error: error.message });
   }
 }
-async function triggerGhostScan(req, res) {
- // تشغيل في الخلفية (لا تنتظر)
-    scanAndFillEmptyLessons();
-    res.json({ message: 'Ghost Scanner started in background 👻' });
-}
+
 async function triggerGhostScan(req, res) {
   try {
-    // حماية بسيطة (تأكد أن المفتاح موجود في .env)
     if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
         return res.status(401).json({ error: 'Unauthorized' });
     }
     
-    // تشغيل في الخلفية (Fire and Forget)
+    // Fire and Forget
     scanAndFillEmptyLessons();
     
     res.json({ message: '👻 Ghost Scanner started in background.' });
@@ -423,17 +407,15 @@ async function triggerGhostScan(req, res) {
     res.status(500).json({ error: error.message });
   }
 }
+
 async function triggerExamCheck(req, res) {
   try {
-    // 🔒 حماية الرابط: نستخدم نفس الـ Secret الموجود في ملف .env
-    // تأكد أن الـ Cron Job يرسل هذا الهيدر
     const secret = req.headers['x-job-secret'];
     
     if (secret !== CONFIG.NIGHTLY_JOB_SECRET) {
       return res.status(401).json({ error: 'Unauthorized: Invalid Secret' });
     }
 
-    // تشغيل الفحص (ننتظره لكي نرى النتيجة في لوحة تحكم الـ Cron)
     await checkExamTiming();
 
     return res.status(200).json({ 
@@ -447,7 +429,7 @@ async function triggerExamCheck(req, res) {
   }
 }
 
-// 1. عرض لوحة التحكم بالمفاتيح
+// 1. Keys Dashboard
 async function getKeysStatus(req, res) {
     if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) return res.status(401).send('Forbidden');
     
@@ -461,7 +443,7 @@ async function getKeysStatus(req, res) {
     });
 }
 
-// 2. إضافة مفتاح جديد
+// 2. Add New Key
 async function addApiKey(req, res) {
     if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) return res.status(401).send('Forbidden');
     const { key, nickname } = req.body;
@@ -470,7 +452,7 @@ async function addApiKey(req, res) {
     res.json(result);
 }
 
-// 3. إنعاش مفتاح ميت
+// 3. Revive Dead Key
 async function reviveApiKey(req, res) {
     if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) return res.status(401).send('Forbidden');
     const { key } = req.body;
@@ -478,48 +460,47 @@ async function reviveApiKey(req, res) {
     const result = await keyManager.reviveKey(key);
     res.json(result);
 }
-const { calculateSmartPrimeTime } = require('../services/engines/chronoV2');
 
+// --- 4. Chrono Analysis V2 ---
 async function runDailyChronoAnalysis(req, res) {
-  // 1. Security Check (Secret Key)
+  // 1. Security Check
   if (req.headers['x-cron-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  // الرد فوراً لتجنب Timeout من خدمة الـ Cron
+  // Reply immediately to avoid timeout
   res.status(202).json({ message: 'Chrono Analysis Started ⏳' });
 
   try {
-    // 2. جلب المستخدمين النشطين (آخر 7 أيام) لتوفير الموارد
+    // 2. Fetch active users (Last 7 days)
     const lastWeek = new Date();
     lastWeek.setDate(lastWeek.getDate() - 7);
     
     const { data: users } = await supabase
         .from('users')
         .select('id')
-        .gt('last_active_at', lastWeek.toISOString()); // تأكد من وجود last_active_at في جدول users وتحديثه
+        .gt('last_active_at', lastWeek.toISOString());
 
-    if (!users) return;
+    if (!users || users.length === 0) return;
 
     logger.info(`🕰️ Running Chrono Analysis for ${users.length} active users...`);
 
-    // 3. تحليل كل مستخدم (بشكل متسلسل أو دفعات لتجنب خنق الداتابايز)
+    // 3. Analyze users
     for (const user of users) {
         const result = await calculateSmartPrimeTime(user.id);
         
-        // حفظ النتيجة في ميتا داتا المستخدم أو جدول خاص settings
-        // هنا سنفترض وجود حقل ai_settings من نوع JSONB في users
+        // Save result to user metadata
         await supabase.from('users').update({
             ai_scheduler_meta: {
                 next_prime_hour: result.bestHour,
-                next_prime_offset: result.minuteOffset, // الدقائق المستكشفة
+                next_prime_offset: result.minuteOffset,
                 last_calculated: new Date().toISOString(),
                 strategy: result.strategy
             }
         }).eq('id', user.id);
     }
     
-    logger.success('✅ Chrono Analysis Completed.');
+    logger.info('✅ Chrono Analysis Completed.');
 
   } catch (error) {
     logger.error('Chrono Cron Error:', error);
