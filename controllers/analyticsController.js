@@ -6,8 +6,8 @@ const { getFirestoreInstance, admin } = require('../services/data/firestore');
 const { getProgress, sendUserNotification, processSessionAnalytics } = require('../services/data/helpers');
 const { runInterventionManager } = require('../services/ai/managers/notificationManager');
 const logger = require('../utils/logger');
+const supabase = require('../services/data/supabase');
 
-const db = getFirestoreInstance();
 
 const procrastinationTimers = new Map();
 
@@ -183,22 +183,22 @@ async function processSession(req, res) {
 
 async function heartbeat(req, res) {
   const { sessionId } = req.body;
-  if (!sessionId) return res.status(400).json({ error: 'Session ID required' });
+  
+  // رد سريع جداً ولا ننتظر الـ DB
+  res.status(200).send('♥');
+
+  if (!sessionId) return;
 
   try {
-    // استدعاء الدالة الذكية في Supabase (RPC)
-    const { error } = await supabase.rpc('update_heartbeat', { session_uuid: sessionId });
-
-    if (error) throw error;
-    res.status(200).send('♥'); // رد خفيف جداً (1 بايت)
+    // استدعاء RPC في Supabase لتحديث الوقت وحساب المدة
+    await supabase.rpc('update_heartbeat', { session_uuid: sessionId });
   } catch (err) {
-    // لا نسجل Error هنا لتجنب تلوث اللوجز لأن الـ heartbeat متكرر جداً
-    res.status(500).end(); 
+    // Silent fail
   }
-}
 
 module.exports = {
   logEvent,
   processSession,
-  logSessionStart
+  logSessionStart,
+  heartbeat 
 };
