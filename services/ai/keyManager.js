@@ -14,30 +14,47 @@ class KeyManager {
   }
 
   // 1. التهيئة: سحب المفاتيح من البيئة + قاعدة البيانات
-  async init() {
+  
+async init() {
     if (this.isInitialized) return;
 
-    // أ) سحب من Env Variables (GOOGLE_API_KEY_1 ... 20)
+    // 1. مفاتيح Render (تعمل دائماً للتجربة)
+    // هذه المفاتيح ستكون هي "الجيش الأول" حالياً
     for (let i = 1; i <= 20; i++) {
       const key = process.env[`GOOGLE_API_KEY_${i}`];
-      if (key) this._addKeyToMemory(key, `Env_Key_${i}`);
+      if (key) this._addKeyToMemory(key, `Env_Key_${i}`, 0, 0, 0, 0, 0, null, 'active');
     }
-    // المفتاح الرئيسي
-    if (process.env.GOOGLE_API_KEY) this._addKeyToMemory(process.env.GOOGLE_API_KEY, 'Master_Key');
+    if (process.env.GOOGLE_API_KEY) {
+        this._addKeyToMemory(process.env.GOOGLE_API_KEY, 'Master_Key', 0, 0, 0, 0, 0, null, 'active');
+    }
 
-    // ب) سحب من Supabase
+    // 2. مفاتيح Supabase (نجلب فقط النشطة!)
     try {
-      const { data } = await supabase.from('system_api_keys').select('*').eq('status', 'active');
+      // 👇 التعديل هنا: eq('status', 'active')
+      const { data } = await supabase
+          .from('system_api_keys')
+          .select('*')
+          .eq('status', 'active'); 
+
       if (data) {
-        data.forEach(row => this._addKeyToMemory(row.key_value, row.nickname, row.fails_count, row.usage_count));
+        data.forEach(row => this._addKeyToMemory(
+            row.key_value, 
+            row.nickname, 
+            row.fails_count, 
+            row.usage_count,
+            row.total_input_tokens,
+            row.total_output_tokens,
+            row.today_requests_count,
+            row.last_reset_at
+        ));
       }
     } catch (e) {
       logger.error('KeyManager DB Load Error:', e.message);
     }
 
-    logger.success(`🔑 KeyManager Initialized. Loaded ${this.keys.size} keys.`);
+    logger.success(`🔑 KeyManager Initialized. Loaded ${this.keys.size} active keys.`);
     this.isInitialized = true;
-  }
+}
 
 _addKeyToMemory(keyStr, nickname = 'Unknown', fails = 0, usage = 0, inputTokens = 0, outputTokens = 0, todayCount = 0, lastReset = null) {
     if (this.keys.has(keyStr)) return;
