@@ -15,6 +15,7 @@ const { scanAndFillEmptyLessons } = require('../services/engines/ghostTeacher');
 const { checkExamTiming } = require('../services/jobs/examWorker');
 const db = getFirestoreInstance();
 const { addDiscoveryMission } = require('../services/data/helpers');
+const keyManager = require('../services/ai/keyManager');
 
 let generateWithFailoverRef; 
 
@@ -445,6 +446,39 @@ async function triggerExamCheck(req, res) {
     return res.status(500).json({ error: error.message });
   }
 }
+
+// 1. عرض لوحة التحكم بالمفاتيح
+async function getKeysStatus(req, res) {
+    if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) return res.status(401).send('Forbidden');
+    
+    const stats = keyManager.getAllKeysStatus();
+    res.json({
+        total: stats.length,
+        active: stats.filter(k => k.status !== 'dead').length,
+        dead: stats.filter(k => k.status === 'dead').length,
+        busy: stats.filter(k => k.status === 'busy').length,
+        keys: stats
+    });
+}
+
+// 2. إضافة مفتاح جديد
+async function addApiKey(req, res) {
+    if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) return res.status(401).send('Forbidden');
+    const { key, nickname } = req.body;
+    
+    const result = await keyManager.addKey(key, nickname || 'Admin_Added');
+    res.json(result);
+}
+
+// 3. إنعاش مفتاح ميت
+async function reviveApiKey(req, res) {
+    if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) return res.status(401).send('Forbidden');
+    const { key } = req.body;
+    
+    const result = await keyManager.reviveKey(key);
+    res.json(result);
+}
+
 module.exports = {
   initAdminController,
   indexSpecificLesson,
@@ -455,5 +489,8 @@ module.exports = {
   triggerNightWatch,
   triggerGhostScan,
   triggerExamCheck,
-  pushDiscoveryMission
+  pushDiscoveryMission,
+  getKeysStatus,
+    addApiKey,
+    reviveApiKey
 };
