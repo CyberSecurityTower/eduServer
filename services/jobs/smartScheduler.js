@@ -1,4 +1,3 @@
---- START OF FILE services/jobs/smartScheduler.js ---
 
 // services/jobs/smartScheduler.js
 'use strict';
