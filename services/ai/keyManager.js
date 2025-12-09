@@ -39,19 +39,20 @@ class KeyManager {
     this.isInitialized = true;
   }
 
-  _addKeyToMemory(keyStr, nickname = 'Unknown', fails = 0, usage = 0) {
+   _addKeyToMemory(keyStr, nickname = 'Unknown', fails = 0, usage = 0, inputTokens = 0, outputTokens = 0) {
     if (this.keys.has(keyStr)) return;
     
-    // Lazy Import لتجنب المشاكل الدائرية
     const { GoogleGenerativeAI } = require('@google/generative-ai'); 
     
     this.keys.set(keyStr, {
       key: keyStr,
       nickname,
       client: new GoogleGenerativeAI(keyStr),
-      status: fails >= this.MAX_FAILS ? 'dead' : 'idle', // idle, busy, dead, cooldown
+      status: fails >= this.MAX_FAILS ? 'dead' : 'idle',
       fails: fails,
       usage: usage,
+      inputTokens: inputTokens || 0,
+      outputTokens: outputTokens || 0,
       lastUsed: null
     });
   }
@@ -131,6 +132,43 @@ class KeyManager {
     }
   }
 
+  // 👇 دالة جديدة لتسجيل الاستهلاك
+  async recordUsage(keyStr, usageMetadata, userId = null, modelName = 'unknown') {
+    const keyObj = this.keys.get(keyStr);
+    if (!keyObj || !usageMetadata) return;
+
+    const input = usageMetadata.promptTokenCount || 0;
+    const output = usageMetadata.candidatesTokenCount || 0;
+
+    // 1. تحديث الذاكرة (RAM)
+    keyObj.inputTokens += input;
+    keyObj.outputTokens += output;
+
+    // 2. تحديث قاعدة البيانات (Fire and Forget)
+    // نستخدم rpc لزيادة العدادات بشكل آمن (Atomic Increment)
+    // أو تحديث مباشر إذا لم يكن الضغط عالياً جداً
+    try {
+        // تحديث جدول المفاتيح
+        await supabase.rpc('increment_key_usage', { 
+            key_val: keyStr, 
+            inc_input: input, 
+            inc_output: output 
+        });
+
+        // (اختياري) تسجيل في جدول السجلات
+        await supabase.from('ai_usage_logs').insert({
+            user_id: userId, // يمكن تمريره لاحقاً
+            model_name: modelName,
+            input_tokens: input,
+            output_tokens: output,
+            total_tokens: input + output,
+            key_nickname: keyObj.nickname
+        });
+
+    } catch (e) {
+        console.error('Failed to log tokens:', e.message);
+    }
+  }
   async _syncKeyStats(keyStr, updates) {
      // تحديث قاعدة البيانات في الخلفية
      // نبحث أولاً إذا كان المفتاح موجود في DB، إذا لا نضيفه، إذا نعم نحدثه
