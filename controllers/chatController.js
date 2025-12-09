@@ -439,8 +439,15 @@ if (lastActive) {
     }
 
     const ageContext = rawProfile.facts?.age ? `User Age: ${rawProfile.facts.age} years old.` : "";
-    const currentSemester = 'S1'; 
+   
+// 1. اجلب القيمة من Supabase في بداية الدالة مع باقي البيانات
+const { data: settings } = await supabase
+  .from('system_settings')
+  .select('value')
+  .eq('key', 'current_semester')
+  .single();
 
+const currentSemester = settings?.value || 'S1'; // القيمة الديناميكية
     const systemContextCombined = `
     User Identity: Name=${fullUserProfile.firstName}, Group=${groupId}, Role=${fullUserProfile.role}.
     ${ageContext}
