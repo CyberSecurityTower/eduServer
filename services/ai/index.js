@@ -16,25 +16,12 @@ async function _callModelInstance(unused_instance, prompt, timeoutMs, label) {
   let keyObj = null;
 
   try {
-    // 1. طلب مفتاح من المدير (قد ينتظر في الطابور)
     keyObj = await keyManager.acquireKey();
     
-    // 2. الحصول على الموديل من المفتاح المختار
-    // ملاحظة: الموديل يعتمد على اسم الـ pool، لكن هنا سنبسط الأمر وننشئ الموديل ديناميكياً
-    // أو يمكن تخزين الموديلات داخل keyObj مسبقاً. للسهولة سنستخدم getGenerativeModel هنا.
-    
-    // نحتاج معرفة أي موديل نطلب (chat, embedding, etc). 
-    // سنفترض أن CONFIG.MODEL يحتوي على اسم الموديل الافتراضي 'gemini-2.0-flash' مثلاً
-    // للأسف الدالة _callModelInstance القديمة كانت تأخذ instance جاهز. 
-    // سنعدل المنطق قليلاً. الدالة المستدعية (failover) يجب أن تمرر اسم الموديل.
-
-    // الحل السريع: نأخذ الموديل الافتراضي من CONFIG إذا لم يمرر
     const modelName = CONFIG.MODEL.chat || 'gemini-2.5-flash'; 
     const model = keyObj.client.getGenerativeModel({ model: modelName });
-
     const generationConfig = { temperature: 0.4 };
     
-    // 3. تنفيذ الطلب
     const result = await withTimeout(
         model.generateContent({
             contents: [{ role: 'user', parts: [{ text: typeof prompt === 'string' ? prompt : JSON.stringify(prompt) }] }],
@@ -47,9 +34,16 @@ async function _callModelInstance(unused_instance, prompt, timeoutMs, label) {
     const response = await result.response;
     const text = response.text();
 
-    // 4. إبلاغ المدير بالنجاح
+    // 👇 هنا الإضافة: استخراج التوكنز
+    const usageMetadata = response.usageMetadata; 
+    // usageMetadata شكله هكذا: { promptTokenCount: 120, candidatesTokenCount: 50, totalTokenCount: 170 }
+
+    if (usageMetadata) {
+        // نسجل الاستهلاك في الخلفية
+        keyManager.recordUsage(keyObj.key, usageMetadata, null, modelName);
+    }
+
     keyManager.releaseKey(keyObj.key, true);
-    
     return text;
 
   } catch (err) {
