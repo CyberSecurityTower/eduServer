@@ -1,62 +1,92 @@
-// services/ai/index.js (Updated)
+// services/ai/index.js
 'use strict';
 
 const CONFIG = require('../../config');
 const logger = require('../../utils/logger');
 const { withTimeout } = require('../../utils');
-const keyManager = require('./keyManager'); // استيراد المدير الجديد
+const keyManager = require('./keyManager');
+
+// قائمة الموديلات بالترتيب (الأقوى فالأضعف)
+const MODEL_CASCADE = [
+  'gemini-2.5-flash',
+  'gemini-2.0-flash', // تأكد من الاسم الصحيح في الوثائق
+  'gemini-2.5-flash-lite'      // الملاذ الأخير (حدود عالية)
+];
 
 async function initializeModelPools() {
-  await keyManager.init(); // تهيئة المفاتيح
+  await keyManager.init();
   logger.success('🤖 AI Engine: Model Pools & Key Manager Ready.');
 }
 
-// دالة الاتصال الرئيسية (تم تعديلها لتستخدم المدير)
 async function _callModelInstance(unused_instance, prompt, timeoutMs, label) {
   let keyObj = null;
 
   try {
+    // 1. طلب مفتاح
     keyObj = await keyManager.acquireKey();
     
-    const modelName = CONFIG.MODEL.chat || 'gemini-2.5-flash'; 
-    const model = keyObj.client.getGenerativeModel({ model: modelName });
-    const generationConfig = { temperature: 0.4 };
-    
-    const result = await withTimeout(
-        model.generateContent({
-            contents: [{ role: 'user', parts: [{ text: typeof prompt === 'string' ? prompt : JSON.stringify(prompt) }] }],
-            generationConfig
-        }),
-        timeoutMs,
-        `${label} (Key: ${keyObj.nickname})`
-    );
+    let lastError = null;
+    let successText = null;
 
-    const response = await result.response;
-    const text = response.text();
+    // 2. حلقة المحاولة (The Cascade Loop)
+    for (const modelName of MODEL_CASCADE) {
+        try {
+            // logger.info(`🔄 Trying ${modelName} with key ${keyObj.nickname}...`);
+            
+            const model = keyObj.client.getGenerativeModel({ model: modelName });
+            const generationConfig = { temperature: 0.4 };
 
-    // 👇 هنا الإضافة: استخراج التوكنز
-    const usageMetadata = response.usageMetadata; 
-    // usageMetadata شكله هكذا: { promptTokenCount: 120, candidatesTokenCount: 50, totalTokenCount: 170 }
+            const result = await withTimeout(
+                model.generateContent({
+                    contents: [{ role: 'user', parts: [{ text: typeof prompt === 'string' ? prompt : JSON.stringify(prompt) }] }],
+                    generationConfig
+                }),
+                timeoutMs,
+                `${label} [${modelName}]`
+            );
 
-    if (usageMetadata) {
-        // نسجل الاستهلاك في الخلفية
-        keyManager.recordUsage(keyObj.key, usageMetadata, null, modelName);
+            const response = await result.response;
+            successText = response.text();
+            
+            // إذا وصلنا هنا، يعني نجحنا! نخرج من الحلقة
+            if (response.usageMetadata) {
+                keyManager.recordUsage(keyObj.key, response.usageMetadata, null, modelName);
+            }
+            
+            break; 
+
+        } catch (err) {
+            lastError = err;
+            // إذا كان الخطأ ليس 429 (مثلاً خطأ في البرومبت)، لا فائدة من تغيير الموديل، نوقف المحاولة
+            if (!err.message.includes('429') && !err.message.includes('Quota')) {
+                throw err;
+            }
+            // إذا كان 429، نكمل للدورة التالية (الموديل التالي)
+             logger.warn(`⚠️ Model ${modelName} exhausted on key ${keyObj.nickname}. Trying next...`);
+        }
     }
 
-    keyManager.releaseKey(keyObj.key, true);
-    return text;
+    if (successText) {
+        keyManager.releaseKey(keyObj.key, true);
+        return successText;
+    } else {
+        // إذا فشلت كل الموديلات، نرمي الخطأ الأخير ونعاقب المفتاح
+        throw lastError;
+    }
 
   } catch (err) {
-    // 5. إبلاغ المدير بالفشل
-    const errorType = err.message.includes('429') ? '429' : 'error';
+    const errorType = err.message?.includes('429') ? '429' : 'error';
     if (keyObj) keyManager.releaseKey(keyObj.key, false, errorType);
-
-    logger.warn(`Key execution failed: ${err.message}`);
-    throw err; // نرمي الخطأ لكي يقوم failover بالمحاولة مرة أخرى (إذا أردت)
-    // أو بما أن المدير لديه طابور، يمكننا الاكتفاء بذلك، لكن failover مفيد لتغيير البرومبت
+    
+    logger.warn(`❌ All models failed on key: ${err.message}`);
+    throw err;
   }
 }
 
+module.exports = {
+  initializeModelPools,
+  _callModelInstance
+};
 // تصدير
 module.exports = {
   initializeModelPools,
