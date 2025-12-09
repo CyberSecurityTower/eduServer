@@ -181,6 +181,22 @@ async function processSession(req, res) {
   processSessionAnalytics(userId, sessionId).catch(e => logger.error('Background processing failed:', e));
 }
 
+async function heartbeat(req, res) {
+  const { sessionId } = req.body;
+  if (!sessionId) return res.status(400).json({ error: 'Session ID required' });
+
+  try {
+    // استدعاء الدالة الذكية في Supabase (RPC)
+    const { error } = await supabase.rpc('update_heartbeat', { session_uuid: sessionId });
+
+    if (error) throw error;
+    res.status(200).send('♥'); // رد خفيف جداً (1 بايت)
+  } catch (err) {
+    // لا نسجل Error هنا لتجنب تلوث اللوجز لأن الـ heartbeat متكرر جداً
+    res.status(500).end(); 
+  }
+}
+
 module.exports = {
   logEvent,
   processSession,
