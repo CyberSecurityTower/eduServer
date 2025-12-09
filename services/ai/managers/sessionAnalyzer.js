@@ -1,4 +1,3 @@
---- START OF FILE services/ai/managers/sessionAnalyzer.js ---
 
 // services/ai/managers/sessionAnalyzer.js
 'use strict';
