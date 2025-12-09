@@ -308,19 +308,6 @@ async function chatInteractive(req, res) {
         `;
     }
 
-    // C. Dry Text Detector
-    const isShortMessage = message && message.trim().length < 4;
-    let conversationalContext = "";
-    if (isShortMessage) {
-        conversationalContext = `
-        ⚠️ **INTERACTION ALERT:** The user sent a very short/dry message ("${message}").
-        👉 **INSTRUCTION:** 
-        - They might be bored, tired, or busy.
-        - STOP explaining lessons immediately.
-        - Ask an open-ended question to re-engage them (e.g., "راك عيان؟", "كاش ما صرا؟").
-        - Keep your reply VERY short too.
-        `;
-    }
 
     // D. Streak Hype
     const streak = progressData?.streakCount || 0;
@@ -464,7 +451,6 @@ if (lastActive) {
     ${activeLessonContext}
 
     ${welcomeContext}
-    ${conversationalContext}
     ${streakContext}
     ${distractionContext}
     ${fatigueContext}
