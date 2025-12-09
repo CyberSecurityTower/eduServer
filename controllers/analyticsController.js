@@ -195,7 +195,7 @@ async function heartbeat(req, res) {
   } catch (err) {
     // Silent fail
   }
-
+}
 module.exports = {
   logEvent,
   processSession,
