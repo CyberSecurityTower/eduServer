@@ -607,39 +607,51 @@ if (lastActive) {
     // ---------------------------------------------------------
     // 11. Response & Background Saving
     // ---------------------------------------------------------
-    res.status(200).json({
+     res.status(200).json({
       reply: parsedResponse.reply,
       widgets: parsedResponse.widgets || [],
       sessionId: sessionId,
       mood: parsedResponse.newMood
     });
 
-    // Background processing
-    setImmediate(async () => { 
-      // Study time tracking
-      if (currentContext && currentContext.lessonId) {
-          await trackStudyTime(userId, currentContext.lessonId, 60).catch(err => logger.error('Tracking failed:', err));
+    // Background processing (Fire and Forget)
+    setImmediate(async () => {
+      try {
+        // Prepare the updated history with the latest interaction
+        const updatedHistory = [
+          ...history,
+          { role: 'user', text: message, timestamp: nowISO() },
+          { role: 'model', text: parsedResponse.reply, timestamp: nowISO() }
+        ];
+
+        // 1. Study time tracking (If inside a lesson)
+        if (currentContext && currentContext.lessonId) {
+            await trackStudyTime(userId, currentContext.lessonId, 60)
+                .catch(err => logger.error('Tracking failed:', err));
+        }
+
+        // 2. Save Chat Session (حفظ الشات - الكود القديم)
+        await saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory)
+            .catch(e => logger.error('SaveChat Error:', e));
+
+        // 3. Analyze Session for Events (تحليل الجلسة - الكود الجديد)
+        // هذا سيقوم تلقائياً بفهم الطلب (مثل "ذكرني غدا") وجدولته
+        // لن ينتظر المستخدم الرد، سيتم هذا في الخلفية
+        await analyzeSessionForEvents(userId, updatedHistory)
+            .catch(e => logger.error('SessionAnalyzer Fail:', e));
+
+        // 4. Memory Analysis (تحديث الذاكرة)
+        await analyzeAndSaveMemory(userId, updatedHistory)
+            .catch(e => logger.error('MemoryAnalysis Error:', e));
+
+        // 5. Update User Last Active Timestamp
+        await supabase.from('users')
+            .update({ last_active_at: nowISO() })
+            .eq('id', userId);
+
+      } catch (bgError) {
+        logger.error("Background Processing Fatal Error:", bgError);
       }
-
-      // Save Chat
-      const updatedHistory = [
-        ...history,
-        { role: 'user', text: message, timestamp: nowISO() },
-        { role: 'model', text: parsedResponse.reply, timestamp: nowISO() }
-      ];
-
-      saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory)
-        .catch(e => logger.error(e));
-
-      // Memory & Analysis
-      analyzeAndSaveMemory(userId, updatedHistory)
-        .catch(e => logger.error(e));
-
-      analyzeSessionForEvents(userId, updatedHistory)
-        .catch(e => logger.error('SessionAnalyzer Fail:', e));
-
-      // Update Last Active At (Important for future First Time detection)
-      supabase.from('users').update({ last_active_at: nowISO() }).eq('id', userId).then();
     });
 
   } catch (err) {
