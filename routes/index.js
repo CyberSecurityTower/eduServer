@@ -18,6 +18,8 @@ router.post('/chat-interactive', chatController.chatInteractive);
 router.post('/admin/run-night-watch', adminController.triggerNightWatch);
 router.post('/admin/push-mission', adminController.pushDiscoveryMission);
 router.get('/admin/keys', adminController.getKeysStatus);
+router.post('/analytics/heartbeat', analyticsController.heartbeat);
+router.post('/admin/run-chrono-analysis', adminController.runDailyChronoAnalysis);
 router.post('/admin/keys/add', adminController.addApiKey);
 router.post('/admin/keys/revive', adminController.reviveApiKey);
 router.post('/generate-chat-suggestions', chatController.generateChatSuggestions); 
