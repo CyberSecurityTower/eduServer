@@ -12,7 +12,11 @@ class KeyManager {
     this.MAX_FAILS = 4;
     this.isInitialized = false;
   }
-
+async reloadKeys() {
+    this.isInitialized = false; // نجبره على إعادة التحميل
+    this.keys.clear(); // تنظيف الذاكرة
+    await this.init(); // تحميل من جديد
+}
   // 1. التهيئة: سحب المفاتيح من البيئة + قاعدة البيانات
   
 async init() {
