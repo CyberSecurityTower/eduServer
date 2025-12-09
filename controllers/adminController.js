@@ -478,6 +478,53 @@ async function reviveApiKey(req, res) {
     const result = await keyManager.reviveKey(key);
     res.json(result);
 }
+const { calculateSmartPrimeTime } = require('../services/engines/chronoV2');
+
+async function runDailyChronoAnalysis(req, res) {
+  // 1. Security Check (Secret Key)
+  if (req.headers['x-cron-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  // الرد فوراً لتجنب Timeout من خدمة الـ Cron
+  res.status(202).json({ message: 'Chrono Analysis Started ⏳' });
+
+  try {
+    // 2. جلب المستخدمين النشطين (آخر 7 أيام) لتوفير الموارد
+    const lastWeek = new Date();
+    lastWeek.setDate(lastWeek.getDate() - 7);
+    
+    const { data: users } = await supabase
+        .from('users')
+        .select('id')
+        .gt('last_active_at', lastWeek.toISOString()); // تأكد من وجود last_active_at في جدول users وتحديثه
+
+    if (!users) return;
+
+    logger.info(`🕰️ Running Chrono Analysis for ${users.length} active users...`);
+
+    // 3. تحليل كل مستخدم (بشكل متسلسل أو دفعات لتجنب خنق الداتابايز)
+    for (const user of users) {
+        const result = await calculateSmartPrimeTime(user.id);
+        
+        // حفظ النتيجة في ميتا داتا المستخدم أو جدول خاص settings
+        // هنا سنفترض وجود حقل ai_settings من نوع JSONB في users
+        await supabase.from('users').update({
+            ai_scheduler_meta: {
+                next_prime_hour: result.bestHour,
+                next_prime_offset: result.minuteOffset, // الدقائق المستكشفة
+                last_calculated: new Date().toISOString(),
+                strategy: result.strategy
+            }
+        }).eq('id', user.id);
+    }
+    
+    logger.success('✅ Chrono Analysis Completed.');
+
+  } catch (error) {
+    logger.error('Chrono Cron Error:', error);
+  }
+}
 
 module.exports = {
   initAdminController,
@@ -491,6 +538,7 @@ module.exports = {
   triggerExamCheck,
   pushDiscoveryMission,
   getKeysStatus,
-    addApiKey,
-    reviveApiKey
+  addApiKey,
+  reviveApiKey,
+  runDailyChronoAnalysis
 };
