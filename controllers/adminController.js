@@ -13,8 +13,9 @@ const { runNightWatch } = require('../services/jobs/nightWatch');
 const { scanAndFillEmptyLessons } = require('../services/engines/ghostTeacher'); 
 const { checkExamTiming } = require('../services/jobs/examWorker');
 const { addDiscoveryMission } = require('../services/data/helpers');
-const keyManager = require('../services/ai/keyManager');
-const { calculateSmartPrimeTime } = require('../services/engines/chronoV2'); // Import moved to top
+const keyManager = require('../services/ai/keyMgetDashboardStatsanager');
+const { calculateSmartPrimeTime } = require('../services/engines/chronoV2');
+const { predictSystemHealth } = require('../services/ai/keyPredictor');
 
 const db = getFirestoreInstance();
 
@@ -507,6 +508,51 @@ async function runDailyChronoAnalysis(req, res) {
   }
 }
 
+async function getDashboardStats(req, res) {
+  // حماية المسار
+  if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    // 1. جلب التكاليف (من الـ Views التي أنشأناها)
+    const { data: dailyCosts } = await supabase
+        .from('view_daily_ai_costs')
+        .select('*')
+        .limit(7); // آخر 7 أيام
+
+    const { data: monthlyCosts } = await supabase
+        .from('view_monthly_ai_costs')
+        .select('*')
+        .limit(1); // الشهر الحالي
+
+    // 2. جلب التنبؤات الصحية (الخوارزمية الذكية)
+    const healthCheck = await predictSystemHealth();
+
+    // 3. تجميع البيانات
+    const dashboardData = {
+        financials: {
+            today_cost: dailyCosts[0]?.estimated_cost_usd || 0,
+            month_cost: monthlyCosts[0]?.estimated_cost_usd || 0,
+            daily_history: dailyCosts, // للرسم البياني (Chart)
+            currency: 'USD'
+        },
+        system_health: healthCheck,
+        keys_summary: {
+            total: healthCheck.metrics.activeKeys + healthCheck.metrics.deadKeys,
+            active: healthCheck.metrics.activeKeys,
+            dead: healthCheck.metrics.deadKeys
+        }
+    };
+
+    res.json(dashboardData);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+}
+
 module.exports = {
   initAdminController,
   indexSpecificLesson,
@@ -521,5 +567,6 @@ module.exports = {
   getKeysStatus,
   addApiKey,
   reviveApiKey,
-  runDailyChronoAnalysis
+  runDailyChronoAnalysis,
+  getDashboardStats
 };
