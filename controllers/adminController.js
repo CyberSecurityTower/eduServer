@@ -552,7 +552,30 @@ async function getDashboardStats(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+async function activateLaunchKeys(req, res) {
+    // حماية
+    if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
 
+    try {
+        // 1. تحديث الحالة في الداتابيز
+        const { error } = await supabase
+            .from('system_api_keys')
+            .update({ status: 'active' })
+            .eq('status', 'reserved');
+
+        if (error) throw error;
+
+        // سنضيف دالة reload بسيطة في KeyManager
+        await require('../services/ai/keyManager').reloadKeys(); 
+
+        res.json({ success: true, message: "🚀 All reserved keys are now ACTIVE! Let the games begin." });
+
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+}
 module.exports = {
   initAdminController,
   indexSpecificLesson,
@@ -568,5 +591,6 @@ module.exports = {
   addApiKey,
   reviveApiKey,
   runDailyChronoAnalysis,
-  getDashboardStats
+  getDashboardStats,
+  activateLaunchKeys
 };
