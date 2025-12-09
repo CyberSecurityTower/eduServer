@@ -75,31 +75,42 @@ _addKeyToMemory(keyStr, nickname = 'Unknown', fails = 0, usage = 0, inputTokens 
   async acquireKey() {
     return new Promise((resolve) => {
       const tryAcquire = () => {
-        // فلترة المفاتيح المتاحة (active & idle)
-        const available = Array.from(this.keys.values()).filter(k => k.status === 'idle');
+        // 1. تصفية المفاتيح المتاحة (Idle)
+        // 2. شرط إضافي: لم تتجاوز الحد اليومي (20)
+        const available = Array.from(this.keys.values()).filter(k => {
+            return k.status === 'idle' && k.todayRequests < k.rpdLimit;
+        });
 
         if (available.length > 0) {
-          // خوارزمية الاختيار: عشوائي لكن يفضل الأقل فشلاً
+          // اختيار عشوائي لتوزيع الحمل
           const selected = shuffled(available)[0];
           
-          selected.status = 'busy'; // حجز المفتاح
+          selected.status = 'busy';
           selected.lastUsed = Date.now();
           selected.usage++;
-          
-          // تحديث العداد في الخلفية (اختياري لتقليل الضغط على DB)
-          this._syncKeyStats(selected.key, { usage_count: selected.usage });
+          selected.todayRequests++; // زيادة العداد اليومي
+
+          // تحديث الداتابيز (عداد الاستخدام الكلي + اليومي)
+          this._syncKeyStats(selected.key, { 
+              usage_count: selected.usage,
+              today_requests_count: selected.todayRequests,
+              last_reset_at: new Date().toISOString()
+          });
           
           resolve(selected);
         } else {
-          // الكل مشغول أو ميت -> طابور الانتظار
-          logger.warn('⚠️ All keys are busy or dead. Request queued...');
+          // إذا نفدت كل المفاتيح لليوم
+          logger.warn('⚠️ All keys reached daily limit or are busy!');
+          
+          // هنا يمكننا عمل Fallback لموديل آخر (مثلاً 1.5 Flash) إذا أردت
+          // حالياً سنضعه في الطابور
           this.queue.push(tryAcquire);
         }
       };
 
       tryAcquire();
     });
-  }
+}
 
   // 3. إرجاع المفتاح (Check-In)
   releaseKey(keyStr, wasSuccess = true, errorType = null) {
