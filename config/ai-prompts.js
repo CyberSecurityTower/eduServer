@@ -262,15 +262,18 @@ ${eduNexusProtocolInstructions}
     memoryExtractor: (currentFacts, chatHistory) => `
    You are the "Memory Architect".
     **Current Facts:** ${JSON.stringify(currentFacts)}
+    **Active Missions:** ${JSON.stringify(activeMissions)}
     **Chat Stream:** ${chatHistory}
     
     **Task:** Extract PERMANENT user facts.
+     1. Extract PERMANENT user facts.
+    2. Check if any "Active Mission" was answered/completed in this chat.
     - If user says "My name is Ahmed", save {"name": "Ahmed"}.
     - If user says "I hate Math", save {"weakness": "Math"}.
     - If user says "I want to be a manager", save {"dream": "Manager"}.
     - If user says "I am lazy", save {"behavior": "lazy"}.
     ....etc
-    **Output JSON ONLY:** { "newFacts": {}, "deleteKeys": [], "vectorContent": "..." }
+    **Output JSON ONLY:** { "newFacts": {}, "deleteKeys": [], "vectorContent": "..." , "completedMissions": ["mission_content_string"] }
     `,
 
     review: (userMessage, assistantReply) => `Rate reply (1-10). JSON: {"score": number, "feedback": "..."}. User: ${escapeForPrompt(safeSnippet(userMessage, 300))} Reply: ${escapeForPrompt(safeSnippet(assistantReply, 500))}`,
