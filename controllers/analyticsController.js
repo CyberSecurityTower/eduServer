@@ -31,66 +31,6 @@ function scheduleTriggerLiveCoach(userId, eventName, eventData) {
 }
 
 
-async function logSessionStart(req, res) {
-  const { userId } = req.body;
-  if (!userId) return res.status(400).send('UserId required');
-
-  try {
-    // نسجل وثيقة صغيرة وسريعة
-    await db.collection('analytics_sessions').add({
-      userId,
-      startTime: admin.firestore.FieldValue.serverTimestamp(),
-      // يمكن إضافة معلومات الجهاز لاحقاً
-    });
-    
-    res.status(200).send('Logged');
-  } catch (e) {
-    console.error(e);
-    res.status(500).send('Error');
-  }
-}
-async function triggerLiveCoach(userId, eventName, eventData) {
-  const userDoc = await db.collection('users').doc(userId).get();
-  if (!userDoc.exists) return;
-  const userCreationDate = userDoc.createTime.toDate();
-  const daysSinceJoined = (new Date() - userCreationDate) / (1000 * 60 * 60 * 24);
-  if (daysSinceJoined < 2) {
-    return;
-  }
-
-  switch (eventName) {
-    case 'lesson_view_start':
-      if (procrastinationTimers.has(userId)) {
-        clearTimeout(procrastinationTimers.get(userId));
-        procrastinationTimers.delete(userId);
-      }
-
-      const progress = await getProgress(userId);
-      const isPlanned = progress?.dailyTasks?.tasks?.some(task => task.relatedLessonId === eventData.lessonId);
-
-      if (!isPlanned) {
-        const message = await runInterventionManager('unplanned_lesson', { lessonTitle: eventData.lessonTitle });
-        await sendUserNotification(userId, { title: 'مبادرة رائعة!', message });
-      }
-      break;
-
-    case 'started_study_timer':
-      const timerId = setTimeout(async () => {
-        const recentEvents = await db.collection('userBehaviorAnalytics').doc(userId).collection('events')
-          .orderBy('timestamp', 'desc').limit(1).get();
-
-        const lastEvent = recentEvents.docs[0]?.data();
-        if (lastEvent && lastEvent.name === 'started_study_timer') {
-          const message = await runInterventionManager('timer_procrastination');
-          await sendUserNotification(userId, { title: 'هل تحتاج مساعدة؟', message });
-        }
-        procrastinationTimers.delete(userId);
-      }, 120000);
-
-      procrastinationTimers.set(userId, timerId);
-      break;
-  }
-}
 
 // دالة مصححة لِـ logEvent
 async function logEvent(req, res) {
@@ -194,6 +134,54 @@ async function heartbeat(req, res) {
     await supabase.rpc('update_heartbeat', { session_uuid: sessionId });
   } catch (err) {
     // Silent fail
+  }
+}
+
+
+/**
+ * تسجيل بداية الجلسة + تحديث بيانات التيليميتري الحية
+ */
+async function logSessionStart(req, res) {
+  // ✅ نستخدم الاسم المعتمد: client_telemetry
+  const { userId, client_telemetry } = req.body; 
+
+  if (!userId) return res.status(400).send('UserId required');
+
+  try {
+    // 1. تسجيل الجلسة في Firestore (لأغراض التحليل التاريخي - History)
+    // هذا يسمح لك مستقبلاً بمعرفة: "كيف كانت بطاريته عندما بدأ الجلسة؟"
+    await db.collection('analytics_sessions').add({
+      userId,
+      startTime: admin.firestore.FieldValue.serverTimestamp(),
+      client_telemetry: client_telemetry || {}, // تخزين السياق التقني للجلسة
+    });
+    
+    // 2. تحديث "الحالة الحية" في Supabase (لأغراض اتخاذ القرار الفوري)
+    // هذا العمود (client_telemetry) في جدول users سيكون دائماً "أحدث حالة"
+    if (client_telemetry) {
+        await supabase.from('users').update({
+            client_telemetry: client_telemetry, 
+            last_active_at: new Date().toISOString()
+        }).eq('id', userId);
+
+        // 🧠 تحليل فوري بسيط (Micro-Analysis):
+        // إذا كانت البطارية منخفضة جداً وغير مشحونة، قد نسجل "حدث خطر"
+        if (client_telemetry.batteryLevel < 0.15 && !client_telemetry.isCharging) {
+             logger.warn(`🔋 Low Battery Alert for User ${userId}: ${Math.round(client_telemetry.batteryLevel * 100)}%`);
+             // مستقبلاً: يمكن إرسال هذا لـ "كرونو" ليقترح جلسة قصيرة
+        }
+    } else {
+        // تحديث الوقت فقط إذا لم تتوفر بيانات الجهاز
+        await supabase.from('users').update({
+            last_active_at: new Date().toISOString()
+        }).eq('id', userId);
+    }
+    
+    res.status(200).send('Logged & Telemetry Updated');
+
+  } catch (e) {
+    logger.error('logSessionStart Error:', e.message);
+    res.status(500).send('Error');
   }
 }
 module.exports = {
