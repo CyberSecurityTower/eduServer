@@ -139,49 +139,52 @@ async function heartbeat(req, res) {
 
 
 /**
- * تسجيل بداية الجلسة + تحديث بيانات التيليميتري الحية
+ * تسجيل بداية الجلسة (Session Start)
+ * يقوم بضرب عصفورين بحجر: الأرشفة + التحديث الحي
  */
 async function logSessionStart(req, res) {
-  // ✅ نستخدم الاسم المعتمد: client_telemetry
-  const { userId, client_telemetry } = req.body; 
+  const { userId, client_telemetry } = req.body;
 
   if (!userId) return res.status(400).send('UserId required');
 
   try {
-    // 1. تسجيل الجلسة في Firestore (لأغراض التحليل التاريخي - History)
-    // هذا يسمح لك مستقبلاً بمعرفة: "كيف كانت بطاريته عندما بدأ الجلسة؟"
-    await db.collection('analytics_sessions').add({
-      userId,
-      startTime: admin.firestore.FieldValue.serverTimestamp(),
-      client_telemetry: client_telemetry || {}, // تخزين السياق التقني للجلسة
-    });
-    
-    // 2. تحديث "الحالة الحية" في Supabase (لأغراض اتخاذ القرار الفوري)
-    // هذا العمود (client_telemetry) في جدول users سيكون دائماً "أحدث حالة"
-    if (client_telemetry) {
-        await supabase.from('users').update({
-            client_telemetry: client_telemetry, 
-            last_active_at: new Date().toISOString()
-        }).eq('id', userId);
+    const appVersion = client_telemetry?.appVersion || '1.0.0';
 
-        // 🧠 تحليل فوري بسيط (Micro-Analysis):
-        // إذا كانت البطارية منخفضة جداً وغير مشحونة، قد نسجل "حدث خطر"
-        if (client_telemetry.batteryLevel < 0.15 && !client_telemetry.isCharging) {
-             logger.warn(`🔋 Low Battery Alert for User ${userId}: ${Math.round(client_telemetry.batteryLevel * 100)}%`);
-             // مستقبلاً: يمكن إرسال هذا لـ "كرونو" ليقترح جلسة قصيرة
-        }
-    } else {
-        // تحديث الوقت فقط إذا لم تتوفر بيانات الجهاز
-        await supabase.from('users').update({
-            last_active_at: new Date().toISOString()
-        }).eq('id', userId);
+    // 1. الأرشفة: إضافة سطر جديد في جدول التاريخ (login_history)
+    // هذا الجدول يسجل "كل" دخول للمستخدم عبر الزمن
+    const { error: historyError } = await supabase.from('login_history').insert({
+      user_id: userId,
+      login_at: new Date().toISOString(),
+      client_telemetry: client_telemetry || {}, // نحفظ حالة الجهاز في تلك اللحظة
+      app_version: appVersion
+    });
+
+    if (historyError) {
+        logger.error('Failed to insert login_history:', historyError.message);
+    }
+
+    // 2. التحديث الحي: تحديث جدول المستخدمين (users)
+    // هذا الجدول يحتوي على "آخر" حالة معروفة فقط
+    const { error: userError } = await supabase.from('users').update({
+        last_active_at: new Date().toISOString(),
+        app_version: appVersion,       // تحديث نسخة التطبيق
+        client_telemetry: client_telemetry // تحديث حالة البطارية والشبكة الحالية
+    }).eq('id', userId);
+
+    if (userError) {
+        logger.error('Failed to update user status:', userError.message);
+    }
+
+    // 3. (اختياري) تحليل فوري للبطارية
+    if (client_telemetry && client_telemetry.batteryLevel < 0.15 && !client_telemetry.isCharging) {
+        // يمكن هنا تفعيل flag معين أو إرسال تنبيه داخلي
     }
     
-    res.status(200).send('Logged & Telemetry Updated');
+    res.status(200).json({ success: true, message: 'Session logged & Status updated' });
 
   } catch (e) {
-    logger.error('logSessionStart Error:', e.message);
-    res.status(500).send('Error');
+    logger.error('logSessionStart Critical Error:', e.message);
+    res.status(500).send('Internal Server Error');
   }
 }
 module.exports = {
