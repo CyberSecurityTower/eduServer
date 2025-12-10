@@ -6,6 +6,19 @@ const supabase = require('../services/data/supabase');
 const { encryptForAdmin } = require('../utils/crypto');
 const logger = require('../utils/logger');
 
+// دالة مساعدة لتسجيل الأحداث الأمنية
+async function logSecurityEvent(email, type, telemetry, ip) {
+  try {
+    await supabase.from('security_logs').insert({
+      user_email: email,
+      event_type: type,
+      client_telemetry: telemetry || {},
+      ip_address: ip || 'unknown'
+    });
+  } catch (e) {
+    logger.error('Failed to log security event:', e);
+  }
+}
 async function signup(req, res) {
   const { email, password, firstName, lastName, client_telemetry } = req.body;
 
@@ -168,7 +181,136 @@ async function updatePassword(req, res) {
   }
 }
 
-module.exports = { 
-  signup, 
-  updatePassword 
+/**
+ * 1. طلب استعادة كلمة المرور (إرسال OTP)
+ */
+async function forgotPassword(req, res) {
+  const { email, client_telemetry } = req.body;
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+
+  if (!email) return res.status(400).json({ error: 'Email is required.' });
+
+  try {
+    // تسجيل المحاولة
+    logSecurityEvent(email, 'reset_request', client_telemetry, ip);
+
+    // إرسال OTP عبر Supabase
+    const { error } = await supabase.auth.resetPasswordForEmail(email);
+
+    if (error) {
+      // ملاحظة: لأسباب أمنية، بعض الأنظمة لا تخبرك إذا كان الإيميل غير موجود
+      // لكن للتبسيط سنرجع الخطأ الآن
+      logger.warn(`Reset Password Request Failed for ${email}: ${error.message}`);
+      return res.status(400).json({ error: error.message });
+    }
+
+    return res.status(200).json({ message: 'OTP sent successfully.' });
+
+  } catch (err) {
+    logger.error('Forgot Password Error:', err);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+}
+
+/**
+ * 2. التحقق من الرمز (Verify OTP)
+ */
+async function verifyOtp(req, res) {
+  const { email, token, client_telemetry } = req.body;
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+
+  if (!email || !token) return res.status(400).json({ error: 'Email and Token are required.' });
+
+  try {
+    // التحقق من الرمز
+    const { data, error } = await supabase.auth.verifyOtp({
+      email,
+      token,
+      type: 'recovery'
+    });
+
+    if (error) {
+      logSecurityEvent(email, 'otp_verify_fail', client_telemetry, ip);
+      return res.status(400).json({ error: 'Invalid or expired OTP.' });
+    }
+
+    // نجاح التحقق
+    logSecurityEvent(email, 'otp_verify_success', client_telemetry, ip);
+
+    // نرجع الجلسة (Session) التي تحتوي على access_token
+    // سيحتاجه الفرونت أند للخطوة التالية
+    return res.status(200).json({ 
+      session: data.session,
+      message: 'OTP verified successfully.' 
+    });
+
+  } catch (err) {
+    logger.error('Verify OTP Error:', err);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+}
+
+/**
+ * 3. تعيين كلمة المرور الجديدة (Reset Password)
+ */
+async function resetPassword(req, res) {
+  const { accessToken, newPassword, client_telemetry } = req.body;
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+
+  if (!accessToken || !newPassword) {
+    return res.status(400).json({ error: 'Access Token and New Password are required.' });
+  }
+
+  try {
+    // أ. التحقق من التوكن والحصول على المستخدم
+    const { data: { user }, error: userError } = await supabase.auth.getUser(accessToken);
+    
+    if (userError || !user) {
+      return res.status(401).json({ error: 'Invalid or expired session.' });
+    }
+
+    // ب. تحديث كلمة المرور في Auth
+    const { error: updateError } = await supabase.auth.admin.updateUserById(
+      user.id,
+      { password: newPassword }
+    );
+
+    if (updateError) {
+      return res.status(400).json({ error: updateError.message });
+    }
+
+    // ج. تشفير الباسورد الجديد وتحديث سجلاتنا (Audit Log)
+    const encryptedPassword = encryptForAdmin(newPassword);
+    const appVersion = client_telemetry?.appVersion || 'Unknown';
+
+    // تحديث جدول users
+    await supabase.from('users').update({
+        admin_audit_log: {
+            encrypted_pass: encryptedPassword,
+            checked_by_admin: false,
+            updated_at: new Date().toISOString(),
+            update_reason: 'password_reset_flow'
+        },
+        client_telemetry: client_telemetry || {},
+        app_version: appVersion,
+        last_active_at: new Date().toISOString()
+    }).eq('id', user.id);
+
+    // د. تسجيل الحدث الأمني النهائي
+    logSecurityEvent(user.email, 'password_reset_complete', client_telemetry, ip);
+
+    return res.status(200).json({ message: 'Password reset successfully.' });
+
+  } catch (err) {
+    logger.error('Reset Password Error:', err);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+}
+
+module.exports = {
+  signup,
+  updatePassword, // (تغيير الباسورد من داخل التطبيق)
+  forgotPassword, // (نسيت كلمة المرور - الخطوة 1)
+  verifyOtp,      // (نسيت كلمة المرور - الخطوة 2)
+  resetPassword   // (نسيت كلمة المرور - الخطوة 3)
 };
