@@ -6,6 +6,7 @@ const express = require('express');
 const router = express.Router();
 const tasksController = require('../controllers/tasksController'); 
 const authController = require('../controllers/authController'); 
+const requireAuth = require('../middleware/authMiddleware');
 
 const chatController = require('../controllers/chatController');
 const analyticsController = require('../controllers/analyticsController');
@@ -16,10 +17,14 @@ router.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date
 
 // مسار التسجيل الجديد (يستقبل البيانات من التطبيق)
 router.post('/auth/signup', authController.signup);
-// مسار تحديث كلمة المرور
-router.post('/auth/update-password', authController.updatePassword);
 // مسار الأدمين السري (لكشف الباسورد)
 router.post('/admin/reveal-password', adminController.revealUserPassword);
+
+// 🔒 هذا المسار محمي : يجب إرسال Token صالح
+router.post('/auth/update-password', requireAuth, authController.updatePassword);
+
+// التسجيل لا يحتاج حماية (لأنه مستخدم جديد)
+router.post('/auth/signup', authController.signup);
 // ✅ The Main Brain Route
 router.post('/chat-interactive', chatController.chatInteractive);
 router.post('/admin/run-night-watch', adminController.triggerNightWatch);
