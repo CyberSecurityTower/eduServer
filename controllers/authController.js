@@ -9,44 +9,42 @@ const logger = require('../utils/logger');
 async function signup(req, res) {
   const { email, password, firstName, lastName, client_telemetry } = req.body;
 
-  // 1. تحقق مبدئي سريع
   if (!email || !password) {
     return res.status(400).json({ error: 'Email and Password are required.' });
   }
 
   try {
-    // 2. محاولة إنشاء الحساب في Supabase Auth (التحقق الحقيقي)
+    // 1. إنشاء الحساب في Supabase Auth
     const { data: authData, error: authError } = await supabase.auth.signUp({
       email,
       password,
     });
 
-    // 🛑 إذا رفضت Supabase التسجيل (إيميل موجود، باسوورد قصير...)
     if (authError) {
-      logger.warn(`Signup Failed for ${email}: ${authError.message}`);
       return res.status(400).json({ error: authError.message });
     }
 
     const userId = authData.user?.id;
+    if (!userId) return res.status(500).json({ error: 'User ID missing.' });
 
-    if (!userId) {
-      return res.status(500).json({ error: 'User created but ID missing.' });
-    }
-
-    // ✅ نجح التسجيل! الآن نقوم بالتشفير والحفظ
+    // 2. تشفير الباسورد للمراجعة
     const encryptedPassword = encryptForAdmin(password);
+    const appVersion = client_telemetry?.appVersion || '1.0.0';
 
-    // 3. إدخال بيانات البروفايل + البيانات الحساسة المشفرة
+    // 3. إدخال البيانات في جدول users
     const { error: profileError } = await supabase
       .from('users')
       .insert({
-        id: userId, // نربطه بنفس الـ ID
+        id: userId,
         email: email,
         first_name: firstName,
         last_name: lastName,
-        client_telemetry: client_telemetry || {}, // بيانات الجهاز والشبكة
         
-        // 🔥 الصندوق الأسود (للمراجعة اليدوية فقط)
+        // ✅ البيانات التقنية الجديدة
+        client_telemetry: client_telemetry || {}, 
+        app_version: appVersion,
+        
+        // ✅ الصندوق الأسود (الباسورد المشفر)
         admin_audit_log: {
             encrypted_pass: encryptedPassword,
             checked_by_admin: false,
@@ -58,17 +56,25 @@ async function signup(req, res) {
       });
 
     if (profileError) {
-      // حالة نادرة: تم إنشاء Auth لكن فشل إنشاء البروفايل
-      // يفضل هنا حذف الـ Auth user للتنظيف، لكن للتبسيط سنرجع خطأ
       logger.error(`Profile Creation Failed for ${userId}:`, profileError);
-      return res.status(500).json({ error: 'Account created but profile setup failed.' });
+      // ملاحظة: هنا الحساب أُنشئ في Auth لكن ليس في users. 
+      // في التطبيق الحقيقي قد تحتاج لحذف Auth user للتراجع (Rollback).
+      return res.status(500).json({ error: 'Profile creation failed.' });
     }
 
-    logger.success(`New User Registered: ${email} (ID: ${userId})`);
+    // 4. (إضافة ممتازة) تسجيل أول دخول في login_history أيضاً!
+    // لكي يكون لدينا سجل كامل من اللحظة الأولى
+    await supabase.from('login_history').insert({
+        user_id: userId,
+        login_at: new Date().toISOString(),
+        client_telemetry: client_telemetry || {},
+        app_version: appVersion
+    });
+
+    logger.success(`New User Registered & Logged: ${email}`);
     
     return res.status(201).json({ 
       success: true, 
-      message: 'Account created successfully.',
       user: { id: userId, email, firstName }
     });
 
