@@ -13,7 +13,7 @@ const { runNightWatch } = require('../services/jobs/nightWatch');
 const { scanAndFillEmptyLessons } = require('../services/engines/ghostTeacher'); 
 const { checkExamTiming } = require('../services/jobs/examWorker');
 const { addDiscoveryMission } = require('../services/data/helpers');
-const keyManager = require('../services/ai/keyMgetDashboardStatsanager');
+const keyManager = require('../services/ai/keyManager');
 const { calculateSmartPrimeTime } = require('../services/engines/chronoV2');
 const { predictSystemHealth } = require('../services/ai/keyPredictor');
 
