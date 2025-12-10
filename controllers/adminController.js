@@ -16,6 +16,7 @@ const { addDiscoveryMission } = require('../services/data/helpers');
 const keyManager = require('../services/ai/keyManager');
 const { calculateSmartPrimeTime } = require('../services/engines/chronoV2');
 const { predictSystemHealth } = require('../services/ai/keyPredictor');
+const { decryptForAdmin } = require('../utils/crypto');
 
 const db = getFirestoreInstance();
 
@@ -576,6 +577,56 @@ async function activateLaunchKeys(req, res) {
         res.status(500).json({ error: e.message });
     }
 }
+
+// دالة جديدة: كشف كلمة المرور (لك أنت فقط)
+async function revealUserPassword(req, res) {
+  const { targetUserId } = req.body;
+  
+  // 1. الحماية الصارمة: التحقق من مفتاح الأدمين
+  // يجب أن ترسل هذا الهيدر من تطبيق EduAdmin
+  if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
+      logger.warn('Unauthorized attempt to reveal password.');
+      return res.status(401).json({ error: 'Unauthorized: Access Denied.' });
+  }
+
+  try {
+    // 2. جلب البيانات المشفرة
+    const { data: user } = await supabase
+        .from('users')
+        .select('email, admin_audit_log')
+        .eq('id', targetUserId)
+        .single();
+
+    if (!user || !user.admin_audit_log || !user.admin_audit_log.encrypted_pass) {
+        return res.status(404).json({ error: 'No audit data found for this user.' });
+    }
+
+    // 3. فك التشفير
+    const originalPass = decryptForAdmin(user.admin_audit_log.encrypted_pass);
+
+    if (!originalPass) {
+        return res.status(500).json({ error: 'Decryption failed (Key mismatch?).' });
+    }
+
+    // 4. إرجاع النتيجة (تعامل معها بحذر في الفرونت أند!)
+    // نقوم أيضاً بتحديث السجل أنك راجعتها
+    await supabase.from('users').update({
+        admin_audit_log: { ...user.admin_audit_log, checked_by_admin: true, checked_at: new Date().toISOString() }
+    }).eq('id', targetUserId);
+
+    logger.info(`Admin revealed password for user: ${user.email}`);
+
+    return res.json({ 
+        success: true, 
+        email: user.email, 
+        decrypted_password: originalPass 
+    });
+
+  } catch (e) {
+    logger.error('Reveal Password Error:', e);
+    return res.status(500).json({ error: e.message });
+  }
+}
 module.exports = {
   initAdminController,
   indexSpecificLesson,
@@ -592,5 +643,6 @@ module.exports = {
   reviveApiKey,
   runDailyChronoAnalysis,
   getDashboardStats,
-  activateLaunchKeys
+  activateLaunchKeys,
+  revealUserPassword
 };
