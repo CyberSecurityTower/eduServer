@@ -16,7 +16,8 @@ router.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date
 
 // مسار التسجيل الجديد (يستقبل البيانات من التطبيق)
 router.post('/auth/signup', authController.signup);
-
+// مسار تحديث كلمة المرور
+router.post('/auth/update-password', authController.updatePassword);
 // مسار الأدمين السري (لكشف الباسورد)
 router.post('/admin/reveal-password', adminController.revealUserPassword);
 // ✅ The Main Brain Route
