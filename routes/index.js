@@ -29,6 +29,14 @@ router.post('/admin/reveal-password', adminController.revealUserPassword);
 // 🔒 هذا المسار محمي : يجب إرسال Token صالح
 router.post('/auth/update-password', requireAuth, authController.updatePassword);
 
+// 1. المرحلة الأولى: إرسال البيانات واستلام الرمز
+router.post('/auth/initiate-signup', authController.initiateSignup);
+
+// 2. المرحلة الثانية: إرسال الرمز + البيانات مرة أخرى للتفعيل والحفظ
+router.post('/auth/complete-signup', authController.completeSignup);
+
+// إعادة الإرسال (اختياري، يمكن استخدام initiate-signup أيضاً لهذا الغرض)
+router.post('/auth/resend-signup-otp', authController.resendSignupOtp);
 
 // مسارات استعادة كلمة المرور (Forgot Password Flow)
 router.post('/auth/forgot-password', authController.forgotPassword);
