@@ -307,10 +307,50 @@ async function resetPassword(req, res) {
   }
 }
 
+/**
+ * حذف الحساب نهائياً
+ */
+async function deleteAccount(req, res) {
+  try {
+    // 1. الحصول على معرف المستخدم من التوكن (عبر requireAuth middleware)
+    // هذا آمن لأنه يضمن أن المستخدم مسجل دخول
+    const userId = req.user?.id; 
+
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // 2. حذف المستخدم من Supabase Auth
+    // ملاحظة: supabase المستورد هنا يستخدم Service Role Key (كما في ملف services/data/supabase.js)
+    // لذلك لديه صلاحية الحذف (Admin Privileges)
+    const { error: authError } = await supabase.auth.admin.deleteUser(userId);
+
+    if (authError) {
+      logger.error(`Failed to delete auth user ${userId}:`, authError.message);
+      return res.status(400).json({ error: authError.message });
+    }
+
+    // 3. (اختياري) تنظيف البيانات الإضافية
+    // إذا كنت قد ضبطت إعدادات قاعدة البيانات (Foreign Keys) على "ON DELETE CASCADE"
+    // فسيتم حذف بياناته من جدول users و chat_sessions تلقائياً.
+    // إذا لم تكن كذلك، يمكنك حذفها يدوياً هنا:
+    /*
+    await supabase.from('users').delete().eq('id', userId);
+    */
+
+    logger.success(`User account deleted permanently: ${userId}`);
+    return res.status(200).json({ success: true, message: 'Account deleted successfully.' });
+
+  } catch (err) {
+    logger.error('Delete Account Error:', err);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+}
 module.exports = {
   signup,
   updatePassword, // (تغيير الباسورد من داخل التطبيق)
   forgotPassword, // (نسيت كلمة المرور - الخطوة 1)
   verifyOtp,      // (نسيت كلمة المرور - الخطوة 2)
-  resetPassword   // (نسيت كلمة المرور - الخطوة 3)
+  resetPassword ,  // (نسيت كلمة المرور - الخطوة 3)
+  deleteAccount 
 };
