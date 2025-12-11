@@ -20,104 +20,6 @@ async function logSecurityEvent(email, type, telemetry, ip) {
   }
 }
 
-async function signup(req, res) {
-  const { 
-    email, password, firstName, lastName, gender, dateOfBirth, 
-    selectedPathId, groupId, client_telemetry 
-  } = req.body;
-
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and Password are required.' });
-  }
-
-  try {
-    // 1. استخدام signUp (Client Method) لأنها ترسل إيميل التفعيل تلقائياً
-    // ملاحظة: نستخدم supabase العادي هنا (ليس admin بالضرورة، لكنه يعمل في الباك أند)
-    const { data: authData, error: authError } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: {
-          first_name: firstName,
-          last_name: lastName,
-          full_name: `${firstName} ${lastName}`
-        }
-      }
-    });
-
-    if (authError) return res.status(400).json({ error: authError.message });
-
-    // 🛑 فحص أمني مهم:
-    // إذا كان إعداد "Confirm Email" مفعلاً في Supabase، فإن session سيكون null.
-    // إذا لم يكن مفعلاً، سيرجع session.
-    // نحن نريد إجبار المستخدم على التحقق حتى لو نسي المطور تفعيل الخيار في Supabase.
-    
-    const userId = authData.user?.id;
-    const session = authData.session; // قد يكون null أو موجوداً
-
-    // إذا رجع session (يعني الإيميل تفعل تلقائياً)، هذا ليس ما نريده في السيناريو الخاص بك
-    // لكننا سنكمل العملية وننشئ البروفايل، والفرونت أند هو من يقرر التوجيه.
-    
-    // 2. تحديد حالة البروفايل
-    let profileStatus = 'pending_setup';
-    if (selectedPathId && groupId) profileStatus = 'completed';
-
-    // 3. إنشاء/تحديث البروفايل في جدول users
-    const { encryptForAdmin } = require('../utils/crypto');
-    const encryptedPassword = encryptForAdmin(password);
-    const appVersion = client_telemetry?.appVersion || '1.0.0';
-
-    const { error: profileError } = await supabase
-      .from('users')
-      .upsert({
-        id: userId,
-        email: email,
-        first_name: firstName || null,
-        last_name: lastName || null,
-        gender: gender || null,
-        date_of_birth: dateOfBirth || null,
-        selected_path_id: selectedPathId || null,
-        group_id: groupId || null,
-        profile_status: profileStatus,
-        client_telemetry: client_telemetry || {}, 
-        app_version: appVersion,
-        admin_audit_log: {
-            encrypted_pass: encryptedPassword,
-            checked_by_admin: false,
-            created_at: new Date().toISOString()
-        },
-        created_at: new Date().toISOString(),
-        last_active_at: new Date().toISOString()
-      }, { onConflict: 'id' });
-
-    if (profileError) {
-      console.error(`Profile Upsert Failed:`, profileError);
-      // تنظيف: قد نحتاج لحذف المستخدم من Auth إذا فشل إنشاء البروفايل
-      // await supabase.auth.admin.deleteUser(userId); 
-      return res.status(500).json({ error: 'Profile creation failed.' });
-    }
-
-    // ✅ الاستجابة النهائية
-    // نرجع success: true ولكن user فقط (بدون session)
-    // هذا يخبر الفرونت أند: "تم التسجيل، لكن اذهب للتحقق"
-    return res.status(201).json({ 
-      success: true, 
-      message: "Account created. Please verify your email.",
-      user: { 
-          id: userId, 
-          email, 
-          status: profileStatus 
-      },
-      // ⚠️ حتى لو رجع session من Supabase، نحن لا نرسله للفرونت أند هنا
-      // لنجبر المستخدم على خطوة التحقق (أو تسجيل الدخول لاحقاً)
-      requireVerification: true 
-    });
-
-  } catch (err) {
-    console.error('Signup Critical Error:', err);
-    return res.status(500).json({ error: 'Internal Server Error' });
-  }
-}
 /**
  * تحديث كلمة المرور
  * يراعي التحقق من Supabase أولاً، ثم يحفظ النسخة المشفرة للمراجعة
@@ -453,13 +355,173 @@ async function resendSignupOtp(req, res) {
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
+
+/**
+ * المرحلة 1: بدء التسجيل (Initiate Signup)
+ * - ينشئ حساب Auth فقط (غير مفعل).
+ * - يرسل كود OTP.
+ * - لا يكتب أي شيء في جدول users العام.
+ */
+async function initiateSignup(req, res) {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and Password are required.' });
+  }
+
+  try {
+    // 1. محاولة إنشاء المستخدم في Auth
+    // نستخدم signUp لأنها تتعامل بذكاء مع إرسال الإيميلات
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      // خيارات إضافية لمنع الدخول المباشر (رغم أن Confirm Email مفعل)
+    });
+
+    // 2. معالجة حالة "المستخدم موجود مسبقاً"
+    if (error) {
+      // إذا كان المستخدم موجوداً ولكنه غير مفعل، نعيد إرسال الرمز
+      if (error.message.includes('already registered')) {
+         const { error: resendError } = await supabase.auth.resend({
+             type: 'signup',
+             email: email
+         });
+         
+         if (resendError) return res.status(400).json({ error: 'Account exists and verified. Please login.' });
+         
+         return res.status(200).json({ 
+             success: true, 
+             message: "Account exists but unverified. OTP resent." 
+         });
+      }
+      return res.status(400).json({ error: error.message });
+    }
+
+    // 3. نجاح الإرسال
+    return res.status(200).json({
+      success: true,
+      message: "OTP sent to email. Please verify to complete registration."
+    });
+
+  } catch (err) {
+    logger.error('Initiate Signup Error:', err);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+}
+
+/**
+ * المرحلة 2: إكمال التسجيل (Complete Signup)
+ * - يتحقق من الـ OTP.
+ * - ينشئ السجل الكامل في جدول users.
+ * - يرجع Session.
+ */
+async function completeSignup(req, res) {
+  const { 
+    email, 
+    otp, // الكود من المستخدم
+    password, // نحتاجه لتشفيره في audit_log
+    firstName, lastName, gender, dateOfBirth, 
+    selectedPathId, groupId, client_telemetry 
+  } = req.body;
+
+  if (!email || !otp) {
+    return res.status(400).json({ error: 'Email and OTP are required.' });
+  }
+
+  try {
+    // 1. التحقق من الـ OTP وتفعيل حساب Auth
+    const { data: verifyData, error: verifyError } = await supabase.auth.verifyOtp({
+      email,
+      token: otp,
+      type: 'signup'
+    });
+
+    if (verifyError) {
+      return res.status(400).json({ error: 'Invalid Code: ' + verifyError.message });
+    }
+
+    const userId = verifyData.user?.id;
+    const session = verifyData.session;
+
+    if (!userId) return res.status(500).json({ error: 'Verification failed unexpectedly.' });
+
+    // 2. الآن ننشئ البروفايل في جدول users (لأول مرة)
+    // نحدد الحالة بناءً على البيانات المدخلة
+    let profileStatus = 'pending_setup';
+    if (selectedPathId && groupId) profileStatus = 'completed';
+
+    const encryptedPassword = password ? encryptForAdmin(password) : null;
+    const appVersion = client_telemetry?.appVersion || '1.0.0';
+
+    const { error: profileError } = await supabase
+      .from('users')
+      .upsert({
+        id: userId,
+        email: email,
+        first_name: firstName || null,
+        last_name: lastName || null,
+        gender: gender || null,
+        date_of_birth: dateOfBirth || null,
+        
+        selected_path_id: selectedPathId || null,
+        group_id: groupId || null,
+        profile_status: profileStatus,
+        
+        client_telemetry: client_telemetry || {}, 
+        app_version: appVersion,
+        
+        admin_audit_log: {
+            encrypted_pass: encryptedPassword, // حفظنا الباسورد المشفر الآن
+            checked_by_admin: false,
+            created_at: new Date().toISOString()
+        },
+        
+        created_at: new Date().toISOString(),
+        last_active_at: new Date().toISOString()
+      }, { onConflict: 'id' });
+
+    if (profileError) {
+      console.error(`Profile Creation Failed for ${userId}:`, profileError);
+      // في حالة نادرة جداً: Auth نجح لكن DB فشل.
+      // المستخدم سيتمكن من الدخول لكن بياناته ناقصة.
+      // يمكننا إرجاع خطأ، أو تجاهله لأن upsert سيصلحه في المرة القادمة.
+      return res.status(500).json({ error: 'Failed to create user profile.' });
+    }
+
+    // 3. تسجيل أول دخول
+    await supabase.from('login_history').insert({
+        user_id: userId,
+        login_at: new Date().toISOString(),
+        client_telemetry: client_telemetry || {},
+        event_type: 'signup_completed'
+    });
+
+    // 4. إرجاع الجلسة للدخول المباشر
+    return res.status(200).json({
+      success: true,
+      message: 'Account created and verified successfully!',
+      session: session,
+      user: {
+          id: userId,
+          email,
+          firstName,
+          status: profileStatus
+      }
+    });
+
+  } catch (err) {
+    logger.error('Complete Signup Error:', err);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+}
 module.exports = {
-  signup,
+  initiateSignup,
   updatePassword, // (تغيير الباسورد من داخل التطبيق)
   forgotPassword, // (نسيت كلمة المرور - الخطوة 1)
   verifyOtp,      // (نسيت كلمة المرور - الخطوة 2)
   resetPassword ,  // (نسيت كلمة المرور - الخطوة 3)
   deleteAccount ,
   verifyEmailOtp,
-  resendSignupOtp
+  resendSignupOtp,
+  completeSignup
 };
