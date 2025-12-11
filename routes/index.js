@@ -32,6 +32,8 @@ router.post('/auth/verify-otp', authController.verifyOtp);
 router.post('/auth/reset-password', authController.resetPassword);
 // نستخدم DELETE كـ HTTP Method لأنه المعيار لحذف البيانات
 router.delete('/auth/delete-account', requireAuth, authController.deleteAccount);
+//  مسار التحقق من الإيميل بعد التسجيل
+router.post('/auth/verify-signup-otp', authController.verifyEmailOtp);
 // ✅ The Main Brain Route
 router.post('/chat-interactive', chatController.chatInteractive);
 router.post('/admin/run-night-watch', adminController.triggerNightWatch);
