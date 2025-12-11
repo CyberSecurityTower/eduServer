@@ -15,37 +15,22 @@ const logSessionStart = require('../controllers/analyticsController');
 // Health Check
 router.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));
 
-// 1. التسجيل (ينشئ الحساب ويرسل الكود، لكن لا يرجع Session)
-router.post('/auth/signup', authController.signup);
-
-// 2. التحقق من الكود (يفعل الحساب ويرجع Session)
-router.post('/auth/verify-signup-otp', authController.verifyEmailOtp);
-
-// 3. إعادة إرسال الكود (في حال لم يصل)
-router.post('/auth/resend-signup-otp', authController.resendSignupOtp);
-// مسار الأدمين السري (لكشف الباسورد)
-router.post('/admin/reveal-password', adminController.revealUserPassword);
-
-// 🔒 هذا المسار محمي : يجب إرسال Token صالح
-router.post('/auth/update-password', requireAuth, authController.updatePassword);
 
 // 1. المرحلة الأولى: إرسال البيانات واستلام الرمز
 router.post('/auth/initiate-signup', authController.initiateSignup);
 
-// 2. المرحلة الثانية: إرسال الرمز + البيانات مرة أخرى للتفعيل والحفظ
+// 2. المرحلة الثانية: إرسال الرمز + البيانات للتفعيل
 router.post('/auth/complete-signup', authController.completeSignup);
 
-// إعادة الإرسال (اختياري، يمكن استخدام initiate-signup أيضاً لهذا الغرض)
+// 3. إعادة إرسال الرمز (اختياري)
 router.post('/auth/resend-signup-otp', authController.resendSignupOtp);
 
-// مسارات استعادة كلمة المرور (Forgot Password Flow)
+// --- باقي المسارات القديمة  ---
+router.post('/auth/update-password', requireAuth, authController.updatePassword);
 router.post('/auth/forgot-password', authController.forgotPassword);
 router.post('/auth/verify-otp', authController.verifyOtp);
 router.post('/auth/reset-password', authController.resetPassword);
-// نستخدم DELETE كـ HTTP Method لأنه المعيار لحذف البيانات
 router.delete('/auth/delete-account', requireAuth, authController.deleteAccount);
-//  مسار التحقق من الإيميل بعد التسجيل
-router.post('/auth/verify-signup-otp', authController.verifyEmailOtp);
 // ✅ The Main Brain Route
 router.post('/chat-interactive', chatController.chatInteractive);
 router.post('/admin/run-night-watch', adminController.triggerNightWatch);
