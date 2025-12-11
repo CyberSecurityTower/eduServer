@@ -374,11 +374,60 @@ async function deleteAccount(req, res) {
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
+
+/**
+ * دالة جديدة: التحقق من كود الإيميل (Signup OTP)
+ */
+async function verifyEmailOtp(req, res) {
+  const { email, token, client_telemetry } = req.body;
+
+  if (!email || !token) {
+    return res.status(400).json({ error: 'Email and OTP token are required.' });
+  }
+
+  try {
+    // 1. التحقق من الرمز عبر Supabase
+    // type: 'signup' مهم جداً هنا لأننا نتحقق من تسجيل جديد
+    const { data, error } = await supabase.auth.verifyOtp({
+      email,
+      token,
+      type: 'signup' // 👈 هذا يخبر سوبابيز أننا نفعّل حساباً جديداً
+    });
+
+    if (error) {
+      return res.status(400).json({ error: 'Invalid or expired OTP.' });
+    }
+
+    // 2. إذا نجح التحقق، سوبابيز سيرجع لنا Session (Token)
+    // هذا يعني أن المستخدم أصبح "مؤكداً" ومسجل دخول
+    const session = data.session;
+    const userId = data.user?.id;
+
+    // 3. تحديث سجل الدخول (اختياري لكن مفيد)
+    if (userId) {
+        await supabase.from('users').update({
+            last_active_at: new Date().toISOString()
+        }).eq('id', userId);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Email verified successfully!',
+      session: session, // 👈 هذا التوكن الذي سيحفظه التطبيق للدخول
+      user: data.user
+    });
+
+  } catch (err) {
+    console.error('Verify Signup OTP Error:', err);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+}
 module.exports = {
   signup,
   updatePassword, // (تغيير الباسورد من داخل التطبيق)
   forgotPassword, // (نسيت كلمة المرور - الخطوة 1)
   verifyOtp,      // (نسيت كلمة المرور - الخطوة 2)
   resetPassword ,  // (نسيت كلمة المرور - الخطوة 3)
-  deleteAccount 
+  deleteAccount ,
+  verifyEmailOtp
 };
