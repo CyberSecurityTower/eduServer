@@ -20,17 +20,26 @@ async function logSecurityEvent(email, type, telemetry, ip) {
   }
 }
 async function signup(req, res) {
-  const { email, password, firstName, lastName, client_telemetry } = req.body;
+  // 1. تأكد من استقبال جميع البيانات من الـ Body
+  // تأكد أن تطبيق React Native يرسل gender و dateOfBirth أيضاً
+  const { email, password, firstName, lastName, gender, dateOfBirth, client_telemetry } = req.body;
 
   if (!email || !password) {
     return res.status(400).json({ error: 'Email and Password are required.' });
   }
 
   try {
-    // 1. إنشاء الحساب في Supabase Auth
+    // ✅ إصلاح 1: إرسال البيانات الوصفية (Metadata) ليظهر الاسم في Auth Dashboard
     const { data: authData, error: authError } = await supabase.auth.signUp({
       email,
       password,
+      options: {
+        data: {
+          first_name: firstName,
+          last_name: lastName,
+          full_name: `${firstName} ${lastName}` // هذا ما يظهر غالباً كـ Display Name
+        }
+      }
     });
 
     if (authError) {
@@ -40,24 +49,26 @@ async function signup(req, res) {
     const userId = authData.user?.id;
     if (!userId) return res.status(500).json({ error: 'User ID missing.' });
 
-    // 2. تشفير الباسورد للمراجعة
+    // تشفير الباسورد للمراجعة (كما في كودك الأصلي)
+    const { encryptForAdmin } = require('../utils/crypto'); // تأكد من المسار
     const encryptedPassword = encryptForAdmin(password);
     const appVersion = client_telemetry?.appVersion || '1.0.0';
 
-    // 3. إدخال البيانات في جدول users
+    // ✅ إصلاح 2: استخدام upsert بدلاً من insert
+    // upsert تعني: إذا لم يكن موجوداً أنشئه، وإذا كان موجوداً (بسبب Trigger) قم بتحديثه!
     const { error: profileError } = await supabase
       .from('users')
-      .insert({
+      .upsert({
         id: userId,
         email: email,
-        first_name: firstName,
-        last_name: lastName,
+        first_name: firstName || null,
+        last_name: lastName || null,
+        gender: gender || null,           // تأكدنا من إضافتها
+        date_of_birth: dateOfBirth || null, // تأكدنا من إضافتها
         
-        // ✅ البيانات التقنية الجديدة
         client_telemetry: client_telemetry || {}, 
         app_version: appVersion,
         
-        // ✅ الصندوق الأسود (الباسورد المشفر)
         admin_audit_log: {
             encrypted_pass: encryptedPassword,
             checked_by_admin: false,
@@ -66,17 +77,15 @@ async function signup(req, res) {
         
         created_at: new Date().toISOString(),
         last_active_at: new Date().toISOString()
-      });
+      }, { onConflict: 'id' }); // مهم جداً: تحديد عمود الصراع
 
     if (profileError) {
-      logger.error(`Profile Creation Failed for ${userId}:`, profileError);
-      // ملاحظة: هنا الحساب أُنشئ في Auth لكن ليس في users. 
-      // في التطبيق الحقيقي قد تحتاج لحذف Auth user للتراجع (Rollback).
-      return res.status(500).json({ error: 'Profile creation failed.' });
+      // طباعة الخطأ بالتفصيل لنعرف السبب إذا فشل مجدداً
+      console.error(`Profile Upsert Failed for ${userId}:`, profileError);
+      return res.status(500).json({ error: 'Profile creation failed: ' + profileError.message });
     }
 
-    // 4. (إضافة ممتازة) تسجيل أول دخول في login_history أيضاً!
-    // لكي يكون لدينا سجل كامل من اللحظة الأولى
+    // تسجيل الدخول في السجل
     await supabase.from('login_history').insert({
         user_id: userId,
         login_at: new Date().toISOString(),
@@ -84,7 +93,7 @@ async function signup(req, res) {
         app_version: appVersion
     });
 
-    logger.success(`New User Registered & Logged: ${email}`);
+    // logger.success(`New User Registered: ${email}`); // إذا كان لديك logger
     
     return res.status(201).json({ 
       success: true, 
@@ -92,7 +101,7 @@ async function signup(req, res) {
     });
 
   } catch (err) {
-    logger.error('Signup Critical Error:', err);
+    console.error('Signup Critical Error:', err);
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
