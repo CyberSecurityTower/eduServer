@@ -18,18 +18,28 @@ async function logSecurityEvent(email, type, telemetry, ip) {
   } catch (e) {
     logger.error('Failed to log security event:', e);
   }
-}
+}// controllers/authController.js
+
 async function signup(req, res) {
-  // 1. تأكد من استقبال جميع البيانات من الـ Body
-  // تأكد أن تطبيق React Native يرسل gender و dateOfBirth أيضاً
-  const { email, password, firstName, lastName, gender, dateOfBirth, client_telemetry } = req.body;
+  // 1. نستقبل البيانات الجديدة (selectedPathId, groupId)
+  const { 
+    email, 
+    password, 
+    firstName, 
+    lastName, 
+    gender, 
+    dateOfBirth, 
+    selectedPathId, // <-- جديد: معرف التخصص (مثل: UAlger3_L1_ITCF)
+    groupId,        // <-- جديد: معرف الفوج (مثل: UAlger3_L1_ITCF_G1)
+    client_telemetry 
+  } = req.body;
 
   if (!email || !password) {
     return res.status(400).json({ error: 'Email and Password are required.' });
   }
 
   try {
-    // ✅ إصلاح 1: إرسال البيانات الوصفية (Metadata) ليظهر الاسم في Auth Dashboard
+    // 2. إنشاء الحساب في Auth (كما فعلنا سابقاً)
     const { data: authData, error: authError } = await supabase.auth.signUp({
       email,
       password,
@@ -37,25 +47,28 @@ async function signup(req, res) {
         data: {
           first_name: firstName,
           last_name: lastName,
-          full_name: `${firstName} ${lastName}` // هذا ما يظهر غالباً كـ Display Name
+          full_name: `${firstName} ${lastName}`
         }
       }
     });
 
-    if (authError) {
-      return res.status(400).json({ error: authError.message });
-    }
+    if (authError) return res.status(400).json({ error: authError.message });
 
     const userId = authData.user?.id;
     if (!userId) return res.status(500).json({ error: 'User ID missing.' });
 
-    // تشفير الباسورد للمراجعة (كما في كودك الأصلي)
-    const { encryptForAdmin } = require('../utils/crypto'); // تأكد من المسار
+    // 3. تحديد حالة البروفايل تلقائياً
+    // إذا أرسل التخصص والفوج، نعتبر الحساب مكتملاً
+    let profileStatus = 'pending_setup';
+    if (selectedPathId && groupId) {
+        profileStatus = 'completed';
+    }
+
+    const { encryptForAdmin } = require('../utils/crypto');
     const encryptedPassword = encryptForAdmin(password);
     const appVersion = client_telemetry?.appVersion || '1.0.0';
 
-    // ✅ إصلاح 2: استخدام upsert بدلاً من insert
-    // upsert تعني: إذا لم يكن موجوداً أنشئه، وإذا كان موجوداً (بسبب Trigger) قم بتحديثه!
+    // 4. الحفظ في قاعدة البيانات (Upsert) مع الحقول الجديدة
     const { error: profileError } = await supabase
       .from('users')
       .upsert({
@@ -63,8 +76,13 @@ async function signup(req, res) {
         email: email,
         first_name: firstName || null,
         last_name: lastName || null,
-        gender: gender || null,           // تأكدنا من إضافتها
-        date_of_birth: dateOfBirth || null, // تأكدنا من إضافتها
+        gender: gender || null,
+        date_of_birth: dateOfBirth || null,
+        
+        // ✅ البيانات الأكاديمية الجديدة
+        selected_path_id: selectedPathId || null,
+        group_id: groupId || null,
+        profile_status: profileStatus, // completed OR pending_setup
         
         client_telemetry: client_telemetry || {}, 
         app_version: appVersion,
@@ -77,11 +95,10 @@ async function signup(req, res) {
         
         created_at: new Date().toISOString(),
         last_active_at: new Date().toISOString()
-      }, { onConflict: 'id' }); // مهم جداً: تحديد عمود الصراع
+      }, { onConflict: 'id' });
 
     if (profileError) {
-      // طباعة الخطأ بالتفصيل لنعرف السبب إذا فشل مجدداً
-      console.error(`Profile Upsert Failed for ${userId}:`, profileError);
+      console.error(`Profile Upsert Failed:`, profileError);
       return res.status(500).json({ error: 'Profile creation failed: ' + profileError.message });
     }
 
@@ -93,11 +110,14 @@ async function signup(req, res) {
         app_version: appVersion
     });
 
-    // logger.success(`New User Registered: ${email}`); // إذا كان لديك logger
-    
     return res.status(201).json({ 
       success: true, 
-      user: { id: userId, email, firstName }
+      user: { 
+          id: userId, 
+          email, 
+          firstName,
+          status: profileStatus 
+      }
     });
 
   } catch (err) {
@@ -105,7 +125,6 @@ async function signup(req, res) {
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
-
 
 /**
  * تحديث كلمة المرور
