@@ -141,19 +141,19 @@ async function calculateSmartPrimeTime(userId) {
     // =========================================================
     // C. اتخاذ القرار (Exploitation vs Exploration)
     // =========================================================
-    const tomorrow = new Date();
+      const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
-    const targetDayIndex = tomorrow.getDay(); // 0 (Sunday) to 6 (Saturday)
+    const targetDayIndex = tomorrow.getDay(); 
     
-    // نقتطع الـ 24 ساعة الخاصة بيوم غد من المصفوفة الكبيرة
     const startSlice = targetDayIndex * 24;
     const dayScores = scoreMatrix.slice(startSlice, startSlice + 24);
 
-    let bestHour = 20; // الافتراضي (8 مساءً)
-    let maxScore = -Infinity;
+    // ✅ التعديل هنا: نضع عتبة (Threshold)
+    let bestHour = 20; // الافتراضي: 8 مساءً
+    let maxScore = 0.5; // يجب أن يكون السكور أعلى من 0.5 لتغيير الوقت الافتراضي
 
     dayScores.forEach((score, h) => {
-        // تجنب الفجر (1-5) إلا إذا كان Score عالي جداً (سهران للامتحان)
+        // تجنب الفجر (1-5) إلا إذا كان Score عالي جداً
         if (h >= 1 && h <= 5 && score < 5) return;
         
         if (score > maxScore) {
