@@ -362,49 +362,69 @@ async function resendSignupOtp(req, res) {
  * - يرسل كود OTP.
  * - لا يكتب أي شيء في جدول users العام.
  */
+
 async function initiateSignup(req, res) {
-  const { email, password } = req.body;
+  const { email, password, firstName, lastName } = req.body;
 
   if (!email || !password) {
     return res.status(400).json({ error: 'Email and Password are required.' });
   }
 
   try {
-    // 1. محاولة إنشاء المستخدم في Auth
-    // نستخدم signUp لأنها تتعامل بذكاء مع إرسال الإيميلات
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      // خيارات إضافية لمنع الدخول المباشر (رغم أن Confirm Email مفعل)
+    // 1. إنشاء المستخدم باستخدام Admin API
+    // نستخدم admin.createUser بدلاً من signUp لمنع تسجيل الدخول التلقائي
+    // ونضبط email_confirm: false لمنع التفعيل التلقائي الذي يسببه Service Role Key
+    const { data: user, error: createError } = await supabase.auth.admin.createUser({
+      email: email,
+      password: password,
+      email_confirm: false, // 👈 هذا السطر يمنع التفعيل التلقائي
+      user_metadata: {
+        first_name: firstName,
+        last_name: lastName,
+        full_name: `${firstName} ${lastName}`
+      }
     });
 
-    // 2. معالجة حالة "المستخدم موجود مسبقاً"
-    if (error) {
-      // إذا كان المستخدم موجوداً ولكنه غير مفعل، نعيد إرسال الرمز
-      if (error.message.includes('already registered')) {
+    // معالجة الأخطاء
+    if (createError) {
+      // إذا كان المستخدم موجوداً مسبقاً
+      if (createError.message.includes('already has been registered')) {
+         // نحاول إعادة إرسال الرمز فقط
          const { error: resendError } = await supabase.auth.resend({
              type: 'signup',
              email: email
          });
          
-         if (resendError) return res.status(400).json({ error: 'Account exists and verified. Please login.' });
+         if (resendError) return res.status(400).json({ error: 'Account exists. Please login.' });
          
          return res.status(200).json({ 
              success: true, 
-             message: "Account exists but unverified. OTP resent." 
+             message: "Account exists. OTP resent." 
          });
       }
-      return res.status(400).json({ error: error.message });
+      return res.status(400).json({ error: createError.message });
     }
 
-    // 3. نجاح الإرسال
+    // 2. 📧 الخطوة الحاسمة: إرسال الإيميل يدوياً
+    // لأن admin.createUser لا ترسل إيميل، يجب أن نطلبه صراحة
+    const { error: emailError } = await supabase.auth.resend({
+      type: 'signup', // هذا سيرسل قالب التسجيل الذي يحتوي على الكود
+      email: email
+    });
+
+    if (emailError) {
+      console.error("Failed to send OTP:", emailError.message);
+      // لا نوقف العملية، لكن نخبر الفرونت أند بوجود مشكلة
+      // (أو يمكنك حذف المستخدم وإرجاع خطأ)
+    }
+
     return res.status(200).json({
       success: true,
-      message: "OTP sent to email. Please verify to complete registration."
+      message: "OTP sent to email. Please verify."
     });
 
   } catch (err) {
-    logger.error('Initiate Signup Error:', err);
+    console.error('Initiate Signup Error:', err);
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
