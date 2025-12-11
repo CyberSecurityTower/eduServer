@@ -376,7 +376,7 @@ async function deleteAccount(req, res) {
 }
 
 /**
- * دالة جديدة: التحقق من كود الإيميل (Signup OTP)
+ * ✅ التحقق من كود التفعيل (Signup OTP)
  */
 async function verifyEmailOtp(req, res) {
   const { email, token, client_telemetry } = req.body;
@@ -386,39 +386,78 @@ async function verifyEmailOtp(req, res) {
   }
 
   try {
-    // 1. التحقق من الرمز عبر Supabase
-    // type: 'signup' مهم جداً هنا لأننا نتحقق من تسجيل جديد
+    // 1. التحقق عبر Supabase
+    // type: 'signup' ضروري هنا لتفعيل الحساب الجديد
     const { data, error } = await supabase.auth.verifyOtp({
       email,
       token,
-      type: 'signup' // 👈 هذا يخبر سوبابيز أننا نفعّل حساباً جديداً
+      type: 'signup'
     });
 
     if (error) {
-      return res.status(400).json({ error: 'Invalid or expired OTP.' });
+      return res.status(400).json({ error: error.message });
     }
 
-    // 2. إذا نجح التحقق، سوبابيز سيرجع لنا Session (Token)
-    // هذا يعني أن المستخدم أصبح "مؤكداً" ومسجل دخول
+    // 2. الحصول على الجلسة (الآن أصبح لدينا Session لأن الحساب تفعل)
     const session = data.session;
     const userId = data.user?.id;
 
-    // 3. تحديث سجل الدخول (اختياري لكن مفيد)
+    // 3. تحديث وقت آخر ظهور وتيليمتري الجهاز
     if (userId) {
         await supabase.from('users').update({
-            last_active_at: new Date().toISOString()
+            last_active_at: new Date().toISOString(),
+            client_telemetry: client_telemetry || {}
         }).eq('id', userId);
+        
+        // تسجيل دخول ناجح في السجل
+        await supabase.from('login_history').insert({
+            user_id: userId,
+            login_at: new Date().toISOString(),
+            event_type: 'signup_verification_success'
+        });
     }
 
     return res.status(200).json({
       success: true,
       message: 'Email verified successfully!',
-      session: session, // 👈 هذا التوكن الذي سيحفظه التطبيق للدخول
+      session: session, // 👈 الفرونت أند سيحفظ هذا التوكن
       user: data.user
     });
 
   } catch (err) {
-    console.error('Verify Signup OTP Error:', err);
+    logger.error('Verify Signup OTP Error:', err);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+}
+
+/**
+ * ✅ إعادة إرسال كود التفعيل (Resend OTP)
+ */
+async function resendSignupOtp(req, res) {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required.' });
+  }
+
+  try {
+    const { error } = await supabase.auth.resend({
+      type: 'signup',
+      email: email
+    });
+
+    if (error) {
+      // أحياناً Supabase يرفض الإرسال إذا كان الوقت قصيراً جداً بين المحاولات
+      return res.status(400).json({ error: error.message });
+    }
+
+    return res.status(200).json({ 
+        success: true, 
+        message: "OTP has been resent to your email." 
+    });
+
+  } catch (err) {
+    logger.error('Resend OTP Error:', err);
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
@@ -429,5 +468,6 @@ module.exports = {
   verifyOtp,      // (نسيت كلمة المرور - الخطوة 2)
   resetPassword ,  // (نسيت كلمة المرور - الخطوة 3)
   deleteAccount ,
-  verifyEmailOtp
+  verifyEmailOtp,
+  resendSignupOtp
 };
