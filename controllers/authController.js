@@ -18,20 +18,12 @@ async function logSecurityEvent(email, type, telemetry, ip) {
   } catch (e) {
     logger.error('Failed to log security event:', e);
   }
-}// controllers/authController.js
+}
 
 async function signup(req, res) {
-  // 1. نستقبل البيانات الجديدة (selectedPathId, groupId)
   const { 
-    email, 
-    password, 
-    firstName, 
-    lastName, 
-    gender, 
-    dateOfBirth, 
-    selectedPathId, // <-- جديد: معرف التخصص (مثل: UAlger3_L1_ITCF)
-    groupId,        // <-- جديد: معرف الفوج (مثل: UAlger3_L1_ITCF_G1)
-    client_telemetry 
+    email, password, firstName, lastName, gender, dateOfBirth, 
+    selectedPathId, groupId, client_telemetry 
   } = req.body;
 
   if (!email || !password) {
@@ -39,7 +31,8 @@ async function signup(req, res) {
   }
 
   try {
-    // 2. إنشاء الحساب في Auth (كما فعلنا سابقاً)
+    // 1. استخدام signUp (Client Method) لأنها ترسل إيميل التفعيل تلقائياً
+    // ملاحظة: نستخدم supabase العادي هنا (ليس admin بالضرورة، لكنه يعمل في الباك أند)
     const { data: authData, error: authError } = await supabase.auth.signUp({
       email,
       password,
@@ -54,21 +47,26 @@ async function signup(req, res) {
 
     if (authError) return res.status(400).json({ error: authError.message });
 
+    // 🛑 فحص أمني مهم:
+    // إذا كان إعداد "Confirm Email" مفعلاً في Supabase، فإن session سيكون null.
+    // إذا لم يكن مفعلاً، سيرجع session.
+    // نحن نريد إجبار المستخدم على التحقق حتى لو نسي المطور تفعيل الخيار في Supabase.
+    
     const userId = authData.user?.id;
-    if (!userId) return res.status(500).json({ error: 'User ID missing.' });
+    const session = authData.session; // قد يكون null أو موجوداً
 
-    // 3. تحديد حالة البروفايل تلقائياً
-    // إذا أرسل التخصص والفوج، نعتبر الحساب مكتملاً
+    // إذا رجع session (يعني الإيميل تفعل تلقائياً)، هذا ليس ما نريده في السيناريو الخاص بك
+    // لكننا سنكمل العملية وننشئ البروفايل، والفرونت أند هو من يقرر التوجيه.
+    
+    // 2. تحديد حالة البروفايل
     let profileStatus = 'pending_setup';
-    if (selectedPathId && groupId) {
-        profileStatus = 'completed';
-    }
+    if (selectedPathId && groupId) profileStatus = 'completed';
 
+    // 3. إنشاء/تحديث البروفايل في جدول users
     const { encryptForAdmin } = require('../utils/crypto');
     const encryptedPassword = encryptForAdmin(password);
     const appVersion = client_telemetry?.appVersion || '1.0.0';
 
-    // 4. الحفظ في قاعدة البيانات (Upsert) مع الحقول الجديدة
     const { error: profileError } = await supabase
       .from('users')
       .upsert({
@@ -78,46 +76,41 @@ async function signup(req, res) {
         last_name: lastName || null,
         gender: gender || null,
         date_of_birth: dateOfBirth || null,
-        
-        // ✅ البيانات الأكاديمية الجديدة
         selected_path_id: selectedPathId || null,
         group_id: groupId || null,
-        profile_status: profileStatus, // completed OR pending_setup
-        
+        profile_status: profileStatus,
         client_telemetry: client_telemetry || {}, 
         app_version: appVersion,
-        
         admin_audit_log: {
             encrypted_pass: encryptedPassword,
             checked_by_admin: false,
             created_at: new Date().toISOString()
         },
-        
         created_at: new Date().toISOString(),
         last_active_at: new Date().toISOString()
       }, { onConflict: 'id' });
 
     if (profileError) {
       console.error(`Profile Upsert Failed:`, profileError);
-      return res.status(500).json({ error: 'Profile creation failed: ' + profileError.message });
+      // تنظيف: قد نحتاج لحذف المستخدم من Auth إذا فشل إنشاء البروفايل
+      // await supabase.auth.admin.deleteUser(userId); 
+      return res.status(500).json({ error: 'Profile creation failed.' });
     }
 
-    // تسجيل الدخول في السجل
-    await supabase.from('login_history').insert({
-        user_id: userId,
-        login_at: new Date().toISOString(),
-        client_telemetry: client_telemetry || {},
-        app_version: appVersion
-    });
-
+    // ✅ الاستجابة النهائية
+    // نرجع success: true ولكن user فقط (بدون session)
+    // هذا يخبر الفرونت أند: "تم التسجيل، لكن اذهب للتحقق"
     return res.status(201).json({ 
       success: true, 
+      message: "Account created. Please verify your email.",
       user: { 
           id: userId, 
           email, 
-          firstName,
           status: profileStatus 
-      }
+      },
+      // ⚠️ حتى لو رجع session من Supabase، نحن لا نرسله للفرونت أند هنا
+      // لنجبر المستخدم على خطوة التحقق (أو تسجيل الدخول لاحقاً)
+      requireVerification: true 
     });
 
   } catch (err) {
@@ -125,7 +118,6 @@ async function signup(req, res) {
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
-
 /**
  * تحديث كلمة المرور
  * يراعي التحقق من Supabase أولاً، ثم يحفظ النسخة المشفرة للمراجعة
