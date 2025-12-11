@@ -15,16 +15,20 @@ const logSessionStart = require('../controllers/analyticsController');
 // Health Check
 router.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));
 
-// مسار التسجيل الجديد (يستقبل البيانات من التطبيق)
+// 1. التسجيل (ينشئ الحساب ويرسل الكود، لكن لا يرجع Session)
 router.post('/auth/signup', authController.signup);
+
+// 2. التحقق من الكود (يفعل الحساب ويرجع Session)
+router.post('/auth/verify-signup-otp', authController.verifyEmailOtp);
+
+// 3. إعادة إرسال الكود (في حال لم يصل)
+router.post('/auth/resend-signup-otp', authController.resendSignupOtp);
 // مسار الأدمين السري (لكشف الباسورد)
 router.post('/admin/reveal-password', adminController.revealUserPassword);
 
 // 🔒 هذا المسار محمي : يجب إرسال Token صالح
 router.post('/auth/update-password', requireAuth, authController.updatePassword);
 
-// التسجيل لا يحتاج حماية (لأنه مستخدم جديد)
-router.post('/auth/signup', authController.signup);
 
 // مسارات استعادة كلمة المرور (Forgot Password Flow)
 router.post('/auth/forgot-password', authController.forgotPassword);
