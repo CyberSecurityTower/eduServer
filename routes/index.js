@@ -9,7 +9,6 @@ const authController = require('../controllers/authController');
 const requireAuth = require('../middleware/authMiddleware');
 const analyticsController = require('../controllers/analyticsController');
 const chatController = require('../controllers/chatController');
-const analyticsController = require('../controllers/analyticsController');
 const adminController = require('../controllers/adminController');
 const logSessionStart = require('../controllers/analyticsController');
 // Health Check
