@@ -580,29 +580,40 @@ const NOTIF_TYPES = {
   ALERT: 'alert',
   CHAT: 'chat'
 };
-
 async function sendUserNotification(userId, notification, cachedToken = null) {
   try {
     const type = notification.type || NOTIF_TYPES.SYSTEM;
     const meta = notification.meta || {};
+    const sentAt = new Date().toISOString(); // 🕒 وقت الإرسال الدقيق
 
-    // 1. الحفظ في صندوق الوارد (Inbox) - هذا يحدث دائماً لكي يرى المستخدم الإشعار داخل التطبيق
-    await supabase.from('user_notifications').insert({
-        user_id: userId,
-        box_type: 'inbox',
-        title: notification.title,
-        message: notification.message,
-        type: type,
-        target_id: meta.targetId || null,
-        read: false,
-        created_at: nowISO(),
-        meta: meta
-    });
+    // 1. الحفظ في صندوق الوارد (Inbox) + استرجاع الـ ID
+    // أضفنا .select().single() لنحصل على الـ ID الذي تم إنشاؤه
+    const { data: insertedData, error: insertError } = await supabase
+        .from('user_notifications')
+        .insert({
+            user_id: userId,
+            box_type: 'inbox',
+            title: notification.title,
+            message: notification.message,
+            type: type,
+            target_id: meta.targetId || null,
+            read: false,
+            created_at: sentAt,
+            meta: meta
+        })
+        .select('id') // 👈 مهم جداً: نطلب إرجاع الـ ID
+        .single();
+
+    if (insertError) {
+        logger.error(`[Notification] DB Insert Error: ${insertError.message}`);
+    }
+
+    // هذا هو الـ ID الذي سنرسله مع الإشعار لربط الأحداث ببعضها
+    // إذا فشل الحفظ في القاعدة، نولد ID مؤقت لكي لا يتوقف الإرسال
+    const notificationId = insertedData?.id || crypto.randomUUID();
 
     // 2. التحقق من التوكن (Push Notification)
     let pushToken = cachedToken;
-
-    // إذا لم يتم تمرير التوكن، نحاول جلبه من القاعدة (كخطة بديلة)
     if (!pushToken) {
         const { data: user } = await supabase
             .from('users')
@@ -612,13 +623,23 @@ async function sendUserNotification(userId, notification, cachedToken = null) {
         pushToken = user?.fcm_token;
     }
 
-    // 🛑 نقطة التفتيش: إذا لم يوجد توكن، نتوقف هنا ولا نرسل للـ Expo
     if (!pushToken || !pushToken.startsWith('ExponentPushToken')) {
-        // logger.warn(`[Notification] Skipped Push for ${userId}: No valid token.`);
         return; 
     }
 
-    // 3. الإرسال الفعلي عبر Expo
+    // 3. تحديد الشاشة المستهدفة (Routing Logic)
+    // إذا لم يتم تحديد شاشة في الـ meta، نحددها بناءً على النوع
+    let targetScreen = meta.targetScreen;
+    if (!targetScreen) {
+        switch (type) {
+            case 'new_lesson': targetScreen = '/(tabs)/curriculum'; break;
+            case 'quiz_reminder': targetScreen = '/(tabs)/quiz'; break;
+            case 'chat': targetScreen = '/(tabs)/chat'; break;
+            default: targetScreen = '/(tabs)/home';
+        }
+    }
+
+    // 4. الإرسال الفعلي عبر Expo (مع الـ Payload الذكي)
     const message = {
       to: pushToken,
       sound: 'default',
@@ -626,10 +647,18 @@ async function sendUserNotification(userId, notification, cachedToken = null) {
       body: notification.message,
       priority: 'high',
       data: {
+        // 👇 البيانات الأساسية للتحليلات
+        notificationId: notificationId, // الـ ID من الداتابيز
+        campaignId: meta.campaignId || null, // إذا كان جزءاً من حملة
+        sentAt: sentAt, // 🕒 وقت خروج الإشعار من السيرفر
+        
+        // 👇 بيانات التوجيه (Navigation)
         type: type, 
+        targetScreen: targetScreen,
         targetId: meta.targetId,
         subjectId: meta.subjectId,
-        actionId: meta.actionId || crypto.randomUUID(),
+        
+        // 👇 دمج أي بيانات إضافية
         ...meta
       }
     };
@@ -643,6 +672,8 @@ async function sendUserNotification(userId, notification, cachedToken = null) {
       },
       body: JSON.stringify([message]),
     });
+
+    // logger.info(`🚀 Push sent to ${userId} (ID: ${notificationId})`);
 
   } catch (error) {
     logger.error(`[Notification] Error for ${userId}:`, error.message);
