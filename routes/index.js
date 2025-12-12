@@ -26,6 +26,8 @@ router.post('/auth/complete-signup', authController.completeSignup);
 // 3. إعادة إرسال الرمز (اختياري)
 router.post('/auth/resend-signup-otp', authController.resendSignupOtp);
 
+router.get('/admin/users', adminController.getAllUsers);
+
 // --- باقي المسارات القديمة  ---
 router.post('/auth/update-password', requireAuth, authController.updatePassword);
 router.post('/auth/forgot-password', authController.forgotPassword);
