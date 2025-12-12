@@ -660,6 +660,25 @@ async function toggleSystemFeature(req, res) {
       res.status(500).json({ error: e.message });
   }
 }
+async function getAllUsers(req, res) {
+  if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized' });
+  }
+  
+  try {
+    // نجلب أهم البيانات فقط للقائمة
+    const { data: users, error } = await supabase
+      .from('users')
+      .select('id, first_name, last_name, email, role, last_active_at, created_at, group_id')
+      .order('last_active_at', { ascending: false }) // النشطون أولاً
+      .limit(50); // نجلب آخر 50 لكي لا يثقل التطبيق
+
+    if (error) throw error;
+    res.json(users);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+}
 module.exports = {
   initAdminController,
   indexSpecificLesson,
@@ -678,5 +697,6 @@ module.exports = {
   getDashboardStats,
   activateLaunchKeys,
   revealUserPassword,
-  toggleSystemFeature
+  toggleSystemFeature,
+  getAllUsers 
 };
