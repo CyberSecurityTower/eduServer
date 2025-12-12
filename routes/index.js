@@ -7,14 +7,15 @@ const router = express.Router();
 const tasksController = require('../controllers/tasksController'); 
 const authController = require('../controllers/authController'); 
 const requireAuth = require('../middleware/authMiddleware');
-
+const analyticsController = require('../controllers/analyticsController');
 const chatController = require('../controllers/chatController');
 const analyticsController = require('../controllers/analyticsController');
 const adminController = require('../controllers/adminController');
 const logSessionStart = require('../controllers/analyticsController');
 // Health Check
 router.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));
-
+// ✅ Endpoint جديد لتتبع الإشعارات
+router.post('/analytics/notification-event', requireAuth, analyticsController.trackNotificationInteraction);
 
 // ✅ مسار تتبع الحملات الإعلانية (محمي بالتوكن)
 router.post('/analytics/campaign', requireAuth, analyticsController.trackCampaignEvent);
