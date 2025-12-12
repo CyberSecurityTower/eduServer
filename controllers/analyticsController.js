@@ -256,37 +256,38 @@ async function ingestTelemetryBatch(req, res) {
  * ✅ تتبع حملات الإعلانات (Campaign Analytics)
  * يستقبل البيانات من التطبيق ويرسلها لدالة SQL RPC
  */
+
 async function trackCampaignEvent(req, res) {
   const { campaignId, eventType, pageIndex, duration, metadata } = req.body;
-  
-  // نأخذ معرف المستخدم من التوكن (لأن المسار محمي بـ requireAuth)
   const userId = req.user?.id; 
+
+  // طباعة البيانات الواصلة للتأكد (Debug)
+  // console.log('📥 Campaign Event Received:', { userId, campaignId, eventType });
 
   if (!campaignId || !userId) {
     return res.status(400).json({ error: 'Missing campaignId or userId' });
   }
 
   try {
-    // استدعاء الدالة التي أنشأناها في Supabase SQL
     const { error } = await supabase.rpc('track_campaign_event', {
       p_user_id: userId,
-      p_campaign_id: campaignId,
-      p_event_type: eventType,
-      p_page_index: pageIndex || 0,
-      p_duration: duration || 0,
+      p_campaign_id: String(campaignId), // نضمن تحويله لنص
+      p_event_type: eventType || 'unknown',
+      p_page_index: Number(pageIndex) || 0,
+      p_duration: Number(duration) || 0,
       p_meta: metadata || {}
     });
 
     if (error) {
-      logger.error('Campaign RPC Error:', error.message);
-      return res.status(500).json({ error: 'Failed to track event' });
+      // 🔥 هذا هو السطر المهم: سيطبع سبب الخطأ الحقيقي في التيرمينال
+      logger.error('❌ Supabase RPC Error:', error.message, error.details, error.hint);
+      return res.status(500).json({ error: 'Failed to track event: ' + error.message });
     }
 
-    // رد سريع للفرونت أند
     return res.status(200).json({ success: true });
 
   } catch (err) {
-    logger.error('Track Campaign Critical Error:', err.message);
+    logger.error('❌ Track Campaign Critical Error:', err.message);
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
