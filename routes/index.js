@@ -14,9 +14,8 @@ const adminController = require('../controllers/adminController');
 const logSessionStart = require('../controllers/analyticsController');
 // Health Check
 router.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));
-// ✅ Endpoint جديد لتتبع الإشعارات
-router.post('/analytics/notification-event', requireAuth, analyticsController.trackNotificationInteraction);
-
+// ✅ Endpoint تتبع الإشعارات الذكي
+router.post('/analytics/notification-event', requireAuth, analyticsController.trackNotificationEvent);
 // ✅ مسار تتبع الحملات الإعلانية (محمي بالتوكن)
 router.post('/analytics/campaign', requireAuth, analyticsController.trackCampaignEvent);
 // 1. المرحلة الأولى: إرسال البيانات واستلام الرمز
