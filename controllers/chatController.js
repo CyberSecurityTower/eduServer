@@ -19,6 +19,7 @@ const { runCurriculumAgent } = require('../services/ai/managers/curriculumManage
 const { runSuggestionManager } = require('../services/ai/managers/suggestionManager');
 const { explainLessonContent } = require('../services/engines/ghostTeacher');
 const { getNexusMemory, updateNexusKnowledge } = require('../services/ai/eduNexus');
+const { getSystemFeatureFlag } = require('../services/data/helpers'); 
 
 // Utilities
 const { toCamelCase, nowISO } = require('../services/data/dbUtils');
@@ -219,7 +220,9 @@ async function chatInteractive(req, res) {
       weaknessesRaw,
       formattedProgress,
       userTasksRes,
-      progressData // ✅ Now we have progress data available for streaks
+      progressData,
+      isTableEnabled, 
+      isChartEnabled  
     ] = await Promise.all([
       getProfile(userId).catch(() => ({})),
       runMemoryAgent(userId, message).catch(() => ''),
@@ -227,9 +230,15 @@ async function chatInteractive(req, res) {
       fetchUserWeaknesses(userId).catch(() => []),
       formatProgressForAI(userId).catch(() => ''),
       supabase.from('user_tasks').select('*').eq('user_id', userId).eq('status', 'pending'),
-      getProgress(userId) 
+      getProgress(userId),
+      getSystemFeatureFlag('feature_genui_table'),
+      getSystemFeatureFlag('feature_genui_chart')
     ]);
-
+     // تجميع الميزات في كائن واحد
+    const enabledFeatures = {
+        table: isTableEnabled,
+        chart: isChartEnabled
+    };
     // Schedule Status
     let scheduleStatus = null;
     let scheduleContextString = "";
@@ -504,7 +513,8 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
       sharedContext,
       updatedContextForPrompt,
       gravityContext,
-      absenceContext
+      absenceContext,
+      enabledFeatures
     );
 
     const modelResp = await generateWithFailoverRef('chat', finalPrompt, { label: 'MasterChat', timeoutMs: CONFIG.TIMEOUTS.chat });
