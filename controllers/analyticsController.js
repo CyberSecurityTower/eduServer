@@ -252,7 +252,7 @@ async function ingestTelemetryBatch(req, res) {
     logger.error('Telemetry Engine Critical Error:', err.message);
   }
 }
-**
+/*
  * ✅ تتبع حملات الإعلانات (Campaign Analytics)
  * يستقبل البيانات من التطبيق ويرسلها لدالة SQL RPC
  */
