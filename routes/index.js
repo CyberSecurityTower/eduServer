@@ -6,7 +6,7 @@ const express = require('express');
 const router = express.Router();
 const tasksController = require('../controllers/tasksController'); 
 const authController = require('../controllers/authController'); 
-const requireAuth = require('../middleware/authMiddleware');
+const requireAdmin = require('../middleware/requireAdmin');
 const analyticsController = require('../controllers/analyticsController');
 const chatController = require('../controllers/chatController');
 const adminController = require('../controllers/adminController');
@@ -14,9 +14,9 @@ const logSessionStart = require('../controllers/analyticsController');
 // Health Check
 router.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));
 // ✅ Endpoint تتبع الإشعارات الذكي
-router.post('/analytics/notification-event', requireAuth, analyticsController.trackNotificationEvent);
+router.post('/analytics/notification-event', requireAdmin, analyticsController.trackNotificationEvent);
 // ✅ مسار تتبع الحملات الإعلانية (محمي بالتوكن)
-router.post('/analytics/campaign', requireAuth, analyticsController.trackCampaignEvent);
+router.post('/analytics/campaign', requireAdmin, analyticsController.trackCampaignEvent);
 // 1. المرحلة الأولى: إرسال البيانات واستلام الرمز
 router.post('/auth/initiate-signup', authController.initiateSignup);
 
@@ -29,15 +29,15 @@ router.post('/auth/resend-signup-otp', authController.resendSignupOtp);
 router.get('/admin/users', adminController.getAllUsers);
 
 // --- باقي المسارات القديمة  ---
-router.post('/auth/update-password', requireAuth, authController.updatePassword);
+router.post('/auth/update-password', requireAdmin, authController.updatePassword);
 router.post('/auth/forgot-password', authController.forgotPassword);
 router.post('/auth/verify-otp', authController.verifyOtp);
 router.post('/auth/reset-password', authController.resetPassword);
-router.delete('/auth/delete-account', requireAuth, authController.deleteAccount);
+router.delete('/auth/delete-account', requireAdmin, authController.deleteAccount);
 router.post('/admin/toggle-feature', adminController.toggleSystemFeature);
 
 // ✅ مسار التتبع الجديد (يجب أن يكون محمياً)
-router.post('/telemetry/ingest', requireAuth, analyticsController.ingestTelemetryBatch);
+router.post('/telemetry/ingest', requireAdmin, analyticsController.ingestTelemetryBatch);
 // ✅ The Main Brain Route
 router.post('/chat-interactive', chatController.chatInteractive);
 router.post('/admin/run-night-watch', adminController.triggerNightWatch);
