@@ -27,7 +27,7 @@ async function _callModelInstance(unused_instance, prompt, timeoutMs, label) {
     
     let lastError = null;
     let successText = null;
-
+    
     // 2. حلقة المحاولة (The Cascade Loop)
     for (const modelName of MODEL_CASCADE) {
         try {
@@ -57,13 +57,20 @@ async function _callModelInstance(unused_instance, prompt, timeoutMs, label) {
 
         } catch (err) {
             lastError = err;
-            // إذا كان الخطأ ليس 429 (مثلاً خطأ في البرومبت)، لا فائدة من تغيير الموديل، نوقف المحاولة
-            if (!err.message.includes('429') && !err.message.includes('Quota')) {
+          
+            // 👇 التعديل هنا: أضفنا التحقق من 503 و Overloaded
+            // إذا كان الخطأ ليس ضغطاً (429/503)، نوقف المحاولة لأنه قد يكون خطأ في الكود
+            const isTransientError = 
+                err.message.includes('429') || 
+                err.message.includes('Quota') || 
+                err.message.includes('503') || 
+                err.message.includes('Overloaded');
+
+            if (!isTransientError) {
                 throw err;
             }
-            // إذا كان 429، نكمل للدورة التالية (الموديل التالي)
-             logger.warn(`⚠️ Model ${modelName} exhausted on key ${keyObj.nickname}. Trying next...`);
-        }
+         logger.warn(`⚠️ Model ${modelName} exhausted/overloaded on key ${keyObj.nickname}. Trying next...`);
+
     }
 
     if (successText) {
