@@ -31,11 +31,6 @@ function initAdminController(dependencies) {
 async function pushDiscoveryMission(req, res) {
   try {
     const { targetUserId, missionContent, isGlobal } = req.body;
-    
-    // Simple protection
-    if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
-        return res.status(401).json({ error: 'Unauthorized' });
-    }
 
     if (isGlobal) {
         // Send to everyone (Heavy operation, use Queue in production)
@@ -397,10 +392,6 @@ async function triggerNightWatch(req, res) {
 
 async function triggerGhostScan(req, res) {
   try {
-    if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
-        return res.status(401).json({ error: 'Unauthorized' });
-    }
-    
     // Fire and Forget
     scanAndFillEmptyLessons();
     
@@ -434,7 +425,6 @@ async function triggerExamCheck(req, res) {
 
 // 1. Keys Dashboard
 async function getKeysStatus(req, res) {
-    if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) return res.status(401).send('Forbidden');
     
     const stats = keyManager.getAllKeysStatus();
     res.json({
@@ -448,7 +438,6 @@ async function getKeysStatus(req, res) {
 
 // 2. Add New Key
 async function addApiKey(req, res) {
-    if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) return res.status(401).send('Forbidden');
     const { key, nickname } = req.body;
     
     const result = await keyManager.addKey(key, nickname || 'Admin_Added');
@@ -457,7 +446,6 @@ async function addApiKey(req, res) {
 
 // 3. Revive Dead Key
 async function reviveApiKey(req, res) {
-    if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) return res.status(401).send('Forbidden');
     const { key } = req.body;
     
     const result = await keyManager.reviveKey(key);
@@ -511,10 +499,7 @@ async function runDailyChronoAnalysis(req, res) {
 }
 
 async function getDashboardStats(req, res) {
-  // حماية المسار
-  if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
-      return res.status(401).json({ error: 'Unauthorized' });
-  }
+ 
 
   try {
     // 1. جلب التكاليف (من الـ Views التي أنشأناها)
@@ -555,10 +540,7 @@ async function getDashboardStats(req, res) {
   }
 }
 async function activateLaunchKeys(req, res) {
-    // حماية
-    if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
-        return res.status(401).json({ error: 'Unauthorized' });
-    }
+   
 
     try {
         // 1. تحديث الحالة في الداتابيز
@@ -582,13 +564,6 @@ async function activateLaunchKeys(req, res) {
 // دالة جديدة: كشف كلمة المرور (لك أنت فقط)
 async function revealUserPassword(req, res) {
   const { targetUserId } = req.body;
-  
-  // 1. الحماية الصارمة: التحقق من مفتاح الأدمين
-  // يجب أن ترسل هذا الهيدر من تطبيق EduAdmin
-  if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
-      logger.warn('Unauthorized attempt to reveal password.');
-      return res.status(401).json({ error: 'Unauthorized: Access Denied.' });
-  }
 
   try {
     // 2. جلب البيانات المشفرة
@@ -630,10 +605,6 @@ async function revealUserPassword(req, res) {
 }
 
 async function toggleSystemFeature(req, res) {
-  // حماية المسار
-  if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
-      return res.status(401).json({ error: 'Unauthorized' });
-  }
 
   const { key, value } = req.body; // value should be boolean or string "true"/"false"
 
@@ -661,9 +632,7 @@ async function toggleSystemFeature(req, res) {
   }
 }
 async function getAllUsers(req, res) {
-  if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
-      return res.status(401).json({ error: 'Unauthorized' });
-  }
+  
   
   try {
     // نجلب أهم البيانات فقط للقائمة
