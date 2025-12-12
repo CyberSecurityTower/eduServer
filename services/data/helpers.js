@@ -1104,6 +1104,13 @@ async function toggleSystemFeature(req, res) {
       res.status(500).json({ error: e.message });
   }
 }
+
+// دالة لمسح الكاش يدوياً عند التحديث من الأدمين
+function clearSystemFeatureCache(key) {
+  settingsCache.del(key);
+  logger.info(`🧹 Cache cleared for setting: ${key}`);
+}
+
 module.exports = {
   initDataHelpers,
   getUserDisplayName,
@@ -1131,6 +1138,7 @@ module.exports = {
   addDiscoveryMission,
   completeDiscoveryMission,
   getSystemFeatureFlag,
-  toggleSystemFeature
+  toggleSystemFeature,
+  clearSystemFeatureCache 
 
 };
