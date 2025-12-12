@@ -372,6 +372,7 @@ module.exports = {
   logSessionStart,
   heartbeat,
   ingestTelemetryBatch,
+  trackNotificationInteraction,
   trackCampaignEvent
    
 };
