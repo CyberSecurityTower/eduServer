@@ -304,7 +304,7 @@ ${widgetsInstructions}
   managers: {
     traffic: (message) => `Analyze: { "language": "Ar/En/Fr", "title": "Short Title", "intent": "study|chat|admin" }. Msg: "${escapeForPrompt(safeSnippet(message, 200))}"`,
     
-    memoryExtractor: (currentFacts, chatHistory) => `
+    memoryExtractor: (currentFacts, chatHistory, activeMissions) => `
    You are the "Memory Architect".
     **Current Facts:** ${JSON.stringify(currentFacts)}
     **Active Missions:** ${JSON.stringify(activeMissions)}
