@@ -187,9 +187,75 @@ async function logSessionStart(req, res) {
     res.status(500).send('Internal Server Error');
   }
 }
+
+/**
+ * 🚀 Telemetry Ingestion Engine
+ * يستقبل حزمة من الأحداث (Batch) ويعالجها بخطين متوازيين.
+ */
+async function ingestTelemetryBatch(req, res) {
+  const start = Date.now();
+  const eventsBatch = req.body; // المصفوفة القادمة من الفرونت أند
+  const userId = req.user?.id; // من التوكن
+
+  // 1. استجابة فورية (Fire & Forget)
+  // لا نترك الفرونت أند ينتظر، نرد بـ OK فوراً
+  res.status(200).json({ success: true, queued: eventsBatch.length });
+
+  // 2. المعالجة في الخلفية
+  if (!Array.isArray(eventsBatch) || eventsBatch.length === 0) return;
+
+  try {
+    // --- أ. تحضير البيانات للخط البارد (Cold Path) ---
+    const rowsToInsert = eventsBatch.map(event => ({
+      user_id: userId,
+      session_id: event.session_id,
+      event_name: event.event_name,
+      client_timestamp: event.timestamp,
+      payload: {
+        context: event.context,
+        data: event.payload,
+        device: event.device_info
+      }
+    }));
+
+    // حفظ البيانات الخام (Bulk Insert)
+    const { error } = await supabase.from('raw_telemetry_logs').insert(rowsToInsert);
+    
+    if (error) {
+        logger.error('Telemetry Insert Error:', error.message);
+        return; // نتوقف هنا إذا فشل الحفظ
+    }
+
+    // --- ب. تحديث العدادات للخط الساخن (Hot Path) ---
+    // نحسب الإحصائيات من الحزمة الحالية فقط
+    let quizCount = 0;
+    let rageTapCount = 0;
+
+    eventsBatch.forEach(e => {
+        if (e.event_name === 'ai_quiz_session_complete') quizCount++;
+        if (e.event_name === 'ux_rage_tap') rageTapCount++;
+    });
+
+    // استدعاء الدالة الذكية (RPC) لتحديث العدادات
+    if (quizCount > 0 || rageTapCount > 0 || rowsToInsert.length > 0) {
+        await supabase.rpc('increment_dashboard_stats', {
+            inc_events: rowsToInsert.length,
+            inc_quizzes: quizCount,
+            inc_rage_taps: rageTapCount
+        });
+    }
+
+    // (اختياري) سجل للأدمن في الكونسول للمراقبة
+    // logger.info(`📊 Telemetry: Processed ${eventsBatch.length} events for ${userId} in ${Date.now() - start}ms`);
+
+  } catch (err) {
+    logger.error('Telemetry Engine Critical Error:', err.message);
+  }
+}
 module.exports = {
   logEvent,
   processSession,
   logSessionStart,
-  heartbeat 
+  heartbeat,
+  ingestTelemetryBatch 
 };
