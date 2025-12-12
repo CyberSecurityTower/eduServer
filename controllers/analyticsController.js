@@ -293,88 +293,79 @@ async function trackCampaignEvent(req, res) {
 }
 
 /**
- * ✅ تسجيل تفاعل الإشعارات (وصول، فتح، زمن الاستجابة)
+ * ✅ تتبع دورة حياة الإشعار (وصول vs فتح)
  */
-async function trackNotificationInteraction(req, res) {
+async function trackNotificationEvent(req, res) {
   const { 
     notificationId, 
+    campaignId, 
     eventType, // 'received' | 'opened'
-    latencyMs, // الزمن بالمللي ثانية (محسوب في الفرونت أند)
-    campaignId 
+    latencyMs 
   } = req.body;
   
-  const userId = req.user?.id;
+  const userId = req.user?.id; // من التوكن
 
   if (!notificationId || !userId) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
 
   try {
-    // 1. تحديث حالة الإشعار في جدول user_notifications
-    // نقوم بتحديث الـ meta لإضافة الـ latency، وإذا كان الحدث 'opened' نجعله مقروءاً
-    
-    // نجهز التحديث
-    const updates = {
-      // دمج الـ latency داخل الـ meta الموجودة دون مسح القديم
-      meta: supabase.rpc('jsonb_set', {
-         // هذه محاكاة، في الكود الفعلي سنقوم بجلب الـ meta وتحديثها أو استخدام SQL مباشر
-         // للتبسيط هنا سنقوم بتحديث الحقول المباشرة
-      }) 
+    // 1. تجهيز بيانات الـ Upsert
+    const updateData = {
+      user_id: userId,
+      notification_id: notificationId,
+      campaign_id: campaignId ? String(campaignId) : null,
+      updated_at: new Date().toISOString()
     };
 
-    // الطريقة الأبسط: جلب الإشعار أولاً ثم تحديثه (لضمان عدم ضياع الـ meta القديمة)
-    const { data: currentNotif } = await supabase
-      .from('user_notifications')
-      .select('meta')
-      .eq('id', notificationId)
-      .single();
+    if (eventType === 'received') {
+      updateData.status = 'received';
+      updateData.received_at = new Date().toISOString();
+      updateData.delivery_latency_ms = latencyMs; // ✅ وقت الشبكة
+    } 
+    else if (eventType === 'opened') {
+      updateData.status = 'opened';
+      updateData.clicked_at = new Date().toISOString();
+      // ملاحظة: لا نحسب reaction_time هنا في الكود، يمكن حسابه لاحقاً في الداشبورد
+      // (clicked_at - received_at)
+    }
 
-    const newMeta = { 
-      ...(currentNotif?.meta || {}), 
-      [`${eventType}_latency`]: latencyMs, // received_latency or opened_latency
-      [`${eventType}_at`]: new Date().toISOString()
-    };
+    // 2. تنفيذ الـ Upsert في جدول التحليلات
+    const { error: analyticsError } = await supabase
+      .from('notification_analytics')
+      .upsert(updateData, { onConflict: 'notification_id' });
 
-    const updatePayload = { meta: newMeta };
-    
-    // إذا تم فتح الإشعار، نضع علامة القراءة
+    if (analyticsError) throw analyticsError;
+
+    // 3. تحديثات إضافية (Side Effects)
     if (eventType === 'opened') {
-        updatePayload.read = true;
+        // أ. نضع علامة "مقرؤ" في صندوق الوارد
+        await supabase
+            .from('user_notifications')
+            .update({ read: true })
+            .eq('id', notificationId);
+
+        // ب. إذا كان إعلاناً، نسجله في Campaign Analytics
+        if (campaignId) {
+            await supabase.rpc('track_campaign_event', {
+                p_user_id: userId,
+                p_campaign_id: String(campaignId),
+                p_event_type: 'notification_opened',
+                p_page_index: 0,
+                p_duration: 0, 
+                p_meta: { notificationId }
+            });
+        }
     }
-
-    await supabase
-      .from('user_notifications')
-      .update(updatePayload)
-      .eq('id', notificationId);
-
-
-    // 2. إذا كان تابعاً لحملة، نسجله في Campaign Analytics
-    if (campaignId) {
-       await supabase.rpc('track_campaign_event', {
-        p_user_id: userId,
-        p_campaign_id: String(campaignId),
-        p_event_type: `notification_${eventType}`, // notification_opened
-        p_page_index: 0,
-        p_duration: latencyMs / 1000, // نحوله لثواني
-        p_meta: { notificationId }
-      });
-    }
-
-    // 3. (اختياري) تسجيل في Raw Telemetry للتحليل الدقيق
-    // هذا مفيد لحساب متوسط سرعة وصول الإشعارات لكل المستخدمين
-    await supabase.from('raw_telemetry_logs').insert({
-        user_id: userId,
-        event_name: `notification_${eventType}`,
-        payload: { notificationId, latencyMs, campaignId }
-    });
 
     return res.status(200).json({ success: true });
 
   } catch (err) {
-    logger.error('Notification Tracking Error:', err.message);
+    logger.error('Notification Event Error:', err.message);
     return res.status(500).json({ error: 'Internal Error' });
   }
 }
+
 module.exports = {
   logEvent,
   processSession,
@@ -382,5 +373,6 @@ module.exports = {
   heartbeat,
   ingestTelemetryBatch,
   trackCampaignEvent,
-  trackNotificationInteraction
+  trackNotificationInteraction,
+  trackNotificationEvent 
 };
