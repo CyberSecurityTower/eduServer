@@ -528,22 +528,54 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
     // ---------------------------------------------------------
 
     // Handle Lesson Completion
-    if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'complete') {
-      const signal = parsedResponse.lesson_signal;
+if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'complete') {
+  const signal = parsedResponse.lesson_signal;
 
-      await markLessonComplete(userId, signal.id, signal.score || 100);
-      const newDbTasks = await refreshUserTasks(userId);
+  // 1. تسجيل الإكمال
+  await markLessonComplete(userId, signal.id, signal.score || 100);
+  
+  // 2. تحديث المهام
+  const newDbTasks = await refreshUserTasks(userId);
 
-      const validNextTasks = (newDbTasks || []).filter(t => t.meta?.relatedLessonId !== signal.id);
-      const nextTask = validNextTasks.length > 0 ? validNextTasks[0] : null;
+  // 3. 🔥 المنطق الجديد: تحديد الدرس القادم (Sticky Subject Logic) 🔥
+  
+  // أ. معرفة مادة الدرس الذي أنهاه للتو
+  let currentSubjectId = null;
+  // نحاول جلبه من البيانات المحملة مسبقاً
+  if (currentContext?.lessonId === signal.id && typeof lessonData !== 'undefined') {
+      currentSubjectId = lessonData.subject_id;
+  } else {
+      // جلب سريع احتياطي
+      const { data: l } = await supabase.from('lessons').select('subject_id').eq('id', signal.id).single();
+      currentSubjectId = l?.subject_id;
+  }
 
-      const algiersTime = getAlgiersTimeContext(); 
-      const currentHour = algiersTime.hour;
-      const isLateNight = currentHour >= 22 || currentHour < 5; 
-      const isExamEmergency = gravityContext?.isExam; 
+  // ب. تصفية المهام القادمة
+  const validNextTasks = (newDbTasks || []).filter(t => t.meta?.relatedLessonId !== signal.id);
+  
+  let nextTask = null;
+  let transitionReason = "";
 
-      let recommendationText = "";
+  // ج. البحث عن درس في "نفس المادة" أولاً (Priority 1)
+  const sameSubjectTask = validNextTasks.find(t => t.meta?.relatedSubjectId === currentSubjectId);
 
+  if (sameSubjectTask) {
+      // ✅ وجدنا درساً في نفس المادة
+      nextTask = sameSubjectTask;
+      transitionReason = "same_subject"; 
+  } else {
+      // ❌ لا يوجد، ننتقل لأهم مهمة عامة (Priority 2)
+      nextTask = validNextTasks.length > 0 ? validNextTasks[0] : null;
+      transitionReason = "global_priority";
+  }
+
+  // 4. صياغة الرد بناءً على السياق
+  const algiersTime = getAlgiersTimeContext(); 
+  const currentHour = algiersTime.hour;
+  const isLateNight = currentHour >= 22 || currentHour < 5; 
+  const isExamEmergency = gravityContext?.isExam; 
+
+  let recommendationText = "";
       if (isExamEmergency && isLateNight) {
         recommendationText = `\n\n🛑 **حبس هنا!** غدوة عندك امتحان والوقت راه روطار. **روح ترقد دوكا** باش مخك يثبت المعلومات. تصبح على خير! 😴`;
 
@@ -553,17 +585,23 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
           data: { label: 'إغلاق التطبيق والنوم 🌙', action: 'close_app' }
         });
       }
-      else if (nextTask) {
-        recommendationText = `\n\n💡 **الخطوة التالية:** ${nextTask.title}`;
-        parsedResponse.widgets = parsedResponse.widgets || [];
-        parsedResponse.widgets.push({
-          type: 'action_button',
-          data: { label: `ابدأ: ${nextTask.title}`, action: 'navigate', targetId: nextTask.meta?.relatedLessonId }
-        });
-      }
-      else {
-        recommendationText = `\n\n🎉 كملت كلش لليوم! ارتاح.`;
-      }
+     else if (nextTask) {
+    // تخصيص الرسالة
+    if (transitionReason === "same_subject") {
+        recommendationText = `\n\n🔗 **بما أننا في نفس السياق، نكملو:** ${nextTask.title}`;
+    } else {
+        recommendationText = `\n\n💡 **كملنا هاد المادة! الخطوة التالية:** ${nextTask.title}`;
+    }
+
+    parsedResponse.widgets = parsedResponse.widgets || [];
+    parsedResponse.widgets.push({
+      type: 'action_button',
+      data: { label: `ابدأ: ${nextTask.title}`, action: 'navigate', targetId: nextTask.meta?.relatedLessonId }
+    });
+  }
+  else {
+    recommendationText = `\n\n🎉 كملت كلش لليوم! ارتاح.`;
+  }
 
       parsedResponse.widgets = parsedResponse.widgets || [];
       parsedResponse.widgets.push({ type: 'event_trigger', data: { event: 'tasks_updated' } });
