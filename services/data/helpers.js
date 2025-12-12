@@ -1077,7 +1077,33 @@ async function getSystemFeatureFlag(key) {
     return false; // الافتراضي معطل في حال الخطأ
   }
 }
+async function toggleSystemFeature(req, res) {
+  // حماية المسار
+  if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized' });
+  }
 
+  const { key, value } = req.body; // value should be boolean or string "true"/"false"
+
+  try {
+      const strValue = String(value); // تحويل لسترينغ للتخزين
+      
+      await supabase
+        .from('system_settings')
+        .update({ value: strValue })
+        .eq('key', key);
+
+      // مسح الكاش لكي يطبق التغيير فوراً
+      // (يتطلب تصدير settingsCache من helpers أو عمل دالة clear)
+      // للتبسيط، سينتظر السيرفر 5 دقائق أو يمكنك إعادة تشغيله، 
+      // أو الأفضل: إضافة دالة clearSettingsCache في helpers واستدعاؤها هنا.
+      
+      res.json({ success: true, message: `Feature ${key} set to ${strValue}` });
+
+  } catch (e) {
+      res.status(500).json({ error: e.message });
+  }
+}
 module.exports = {
   initDataHelpers,
   getUserDisplayName,
@@ -1104,6 +1130,7 @@ module.exports = {
   getRecentPastExams,
   addDiscoveryMission,
   completeDiscoveryMission,
-  getSystemFeatureFlag
+  getSystemFeatureFlag,
+  toggleSystemFeature
 
 };
