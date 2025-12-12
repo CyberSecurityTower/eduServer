@@ -291,11 +291,96 @@ async function trackCampaignEvent(req, res) {
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
+
+/**
+ * ✅ تسجيل تفاعل الإشعارات (وصول، فتح، زمن الاستجابة)
+ */
+async function trackNotificationInteraction(req, res) {
+  const { 
+    notificationId, 
+    eventType, // 'received' | 'opened'
+    latencyMs, // الزمن بالمللي ثانية (محسوب في الفرونت أند)
+    campaignId 
+  } = req.body;
+  
+  const userId = req.user?.id;
+
+  if (!notificationId || !userId) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  try {
+    // 1. تحديث حالة الإشعار في جدول user_notifications
+    // نقوم بتحديث الـ meta لإضافة الـ latency، وإذا كان الحدث 'opened' نجعله مقروءاً
+    
+    // نجهز التحديث
+    const updates = {
+      // دمج الـ latency داخل الـ meta الموجودة دون مسح القديم
+      meta: supabase.rpc('jsonb_set', {
+         // هذه محاكاة، في الكود الفعلي سنقوم بجلب الـ meta وتحديثها أو استخدام SQL مباشر
+         // للتبسيط هنا سنقوم بتحديث الحقول المباشرة
+      }) 
+    };
+
+    // الطريقة الأبسط: جلب الإشعار أولاً ثم تحديثه (لضمان عدم ضياع الـ meta القديمة)
+    const { data: currentNotif } = await supabase
+      .from('user_notifications')
+      .select('meta')
+      .eq('id', notificationId)
+      .single();
+
+    const newMeta = { 
+      ...(currentNotif?.meta || {}), 
+      [`${eventType}_latency`]: latencyMs, // received_latency or opened_latency
+      [`${eventType}_at`]: new Date().toISOString()
+    };
+
+    const updatePayload = { meta: newMeta };
+    
+    // إذا تم فتح الإشعار، نضع علامة القراءة
+    if (eventType === 'opened') {
+        updatePayload.read = true;
+    }
+
+    await supabase
+      .from('user_notifications')
+      .update(updatePayload)
+      .eq('id', notificationId);
+
+
+    // 2. إذا كان تابعاً لحملة، نسجله في Campaign Analytics
+    if (campaignId) {
+       await supabase.rpc('track_campaign_event', {
+        p_user_id: userId,
+        p_campaign_id: String(campaignId),
+        p_event_type: `notification_${eventType}`, // notification_opened
+        p_page_index: 0,
+        p_duration: latencyMs / 1000, // نحوله لثواني
+        p_meta: { notificationId }
+      });
+    }
+
+    // 3. (اختياري) تسجيل في Raw Telemetry للتحليل الدقيق
+    // هذا مفيد لحساب متوسط سرعة وصول الإشعارات لكل المستخدمين
+    await supabase.from('raw_telemetry_logs').insert({
+        user_id: userId,
+        event_name: `notification_${eventType}`,
+        payload: { notificationId, latencyMs, campaignId }
+    });
+
+    return res.status(200).json({ success: true });
+
+  } catch (err) {
+    logger.error('Notification Tracking Error:', err.message);
+    return res.status(500).json({ error: 'Internal Error' });
+  }
+}
 module.exports = {
   logEvent,
   processSession,
   logSessionStart,
   heartbeat,
   ingestTelemetryBatch,
-  trackCampaignEvent 
+  trackCampaignEvent,
+  trackNotificationInteraction
 };
