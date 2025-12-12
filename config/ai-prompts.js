@@ -30,7 +30,8 @@ const PROMPTS = {
       groupContext,             // 12
       currentContext,           // 13
       gravityContext,            // 14
-      absenceContext            
+      absenceContext,            //15
+      enabledFeatures = {}       //16
     ) => {
       const missions = fullUserProfile.aiDiscoveryMissions || [];
 let secretMissionsSection = "";
@@ -174,7 +175,27 @@ If user reports an exam date or confirms a rumor found in "HIVE MIND", trigger m
         ? `🏫 **HIVE MIND (Classroom Intel):**\n${groupContext}\n(Use this to confirm or correct the user.)`
         : "";
       const lastActiveTime = absenceContext || "Unknown"; 
+// 🔥 بناء تعريفات الـ Widgets ديناميكياً 🔥
+      let widgetsInstructions = `
+Supported Widgets Schemas:
+1. **Quiz:** { "type": "quiz", "data": { "questions": [{ "text": "...", "options": ["..."], "correctAnswerText": "...", "explanation": "..." }] } }
+2. **Flashcard:** { "type": "flashcard", "data": { "front": "...", "back": "..." } }
+3. **Summary:** { "type": "summary", "data": { "title": "...", "points": ["..."] } }
+`;
 
+      // إضافة الجدول إذا كان مفعلاً
+      if (enabledFeatures.table) {
+          widgetsInstructions += `
+4. **Table:** { "type": "table", "data": { "title": "...", "headers": ["Col1", "Col2"], "rows": [["Val1", "Val2"]] } }
+   - Use this for comparisons or structured data.`;
+      }
+
+      // إضافة الشارت إذا كان مفعلاً
+      if (enabledFeatures.chart) {
+          widgetsInstructions += `
+5. **Chart:** { "type": "chart", "data": { "title": "...", "data": [{ "label": "...", "value": 10, "color": "#Hex" }] } }
+   - Use this for statistics or numerical distributions.`;
+      }
       // --- F. بناء البرومبت النهائي ---
       // ✅ تم وضع SYSTEM_INSTRUCTION في البداية
       return `
@@ -248,6 +269,30 @@ ${eduNexusProtocolInstructions}
     { "id": "task_id", "action": "snooze|complete", "until": "YYYY-MM-DD (optional)" }
   ],
   "widgets":  [{ "type": "flashcard", "data": { "front": "...", "back": "..." } }],
+  "lesson_signal": null
+}
+
+You must respond with a valid JSON object.
+If you want to show a UI element, add it to the "widgets" array.
+
+Supported Widgets Schemas:
+1. **Quiz:** { "type": "quiz", "data": { "questions": [{ "text": "Question?", "options": ["A", "B"], "correctAnswerText": "A", "explanation": "Why..." }] } }
+2. **Flashcard:** { "type": "flashcard", "data": { "front": "Term", "back": "Definition" } }
+3. **Summary:** { "type": "summary", "data": { "title": "Key Points", "points": ["Point 1", "Point 2"] } }
+${widgetsInstructions}
+**FINAL JSON STRUCTURE:**
+{
+  "reply": "Your conversational response in Algerian Derja...",
+  "newMood": "neutral",
+  "moodReason": "Why mood changed",
+  ${CONFIG.ENABLE_EDUNEXUS ? memoryUpdateJsonField : `"memory_update": null,`}
+  "agenda_actions": [
+    { "id": "task_id", "action": "snooze|complete", "until": "YYYY-MM-DD" }
+  ],
+  "widgets": [
+    // Add widgets here ONLY if necessary. Example:
+    // { "type": "flashcard", "data": { "front": "الخوارزمية", "back": "هي مجموعة خطوات..." } }
+  ],
   "lesson_signal": null
 }`;
     },
