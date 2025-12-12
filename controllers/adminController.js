@@ -500,42 +500,45 @@ async function runDailyChronoAnalysis(req, res) {
 
 async function getDashboardStats(req, res) {
  
-
   try {
-    // 1. جلب التكاليف (من الـ Views التي أنشأناها)
-    const { data: dailyCosts } = await supabase
+    // 1. جلب التكاليف
+    const { data: dailyCosts, error: dailyError } = await supabase
         .from('view_daily_ai_costs')
         .select('*')
-        .limit(7); // آخر 7 أيام
+        .limit(7);
 
-    const { data: monthlyCosts } = await supabase
+    const { data: monthlyCosts, error: monthlyError } = await supabase
         .from('view_monthly_ai_costs')
         .select('*')
-        .limit(1); // الشهر الحالي
+        .limit(1);
 
-    // 2. جلب التنبؤات الصحية (الخوارزمية الذكية)
+    // 2. جلب التنبؤات الصحية
     const healthCheck = await predictSystemHealth();
+
+    // ✅ التصحيح هنا: التحقق من أن البيانات مصفوفة وليست null قبل قراءة [0]
+    const todayCost = (dailyCosts && dailyCosts.length > 0) ? dailyCosts[0].estimated_cost_usd : 0;
+    const monthCost = (monthlyCosts && monthlyCosts.length > 0) ? monthlyCosts[0].estimated_cost_usd : 0;
 
     // 3. تجميع البيانات
     const dashboardData = {
         financials: {
-            today_cost: dailyCosts[0]?.estimated_cost_usd || 0,
-            month_cost: monthlyCosts[0]?.estimated_cost_usd || 0,
-            daily_history: dailyCosts, // للرسم البياني (Chart)
+            today_cost: todayCost || 0,
+            month_cost: monthCost || 0,
+            daily_history: dailyCosts || [], // إرسال مصفوفة فارغة إذا كانت null
             currency: 'USD'
         },
         system_health: healthCheck,
         keys_summary: {
-            total: healthCheck.metrics.activeKeys + healthCheck.metrics.deadKeys,
-            active: healthCheck.metrics.activeKeys,
-            dead: healthCheck.metrics.deadKeys
+            total: (healthCheck.metrics.activeKeys || 0) + (healthCheck.metrics.deadKeys || 0),
+            active: healthCheck.metrics.activeKeys || 0,
+            dead: healthCheck.metrics.deadKeys || 0
         }
     };
 
     res.json(dashboardData);
 
   } catch (err) {
-    console.error(err);
+    console.error("Dashboard Error:", err); // طباعة الخطأ في الكونسول
     res.status(500).json({ error: err.message });
   }
 }
