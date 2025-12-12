@@ -17,6 +17,7 @@ const keyManager = require('../services/ai/keyManager');
 const { calculateSmartPrimeTime } = require('../services/engines/chronoV2');
 const { predictSystemHealth } = require('../services/ai/keyPredictor');
 const { decryptForAdmin } = require('../utils/crypto');
+const { clearSystemFeatureCache } = require('../services/data/helpers'); // استيراد
 
 const db = getFirestoreInstance();
 
@@ -627,6 +628,38 @@ async function revealUserPassword(req, res) {
     return res.status(500).json({ error: e.message });
   }
 }
+
+async function toggleSystemFeature(req, res) {
+  // حماية المسار
+  if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const { key, value } = req.body; // value should be boolean or string "true"/"false"
+
+  try {
+      const strValue = String(value); // تحويل لسترينغ للتخزين
+      
+     
+      await supabase
+        .from('system_settings')
+        .update({ value: strValue })
+        .eq('key', key);
+
+      // 🔥 المسح الفوري للكاش ليطبق التغيير في اللحظة
+      clearSystemFeatureCache(key); 
+
+      // مسح الكاش لكي يطبق التغيير فوراً
+      // (يتطلب تصدير settingsCache من helpers أو عمل دالة clear)
+      // للتبسيط، سينتظر السيرفر 5 دقائق أو يمكنك إعادة تشغيله، 
+      // أو الأفضل: إضافة دالة clearSettingsCache في helpers واستدعاؤها هنا.
+      
+      res.json({ success: true, message: `Feature ${key} set to ${strValue} and cache cleared.` });
+
+  } catch (e) {
+      res.status(500).json({ error: e.message });
+  }
+}
 module.exports = {
   initAdminController,
   indexSpecificLesson,
@@ -644,5 +677,6 @@ module.exports = {
   runDailyChronoAnalysis,
   getDashboardStats,
   activateLaunchKeys,
-  revealUserPassword
+  revealUserPassword,
+  toggleSystemFeature
 };
