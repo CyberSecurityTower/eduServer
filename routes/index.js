@@ -31,6 +31,8 @@ router.post('/auth/forgot-password', authController.forgotPassword);
 router.post('/auth/verify-otp', authController.verifyOtp);
 router.post('/auth/reset-password', authController.resetPassword);
 router.delete('/auth/delete-account', requireAuth, authController.deleteAccount);
+router.post('/admin/toggle-feature', adminController.toggleSystemFeature);
+
 // ✅ The Main Brain Route
 router.post('/chat-interactive', chatController.chatInteractive);
 router.post('/admin/run-night-watch', adminController.triggerNightWatch);
