@@ -33,6 +33,8 @@ router.post('/auth/reset-password', authController.resetPassword);
 router.delete('/auth/delete-account', requireAuth, authController.deleteAccount);
 router.post('/admin/toggle-feature', adminController.toggleSystemFeature);
 
+// ✅ مسار التتبع الجديد (يجب أن يكون محمياً)
+router.post('/telemetry/ingest', requireAuth, analyticsController.ingestTelemetryBatch);
 // ✅ The Main Brain Route
 router.post('/chat-interactive', chatController.chatInteractive);
 router.post('/admin/run-night-watch', adminController.triggerNightWatch);
