@@ -16,6 +16,8 @@ const logSessionStart = require('../controllers/analyticsController');
 router.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));
 
 
+// ✅ مسار تتبع الحملات الإعلانية (محمي بالتوكن)
+router.post('/analytics/campaign', requireAuth, analyticsController.trackCampaignEvent);
 // 1. المرحلة الأولى: إرسال البيانات واستلام الرمز
 router.post('/auth/initiate-signup', authController.initiateSignup);
 
