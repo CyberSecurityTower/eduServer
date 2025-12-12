@@ -1051,6 +1051,32 @@ async function completeDiscoveryMission(userId, missionContentPartial) {
       console.log(`✅ Mission Completed & Removed for ${userId}`);
   }
 }
+// كاش بسيط للإعدادات
+const settingsCache = new LRUCache(20, 1000 * 60 * 60); 
+
+async function getSystemFeatureFlag(key) {
+  // 1. فحص الكاش
+  const cached = settingsCache.get(key);
+  if (cached !== null) return cached;
+
+  try {
+    // 2. جلب من Supabase
+    const { data } = await supabase
+      .from('system_settings')
+      .select('value')
+      .eq('key', key)
+      .single();
+
+    // القيمة تخزن كنص "true"/"false"، نحولها لـ Boolean
+    const isEnabled = data?.value === 'true';
+    
+    // 3. تحديث الكاش
+    settingsCache.set(key, isEnabled);
+    return isEnabled;
+  } catch (e) {
+    return false; // الافتراضي معطل في حال الخطأ
+  }
+}
 
 module.exports = {
   initDataHelpers,
@@ -1076,6 +1102,8 @@ module.exports = {
   getLastActiveSessionContext ,
   getStudentScheduleStatus,
   getRecentPastExams,
-   addDiscoveryMission,
-  completeDiscoveryMission
+  addDiscoveryMission,
+  completeDiscoveryMission,
+  getSystemFeatureFlag
+
 };
