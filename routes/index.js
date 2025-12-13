@@ -1,134 +1,125 @@
-
 // routes/index.js
 'use strict';
 
 const express = require('express');
 const router = express.Router();
+
+// Controllers
 const tasksController = require('../controllers/tasksController'); 
 const authController = require('../controllers/authController'); 
-const requireAdmin = require('../middleware/requireAdmin');
 const analyticsController = require('../controllers/analyticsController');
 const chatController = require('../controllers/chatController');
 const adminController = require('../controllers/adminController');
-const logSessionStart = require('../controllers/analyticsController');
-
-const announcementController = require('../controllers/announcementController'); // ✅ جديد
+const announcementController = require('../controllers/announcementController');
+const quizController = require('../controllers/quizController'); // تأكد من وجود هذا إذا كنت تستخدمه
 
 // Middleware
-const requireAuth = require('../middleware/authMiddleware'); 
+const requireAuth = require('../middleware/authMiddleware'); // للمستخدمين المسجلين
+const requireAdmin = require('../middleware/requireAdmin');  // للأدمن فقط
 
-// Health Check
-router.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));
-// ✅ Endpoint تتبع الإشعارات الذكي
-router.post('/analytics/notification-event', requireAdmin, analyticsController.trackNotificationEvent);
-// ✅ مسار تتبع الحملات الإعلانية (محمي بالتوكن)
-router.post('/analytics/campaign', requireAdmin, analyticsController.trackCampaignEvent);
-// 1. المرحلة الأولى: إرسال البيانات واستلام الرمز
-router.post('/auth/initiate-signup', authController.initiateSignup);
-
-// 2. المرحلة الثانية: إرسال الرمز + البيانات للتفعيل
-router.post('/auth/complete-signup', authController.completeSignup);
-
-// 3. إعادة إرسال الرمز (اختياري)
-router.post('/auth/resend-signup-otp', authController.resendSignupOtp);
-
-router.get('/admin/users', adminController.getAllUsers);
-
-// --- باقي المسارات القديمة  ---
-router.post('/auth/update-password', requireAdmin, authController.updatePassword);
-router.post('/auth/forgot-password', authController.forgotPassword);
-router.post('/auth/verify-otp', authController.verifyOtp);
-router.post('/auth/reset-password', authController.resetPassword);
-router.delete('/auth/delete-account', requireAdmin, authController.deleteAccount);
-router.post('/admin/toggle-feature', adminController.toggleSystemFeature);
-
-// ✅ مسار التتبع الجديد (يجب أن يكون محمياً)
-router.post('/telemetry/ingest', requireAdmin, analyticsController.ingestTelemetryBatch);
-// ✅ The Main Brain Route
-router.post('/chat-interactive', chatController.chatInteractive);
-router.post('/admin/run-night-watch', adminController.triggerNightWatch);
-router.post('/admin/push-mission', adminController.pushDiscoveryMission);
-router.get('/admin/keys', adminController.getKeysStatus);
-router.get('/admin/dashboard-stats', adminController.getDashboardStats);
-router.post('/analytics/heartbeat', analyticsController.heartbeat);
-router.post('/admin/run-chrono-analysis', adminController.runDailyChronoAnalysis);
-router.post('/admin/keys/add', adminController.addApiKey);
-router.post('/admin/keys/revive', adminController.reviveApiKey);
-router.post('/generate-chat-suggestions', chatController.generateChatSuggestions); 
-router.get('/get-daily-tasks', tasksController.getDailyTasks); 
-router.post('/admin/trigger-indexing', adminController.triggerFullIndexing);
-router.post('/log-event', analyticsController.logEvent);
-router.post('/process-session', analyticsController.processSession);
-router.post('/run-nightly-analysis', adminController.runNightlyAnalysis);
-router.post('/admin/index-lesson', adminController.indexSpecificLesson);
-router.post('/admin/check-exams', adminController.triggerExamCheck);
-router.post('/generate-daily-tasks', tasksController.generateDailyTasks);
-router.post('/admin/ghost-scan', adminController.triggerGhostScan);
-// إذا كنت تريد رابطاً لتحديث حالة المهمة (تم الإنجاز)
-router.post('/update-task-status', tasksController.updateDailyTasks); 
-// -------- V2 --------
-
-// --- Public / Health ---
+// --- Health Check ---
 router.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));
 
-// --- Auth Routes ---
+// ==========================================
+// 1. Authentication Routes (المصادقة)
+// ==========================================
+
+// تسجيل الدخول والتسجيل
 router.post('/auth/initiate-signup', authController.initiateSignup);
+router.post('/auth/signup', authController.initiateSignup); // ✅ تم الحل: إضافة رابط للتوافق مع التطبيق
 router.post('/auth/complete-signup', authController.completeSignup);
 router.post('/auth/resend-signup-otp', authController.resendSignupOtp);
+router.post('/auth/verify-signup-otp', authController.verifyEmailOtp);
+
+// استعادة كلمة المرور
 router.post('/auth/forgot-password', authController.forgotPassword);
 router.post('/auth/verify-otp', authController.verifyOtp);
 router.post('/auth/reset-password', authController.resetPassword);
 
-// --- User App Routes ---
+// إدارة الحساب (يحتاج تسجيل دخول requireAuth)
+// 🟠 تم الحل: تغيير الصلاحية من requireAdmin إلى requireAuth ليتمكن المستخدم من تعديل حسابه
+router.post('/auth/update-password', requireAuth, authController.updatePassword);
+router.delete('/auth/delete-account', requireAuth, authController.deleteAccount);
+
+
+// ==========================================
+// 2. User App Features (الميزات الأساسية)
+// ==========================================
+
+// Chat & AI
 router.post('/chat-interactive', chatController.chatInteractive);
 router.post('/generate-chat-suggestions', chatController.generateChatSuggestions); 
+
+// Tasks & Planning
 router.post('/generate-daily-tasks', tasksController.generateDailyTasks);
 router.get('/get-daily-tasks', tasksController.getDailyTasks); 
 router.post('/update-task-status', tasksController.updateDailyTasks); 
-router.post('/log-event', analyticsController.logEvent);
-router.post('/process-session', analyticsController.processSession);
-router.post('/analytics/heartbeat', analyticsController.heartbeat);
 
-// ✅ EduApp Integration (Announcements)
+// Announcements (Public for users)
 router.get('/announcements', announcementController.getAnnouncements);
 router.post('/announcements/:id/view', announcementController.trackView);
 
-// --- Admin Panel Routes (Protected) --- 🛡️
+// Quiz Analysis
+if (quizController && quizController.analyzeQuiz) {
+    router.post('/analyze-quiz', quizController.analyzeQuiz);
+}
 
-// 1. Announcements Tower
+
+// ==========================================
+// 3. Analytics & Telemetry (التحليلات)
+// ==========================================
+
+// 🟠 تم الحل: هذه المسارات كانت تتطلب Admin، الآن تتطلب Auth فقط لتسجيل بيانات المستخدمين
+router.post('/log-event', analyticsController.logEvent); // يمكن تركه عام أو requireAuth حسب الحاجة
+router.post('/process-session', analyticsController.processSession);
+router.post('/analytics/heartbeat', analyticsController.heartbeat);
+router.post('/log-session-start', analyticsController.logSessionStart);
+
+// المسارات التي كانت تسبب خطأ 403 Forbidden
+router.post('/analytics/notification-event', requireAuth, analyticsController.trackNotificationEvent);
+router.post('/analytics/campaign', requireAuth, analyticsController.trackCampaignEvent);
+router.post('/telemetry/ingest', requireAuth, analyticsController.ingestTelemetryBatch);
+
+
+// ==========================================
+// 4. Admin Panel Routes (لوحة التحكم - محمية) 🛡️
+// ==========================================
+
+// Users & Keys
+router.get('/admin/users', requireAdmin, adminController.getAllUsers);
+router.get('/admin/users/search', requireAdmin, adminController.searchUsers);
+router.get('/admin/groups', requireAdmin, adminController.getGroups);
+
+// AI Keys Management
+router.get('/admin/keys', requireAdmin, adminController.getKeysStatus);
+router.post('/admin/keys', requireAdmin, adminController.addApiKey);
+router.post('/admin/keys/revive', requireAdmin, adminController.reviveApiKey);
+router.post('/admin/keys/activate-launch', requireAdmin, adminController.activateLaunchKeys);
+
+// Announcements Management
 router.post('/admin/announcements', requireAdmin, adminController.createAnnouncement);
 router.get('/admin/announcements/history', requireAdmin, adminController.getAnnouncementHistory);
 
-// 2. Monitoring & Stats
+// Monitoring & Stats
 router.get('/admin/stats/activity-chart', requireAdmin, adminController.getActivityChart);
-router.get('/admin/dashboard-stats', requireAdmin, adminController.getDashboardStatsV2); // النسخة المحدثة
+router.get('/admin/dashboard-stats', requireAdmin, adminController.getDashboardStatsV2); // أو getDashboardStats
 
-// 3. AI Keys Management
-router.get('/admin/keys', requireAdmin, adminController.getKeysStatus);
-router.post('/admin/keys', requireAdmin, adminController.addApiKey); // إضافة
-router.post('/admin/keys/revive', requireAdmin, adminController.reviveApiKey);
-
-// 4. Feature Flags (Settings)
+// System Settings & Feature Flags
 router.get('/admin/settings', requireAdmin, adminController.getSystemSettings);
-router.patch('/admin/settings', requireAdmin, adminController.updateSystemSetting);
+router.patch('/admin/settings', requireAdmin, adminController.updateSystemSetting); // أو toggleSystemFeature
+router.post('/admin/toggle-feature', requireAdmin, adminController.toggleSystemFeature);
 
-// 5. Night Watch & Tools
+// Advanced Tools (Jobs & Triggers)
 router.post('/admin/run-night-watch', requireAdmin, adminController.triggerNightWatch);
 router.post('/admin/trigger-indexing', requireAdmin, adminController.triggerFullIndexing);
 router.post('/admin/ghost-scan', requireAdmin, adminController.triggerGhostScan);
 router.post('/admin/check-exams', requireAdmin, adminController.triggerExamCheck);
-router.get('/admin/users', requireAdmin, adminController.getAllUsers);
 router.post('/admin/push-mission', requireAdmin, adminController.pushDiscoveryMission);
+router.post('/admin/index-lesson', requireAdmin, adminController.indexSpecificLesson);
+router.post('/admin/run-chrono-analysis', requireAdmin, adminController.runDailyChronoAnalysis);
+router.post('/admin/reveal-password', requireAdmin, adminController.revealUserPassword);
 
-// --- Analytics (Protected) ---
-router.post('/analytics/notification-event', requireAdmin, analyticsController.trackNotificationEvent);
-router.post('/analytics/campaign', requireAdmin, analyticsController.trackCampaignEvent);
-router.post('/telemetry/ingest', requireAdmin, analyticsController.ingestTelemetryBatch);
-router.post('/log-session-start', analyticsController.logSessionStart);
-
-// ✅ أدوات المساعدة للوحة التحكم (Admin Helpers)
-router.get('/admin/groups', requireAdmin, adminController.getGroups);
-router.get('/admin/users/search', requireAdmin, adminController.searchUsers);
-router.post('/auth/verify-signup-otp', authController.verifyEmailOtp);
+// Cron Job Entry Point (يستخدم Secret Header بدلاً من التوكن)
+router.post('/run-nightly-analysis', adminController.runNightlyAnalysis);
 
 module.exports = router;
