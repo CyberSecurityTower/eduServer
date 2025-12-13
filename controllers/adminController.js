@@ -906,5 +906,6 @@ module.exports = {
   getSystemSettings,
   updateSystemSetting,
   getGroups,    
-  searchUsers  
+  searchUsers,
+  getDashboardStatsV2
 };
