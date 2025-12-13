@@ -124,9 +124,11 @@ router.post('/admin/push-mission', requireAdmin, adminController.pushDiscoveryMi
 router.post('/analytics/notification-event', requireAdmin, analyticsController.trackNotificationEvent);
 router.post('/analytics/campaign', requireAdmin, analyticsController.trackCampaignEvent);
 router.post('/telemetry/ingest', requireAdmin, analyticsController.ingestTelemetryBatch);
+router.post('/log-session-start', analyticsController.logSessionStart);
 
 // ✅ أدوات المساعدة للوحة التحكم (Admin Helpers)
 router.get('/admin/groups', requireAdmin, adminController.getGroups);
 router.get('/admin/users/search', requireAdmin, adminController.searchUsers);
-module.exports = router;
+router.post('/auth/verify-signup-otp', authController.verifyEmailOtp);
+
 module.exports = router;
