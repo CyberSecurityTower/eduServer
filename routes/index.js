@@ -125,5 +125,8 @@ router.post('/analytics/notification-event', requireAdmin, analyticsController.t
 router.post('/analytics/campaign', requireAdmin, analyticsController.trackCampaignEvent);
 router.post('/telemetry/ingest', requireAdmin, analyticsController.ingestTelemetryBatch);
 
+// ✅ أدوات المساعدة للوحة التحكم (Admin Helpers)
+router.get('/admin/groups', requireAdmin, adminController.getGroups);
+router.get('/admin/users/search', requireAdmin, adminController.searchUsers);
 module.exports = router;
 module.exports = router;
