@@ -18,6 +18,7 @@ const { calculateSmartPrimeTime } = require('../services/engines/chronoV2');
 const { predictSystemHealth } = require('../services/ai/keyPredictor');
 const { decryptForAdmin } = require('../utils/crypto');
 const { clearSystemFeatureCache } = require('../services/data/helpers'); // استيراد
+const liveMonitor = require('../services/monitoring/liveStats'); 
 
 const db = getFirestoreInstance();
 
@@ -879,6 +880,22 @@ async function searchUsers(req, res) {
   }
 }
 
+async function getLiveTraffic(req, res) {
+  try {
+    const stats = liveMonitor.getStats();
+    
+    res.json({
+      status: 'success',
+      server_time: new Date().toISOString(),
+      requests_per_minute: stats.rpm,
+      active_users_count: stats.onlineCount,
+      // قائمة المستخدمين المتصلين الآن (مع وقت آخر ظهور بالثواني)
+      active_users_list: stats.onlineList 
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+}
 
 module.exports = {
   initAdminController,
@@ -907,5 +924,6 @@ module.exports = {
   updateSystemSetting,
   getGroups,    
   searchUsers,
-  getDashboardStatsV2
+  getDashboardStatsV2,
+  getLiveTraffic
 };
