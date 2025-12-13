@@ -824,6 +824,49 @@ async function updateSystemSetting(req, res) {
   }
 }
 
+// 1. جلب قائمة الأفواج (للقوائم المنسدلة في الفرونت أند)
+async function getGroups(req, res) {
+  try {
+    const { data, error } = await supabase
+      .from('study_groups')
+      .select('id, name')
+      .order('name', { ascending: true });
+
+    if (error) throw error;
+
+    res.json(data);
+  } catch (e) {
+    logger.error('Get Groups Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+}
+
+// 2. محرك بحث المستخدمين (لإرسال إشعارات محددة أو تعديل بيانات)
+async function searchUsers(req, res) {
+  try {
+    const { q } = req.query; // كلمة البحث
+
+    // إذا كان البحث قصيراً جداً، نرجع مصفوفة فارغة لتخفيف الضغط
+    if (!q || q.length < 2) {
+        return res.json([]);
+    }
+
+    // البحث في الاسم الأول، اللقب، أو الإيميل (case-insensitive)
+    const { data, error } = await supabase
+      .from('users')
+      .select('id, first_name, last_name, email, group_id, role')
+      .or(`first_name.ilike.%${q}%,last_name.ilike.%${q}%,email.ilike.%${q}%`)
+      .limit(20); // نكتفي بـ 20 نتيجة
+
+    if (error) throw error;
+
+    res.json(data);
+  } catch (e) {
+    logger.error('Search Users Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+}
+
 
 module.exports = {
   initAdminController,
@@ -851,4 +894,6 @@ module.exports = {
   getDashboardStatsV2, // استخدم هذه بدلاً من القديمة في الراوتر
   getSystemSettings,
   updateSystemSetting,
+  getGroups,    
+  searchUsers  
 };
