@@ -88,6 +88,8 @@ router.post('/log-session-start', analyticsController.logSessionStart);
 // ==========================================
 // 4. Admin Panel Routes (لوحة التحكم - محمية) 🛡️
 // ==========================================
+//live traffic
+router.get('/admin/live-traffic', requireAdmin, adminController.getLiveTraffic);
 
 // Users & Groups
 router.get('/admin/users', requireAdmin, adminController.getAllUsers);
