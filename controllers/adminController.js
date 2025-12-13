@@ -885,18 +885,19 @@ async function getLiveTraffic(req, res) {
     const stats = liveMonitor.getStats();
     
     res.json({
-      status: 'success',
-      server_time: new Date().toISOString(),
-      requests_per_minute: stats.rpm,
-      active_users_count: stats.onlineCount,
-      // قائمة المستخدمين المتصلين الآن (مع وقت آخر ظهور بالثواني)
-      active_users_list: stats.onlineList 
+      status: 'online',
+      // نعرض "last_minute_rpm" لأنه الرقم المكتمل للدقيقة الماضية (أكثر استقراراً)
+      requests_per_minute: stats.last_minute_rpm > 0 ? stats.last_minute_rpm : stats.live_rpm,
+      live_counter: stats.live_rpm, // العداد اللحظي (يتزايد أمام عينيك)
+      peak_rpm: stats.peak_rpm,
+      active_users: stats.online_count,
+      uptime: stats.uptime,
+      users_details: stats.users_list // القائمة لتعرف من هم مستخدمين
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 }
-
 module.exports = {
   initAdminController,
   indexSpecificLesson,
