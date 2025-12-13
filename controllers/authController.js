@@ -21,76 +21,54 @@ async function logSecurityEvent(email, type, telemetry, ip) {
 }
 
 /**
- * تحديث كلمة المرور
- * يراعي التحقق من Supabase أولاً، ثم يحفظ النسخة المشفرة للمراجعة
+ * تحديث كلمة المرور (من داخل التطبيق - للمستخدم المسجل)
+ * ✅ تم التصحيح: الاعتماد على req.user.id لضمان الأمان
  */
 async function updatePassword(req, res) {
-  const { userId, newPassword, client_telemetry } = req.body;
+  // نأخذ الـ ID من التوكن الموثوق وليس من البودي
+  const userId = req.user?.id; 
+  const { newPassword, client_telemetry } = req.body;
 
-  // 1. التحقق من المدخلات الأساسية
-  if (!userId || !newPassword) {
-    return res.status(400).json({ error: 'User ID and New Password are required.' });
+  if (!userId) {
+    return res.status(401).json({ error: 'Unauthorized: Invalid session.' });
+  }
+
+  if (!newPassword || newPassword.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters.' });
   }
 
   try {
-    // 2. محاولة التحديث في Supabase Auth (التحقق الحقيقي)
-    // ملاحظة: نستخدم admin.auth.updateUser لتجاوز الحاجة لتسجيل الدخول القديم،
-    // لأننا نفترض أن المستخدم مسجل دخول بالفعل في التطبيق ولديه Token صالح،
-    // أو أنك تتحقق من الـ Token في Middleware قبل الوصول لهنا.
-    // لكن للتبسيط والأمان، سنستخدم supabase.auth.admin.updateUserById
-    
-    const { data: authData, error: authError } = await supabase.auth.admin.updateUserById(
+    // 1. التحديث في Supabase Auth
+    const { error: authError } = await supabase.auth.admin.updateUserById(
       userId,
       { password: newPassword }
     );
 
-    // 🛑 إذا رفضت Supabase التحديث (مثلاً باسوورد ضعيف جداً)
     if (authError) {
       logger.warn(`Password Update Failed for ${userId}: ${authError.message}`);
       return res.status(400).json({ error: authError.message });
     }
 
-    // ✅ نجح التحديث! الآن نقوم بالتشفير والحفظ في سجلاتنا
+    // 2. التشفير والحفظ في سجلاتنا (Audit Log)
     const encryptedPassword = encryptForAdmin(newPassword);
     const appVersion = client_telemetry?.appVersion || 'Unknown';
 
-    // 3. تحديث السجل السري (Audit Log) + الحالة الحية
-    const { error: dbError } = await supabase
+    await supabase
       .from('users')
       .update({
-        // تحديث الباسورد المشفر للمراجعة
         admin_audit_log: {
             encrypted_pass: encryptedPassword,
-            checked_by_admin: false, // نعيدها false لأن الباسورد تغير ويحتاج مراجعة جديدة
+            checked_by_admin: false,
             updated_at: new Date().toISOString(),
-            update_reason: 'user_request'
+            update_reason: 'user_request_in_app'
         },
-        
-        // تحديث بيانات الجهاز والنشاط (لأن المستخدم نشط الآن)
         client_telemetry: client_telemetry || {},
         app_version: appVersion,
         last_active_at: new Date().toISOString()
       })
       .eq('id', userId);
 
-    if (dbError) {
-      logger.error(`Failed to update audit log for ${userId}:`, dbError.message);
-      // ملاحظة: الباسورد تغير فعلياً في Auth، لكن فشل حفظه عندنا.
-      // هذا ليس خطأً قاتلاً للمستخدم، لكنه سيمنعك من مراجعته.
-      // سنكمل العملية بنجاح للمستخدم.
-    } else {
-        logger.success(`Password updated & audited for user: ${userId}`);
-    }
-
-    // 4. (اختياري) تسجيل هذا الحدث في login_history كـ "حدث أمني"
-    // لكي تعرف متى غير الباسورد ومن أي جهاز
-    await supabase.from('login_history').insert({
-        user_id: userId,
-        login_at: new Date().toISOString(),
-        client_telemetry: client_telemetry || {},
-        app_version: appVersion,
-        event_type: 'PASSWORD_CHANGE' // ستحتاج لإضافة هذا العمود أو وضعه في metadata
-    });
+    logger.success(`Password updated successfully for user: ${userId}`);
 
     return res.status(200).json({ 
       success: true, 
@@ -231,20 +209,17 @@ async function resetPassword(req, res) {
 
 /**
  * حذف الحساب نهائياً
+ * ✅ آمنة: تعتمد على req.user.id
  */
 async function deleteAccount(req, res) {
   try {
-    // 1. الحصول على معرف المستخدم من التوكن (عبر requireAuth middleware)
-    // هذا آمن لأنه يضمن أن المستخدم مسجل دخول
     const userId = req.user?.id; 
 
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    // 2. حذف المستخدم من Supabase Auth
-    // ملاحظة: supabase المستورد هنا يستخدم Service Role Key (كما في ملف services/data/supabase.js)
-    // لذلك لديه صلاحية الحذف (Admin Privileges)
+    // 1. حذف المستخدم من Supabase Auth (وهو الأهم)
     const { error: authError } = await supabase.auth.admin.deleteUser(userId);
 
     if (authError) {
@@ -252,13 +227,9 @@ async function deleteAccount(req, res) {
       return res.status(400).json({ error: authError.message });
     }
 
-    // 3. (اختياري) تنظيف البيانات الإضافية
-    // إذا كنت قد ضبطت إعدادات قاعدة البيانات (Foreign Keys) على "ON DELETE CASCADE"
-    // فسيتم حذف بياناته من جدول users و chat_sessions تلقائياً.
-    // إذا لم تكن كذلك، يمكنك حذفها يدوياً هنا:
-    /*
+    // 2. تنظيف البيانات من الجدول العام (اختياري إذا كان الـ Cascade مفعلاً)
+    // نقوم بذلك لضمان الحذف حتى لو لم يكن الـ Cascade مضبوطاً
     await supabase.from('users').delete().eq('id', userId);
-    */
 
     logger.success(`User account deleted permanently: ${userId}`);
     return res.status(200).json({ success: true, message: 'Account deleted successfully.' });
@@ -362,7 +333,6 @@ async function resendSignupOtp(req, res) {
  * - يرسل كود OTP.
  * - لا يكتب أي شيء في جدول users العام.
  */
-
 async function initiateSignup(req, res) {
   const { email, password, firstName, lastName } = req.body;
 
@@ -371,13 +341,11 @@ async function initiateSignup(req, res) {
   }
 
   try {
-    // 1. إنشاء المستخدم باستخدام Admin API
-    // نستخدم admin.createUser بدلاً من signUp لمنع تسجيل الدخول التلقائي
-    // ونضبط email_confirm: false لمنع التفعيل التلقائي الذي يسببه Service Role Key
+    // إنشاء المستخدم بدون تفعيل تلقائي
     const { data: user, error: createError } = await supabase.auth.admin.createUser({
       email: email,
       password: password,
-      email_confirm: false, // 👈 هذا السطر يمنع التفعيل التلقائي
+      email_confirm: false, 
       user_metadata: {
         first_name: firstName,
         last_name: lastName,
@@ -385,11 +353,9 @@ async function initiateSignup(req, res) {
       }
     });
 
-    // معالجة الأخطاء
     if (createError) {
-      // إذا كان المستخدم موجوداً مسبقاً
+      // إذا كان الحساب موجوداً، نعيد إرسال الرمز
       if (createError.message.includes('already has been registered')) {
-         // نحاول إعادة إرسال الرمز فقط
          const { error: resendError } = await supabase.auth.resend({
              type: 'signup',
              email: email
@@ -405,18 +371,11 @@ async function initiateSignup(req, res) {
       return res.status(400).json({ error: createError.message });
     }
 
-    // 2. 📧 الخطوة الحاسمة: إرسال الإيميل يدوياً
-    // لأن admin.createUser لا ترسل إيميل، يجب أن نطلبه صراحة
-    const { error: emailError } = await supabase.auth.resend({
-      type: 'signup', // هذا سيرسل قالب التسجيل الذي يحتوي على الكود
+    // إرسال الإيميل يدوياً
+    await supabase.auth.resend({
+      type: 'signup',
       email: email
     });
-
-    if (emailError) {
-      console.error("Failed to send OTP:", emailError.message);
-      // لا نوقف العملية، لكن نخبر الفرونت أند بوجود مشكلة
-      // (أو يمكنك حذف المستخدم وإرجاع خطأ)
-    }
 
     return res.status(200).json({
       success: true,
@@ -428,7 +387,6 @@ async function initiateSignup(req, res) {
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
-
 /**
  * المرحلة 2: إكمال التسجيل (Complete Signup)
  * - يتحقق من الـ OTP.
