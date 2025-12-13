@@ -651,6 +651,180 @@ async function getAllUsers(req, res) {
     res.status(500).json({ error: e.message });
   }
 }
+
+// ==========================================
+// 1. نظام الإعلانات (Announcements Tower)
+// ==========================================
+
+async function createAnnouncement(req, res) {
+  try {
+    const { title, message, type, targetType, targetValue, imageUrl, actionText, actionLink } = req.body;
+
+    if (!title || !message || !type) {
+      return res.status(400).json({ error: 'Missing required fields (title, message, type)' });
+    }
+
+    const { data, error } = await supabase
+      .from('announcements')
+      .insert({
+        title,
+        message,
+        type, // info, warning, success
+        target_type: targetType || 'all',
+        target_value: targetValue || null,
+        image_url: imageUrl || null,
+        action_text: actionText || 'حسناً',
+        action_link: actionLink || null,
+        views_count: 0,
+        created_at: new Date().toISOString()
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    logger.success(`📢 Admin created announcement: ${title}`);
+    res.status(201).json({ success: true, data });
+
+  } catch (e) {
+    logger.error('Create Announcement Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+}
+
+async function getAnnouncementHistory(req, res) {
+  try {
+    const { data, error } = await supabase
+      .from('announcements')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+}
+
+// ==========================================
+// 2. نظام الرصد والتحليلات (Monitoring)
+// ==========================================
+
+async function getActivityChart(req, res) {
+  try {
+    // نجلب البيانات من view_daily_ai_costs لأنها تحتوي على ملخص يومي
+    // أو يمكن التجميع من login_history
+    const { data, error } = await supabase
+      .from('view_daily_ai_costs')
+      .select('usage_date, total_requests')
+      .order('usage_date', { ascending: false })
+      .limit(7);
+
+    if (error) throw error;
+
+    // تنسيق البيانات للرسم البياني (عكس الترتيب ليصبح من الأقدم للأحدث)
+    const chartData = (data || []).reverse().map(item => {
+      const date = new Date(item.usage_date);
+      const dayName = date.toLocaleDateString('en-US', { weekday: 'short' }); // Mon, Tue...
+      return {
+        label: dayName,
+        value: item.total_requests || 0
+      };
+    });
+
+    res.json(chartData);
+  } catch (e) {
+    logger.error('Activity Chart Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+}
+
+// تحديث دالة Dashboard Stats الموجودة لتطابق التنسيق المطلوب
+async function getDashboardStatsV2(req, res) {
+  try {
+    // 1. عدد المستخدمين النشطين (آخر 30 يوم)
+    const lastMonth = new Date();
+    lastMonth.setDate(lastMonth.getDate() - 30);
+    
+    const { count: activeUsers } = await supabase
+      .from('users')
+      .select('*', { count: 'exact', head: true })
+      .gte('last_active_at', lastMonth.toISOString());
+
+    // 2. إجمالي الطلبات والتكاليف (للشهر الحالي)
+    const { data: monthlyCost } = await supabase
+      .from('view_monthly_ai_costs')
+      .select('*')
+      .limit(1)
+      .single();
+
+    // 3. حالة المفاتيح
+    const keysStats = keyManager.getAllKeysStatus();
+    const activeKeys = keysStats.filter(k => k.status !== 'dead').length;
+    const deadKeys = keysStats.filter(k => k.status === 'dead').length;
+
+    const response = {
+      active_users: activeUsers || 0,
+      total_requests: monthlyCost?.total_requests || 0,
+      financials: {
+        month_cost: monthlyCost?.estimated_cost_usd || 0,
+        limit: 200 // حد افتراضي
+      },
+      keys_summary: {
+        active: activeKeys,
+        dead: deadKeys,
+        total: keysStats.length
+      }
+    };
+
+    res.json(response);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+}
+
+// ==========================================
+// 3. إدارة الإعدادات (Feature Flags)
+// ==========================================
+
+async function getSystemSettings(req, res) {
+  try {
+    const { data, error } = await supabase.from('system_settings').select('*');
+    if (error) throw error;
+    
+    // تحويل المصفوفة إلى كائن { key: value }
+    const settings = {};
+    data.forEach(item => {
+      // تحويل "true"/"false" إلى boolean
+      settings[item.key] = item.value === 'true';
+    });
+    
+    res.json(settings);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+}
+
+async function updateSystemSetting(req, res) {
+  const { key, value } = req.body;
+  try {
+    const strValue = String(value);
+    const { error } = await supabase
+      .from('system_settings')
+      .upsert({ key, value: strValue });
+
+    if (error) throw error;
+
+    // مسح الكاش
+    clearSystemFeatureCache(key);
+    
+    res.json({ success: true, key, value: strValue });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+}
+
+
 module.exports = {
   initAdminController,
   indexSpecificLesson,
@@ -670,5 +844,11 @@ module.exports = {
   activateLaunchKeys,
   revealUserPassword,
   toggleSystemFeature,
-  getAllUsers 
+  getAllUsers,
+  createAnnouncement,
+  getAnnouncementHistory,
+  getActivityChart,
+  getDashboardStatsV2, // استخدم هذه بدلاً من القديمة في الراوتر
+  getSystemSettings,
+  updateSystemSetting,
 };
