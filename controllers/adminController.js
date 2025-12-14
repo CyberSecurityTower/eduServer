@@ -886,13 +886,12 @@ async function getLiveTraffic(req, res) {
     
     res.json({
       status: 'online',
-      // نعرض "last_minute_rpm" لأنه الرقم المكتمل للدقيقة الماضية (أكثر استقراراً)
-      requests_per_minute: stats.last_minute_rpm > 0 ? stats.last_minute_rpm : stats.live_rpm,
-      live_counter: stats.live_rpm, // العداد اللحظي (يتزايد أمام عينيك)
-      peak_rpm: stats.peak_rpm,
+      // نعرض فقط طلبات الـ AI الحقيقية
+      ai_requests_per_minute: stats.ai_rpm_live > 0 ? stats.ai_rpm_live : stats.ai_rpm_last_min,
+      total_tokens_processed: stats.total_tokens_min,
       active_users: stats.online_count,
       uptime: stats.uptime,
-      users_details: stats.users_list // القائمة لتعرف من هم مستخدمين
+      users_details: stats.users_list // القائمة التفصيلية (من يفعل ماذا)
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
