@@ -882,17 +882,9 @@ async function searchUsers(req, res) {
 
 async function getLiveTraffic(req, res) {
   try {
+    // الدالة getStats الآن ترجع الهيكل JSON المطلوب بالضبط
     const stats = liveMonitor.getStats();
-    
-    res.json({
-      status: 'online',
-      // نعرض فقط طلبات الـ AI الحقيقية
-      ai_requests_per_minute: stats.ai_rpm_live > 0 ? stats.ai_rpm_live : stats.ai_rpm_last_min,
-      total_tokens_processed: stats.total_tokens_min,
-      active_users: stats.online_count,
-      uptime: stats.uptime,
-      users_details: stats.users_list // القائمة التفصيلية (من يفعل ماذا)
-    });
+    res.json(stats);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
