@@ -19,9 +19,10 @@ async function checkExamTiming() {
     const startTime = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString(); 
     const endTime = new Date(now.getTime() + 4 * 60 * 60 * 1000).toISOString();
 
+    // ✅ التعديل 1: استبدال group_id بـ path_id في الاستعلام
     const { data: exams, error } = await supabase
       .from('exams')
-      .select('id, subject_id, exam_date, group_id, subjects(title)')
+      .select('id, subject_id, exam_date, path_id, subjects(title)') 
       .gte('exam_date', startTime)
       .lte('exam_date', endTime);
 
@@ -37,17 +38,15 @@ async function checkExamTiming() {
       const diffMs = examTime - now;
       const diffMinutes = Math.floor(diffMs / (1000 * 60)); 
 
-      // 👇 طباعة للمراقبة (Debug Log)
       console.log(`🔎 Exam: ${exam.subjects?.title} | Time: ${examTime.toISOString()} | Diff: ${diffMinutes} mins`);
 
       // =================================================================
-      // 🧹 1. المكنسة الذكية
+      // 🧹 1. المكنسة الذكية (تنظيف المهام)
       // =================================================================
-      // ⚠️ تعديل مؤقت للتجربة: جعلناها 60 دقيقة لكي تحذف المهمة الآن
-      // القيمة الطبيعية يجب أن تكون 15 أو 20
       if (diffMinutes <= 60) { 
          console.log(`🧹 Triggering cleanup for ${exam.subjects?.title}...`);
-         await cleanupExamTasks(exam.group_id, exam.subject_id);
+         // ✅ التعديل 2: تمرير path_id بدلاً من group_id
+         await cleanupExamTasks(exam.path_id, exam.subject_id);
       }
 
       // =================================================================
@@ -59,10 +58,11 @@ async function checkExamTiming() {
       else if (diffMinutes >= -135 && diffMinutes <= -105) notificationType = 'post_exam';
 
       if (notificationType) {
+        // ✅ التعديل 3: جلب الطلاب بناءً على المسار (selected_path_id) وليس الفوج
         const { data: students } = await supabase
             .from('users')
             .select('id, first_name')
-            .eq('group_id', exam.group_id);
+            .eq('selected_path_id', exam.path_id); 
             
         if (students && students.length > 0) {
           await Promise.all(students.map(student => 
@@ -77,20 +77,24 @@ async function checkExamTiming() {
   }
 }
 
-async function cleanupExamTasks(groupId, subjectId) {
+// ✅ التعديل 4: تحديث دالة التنظيف لتعمل مع المسار
+async function cleanupExamTasks(pathId, subjectId) {
   try {
-    const { data: students } = await supabase.from('users').select('id').eq('group_id', groupId);
+    // جلب كل الطلاب في هذا المسار
+    const { data: students } = await supabase
+        .from('users')
+        .select('id')
+        .eq('selected_path_id', pathId);
+
     if (!students || students.length === 0) return;
 
     const studentIds = students.map(s => s.id);
 
+    // حذف المهام لكل طالب
     for (const userId of studentIds) {
-        // 👇 طباعة للتأكد
-        // console.log(`   -> Checking tasks for user ${userId}`);
-        
         const { error, count } = await supabase
             .from('user_tasks')
-            .delete({ count: 'exact' }) // نطلب عدد المحذوفات
+            .delete({ count: 'exact' }) 
             .eq('user_id', userId)
             .contains('meta', { isExamPrep: true }); 
             
@@ -105,7 +109,6 @@ async function cleanupExamTasks(groupId, subjectId) {
   }
 }
 
-// ... (باقي الدوال processStudentNotification و generatePersonalizedMessage تبقى كما هي في الكود السابق)
 async function processStudentNotification(student, exam, type) {
     try {
         const userId = student.id;
