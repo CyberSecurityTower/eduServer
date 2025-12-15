@@ -13,6 +13,9 @@ const chatController = require('../controllers/chatController');
 const adminController = require('../controllers/adminController');
 const announcementController = require('../controllers/announcementController');
 const { runStreakRescueMission } = require('./services/jobs/streakRescue');
+const streakController = require('../controllers/streakController'); 
+router.post('/admin/run-streak-rescue', requireAdmin, adminController.triggerStreakRescue);
+
 // ⏰ تشغيل منقذ الستريك كل ساعة (60 دقيقة)
 setInterval(() => {
   console.log('⏰ Hourly Cron: Checking for streaks at risk...');
