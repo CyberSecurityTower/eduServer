@@ -3,7 +3,7 @@
 'use strict';
 
 const supabase = require('../data/supabase');
-const { getProfile, sendUserNotification } = require('../../data/helpers');
+const { getProfile, sendUserNotification } = require('../data/helpers');
 const { extractTextFromResult } = require('../../utils');
 const PROMPTS = require('../../config/ai-prompts');
 const logger = require('../../utils/logger');
