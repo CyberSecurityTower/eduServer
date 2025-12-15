@@ -11,7 +11,7 @@ const analyticsController = require('../controllers/analyticsController');
 const chatController = require('../controllers/chatController');
 const adminController = require('../controllers/adminController');
 const announcementController = require('../controllers/announcementController');
-const { runStreakRescueMission } = require('./services/jobs/streakRescue');
+const { runStreakRescueMission } = require('../services/jobs/streakRescue');
 const streakController = require('../controllers/streakController'); 
 router.post('/admin/run-streak-rescue', requireAdmin, adminController.triggerStreakRescue);
 
