@@ -1018,8 +1018,14 @@ async function runEduChrono(userId, groupId) {
  * جلب الامتحانات التي مرت حديثاً (آخر 7 أيام)
  * لكي يسأل عنها الـ AI
  */
+
 async function getRecentPastExams(groupId) {
   if (!groupId) return [];
+
+  // 1. استخراج معرف المسار من معرف الفوج
+  // مثال: إذا كان الفوج "UAlger3_L1_ITCF_G3" -> المسار هو "UAlger3_L1_ITCF"
+  // نفترض أن الفوج ينتهي بـ _G رقم
+  const pathId = groupId.split('_G')[0]; 
 
   const now = new Date();
   const sevenDaysAgo = new Date();
@@ -1029,19 +1035,22 @@ async function getRecentPastExams(groupId) {
     const { data: exams, error } = await supabase
       .from('exams')
       .select('id, subject_id, exam_date, type, subjects(title)')
-      .eq('group_id', groupId)
-      .lt('exam_date', now.toISOString()) // أقل من الآن (ماضي)
-      .gte('exam_date', sevenDaysAgo.toISOString()) // أكبر من قبل 7 أيام
-      .order('exam_date', { ascending: false }); // الأحدث أولاً
+      .eq('path_id', pathId) // ✅ التغيير هنا: نستخدم path_id بدلاً من group_id
+      .lt('exam_date', now.toISOString())
+      .gte('exam_date', sevenDaysAgo.toISOString())
+      .order('exam_date', { ascending: false });
 
-    if (error) throw error;
+    if (error) {
+        // إذا لم يكن العمود path_id موجوداً أيضاً، تأكد من هيكلة جدول exams في Supabase
+        console.error('getRecentPastExams DB Error:', error.message);
+        throw error;
+    }
     return exams || [];
   } catch (err) {
     console.error('getRecentPastExams Error:', err.message);
     return [];
   }
 }
-
 // ✅ إضافة مهمة استكشاف جديدة
 async function addDiscoveryMission(userId, content, source = 'auto', priority = 'low') {
   const { data: user } = await supabase.from('users').select('ai_discovery_missions').eq('id', userId).single();
