@@ -2,7 +2,7 @@
 'use strict';
 
 const supabase = require('../services/data/supabase');
-const liveMonitor = require('../services/liveStats');
+const liveMonitor = require('../services/monitoring/realtimeStats');
 
 // كاش بسيط لتجنب قصف الداتابايز بالتحديثات في كل ثانية
 const lastUpdateMap = new Map();
