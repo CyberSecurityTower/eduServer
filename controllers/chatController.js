@@ -576,55 +576,56 @@ if (!parsedResponse.lesson_signal) {
 }
 
 // Handle Lesson Completion
+
 if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'complete') {
   const signal = parsedResponse.lesson_signal;
 
- 
-// 1. تسجيل إتمام الدرس في قاعدة البيانات
-const gatekeeperResult = await markLessonComplete(userId, signal.id, signal.score || 100);
+  // 1. تسجيل إتمام الدرس في قاعدة البيانات
+  const gatekeeperResult = await markLessonComplete(userId, signal.id, signal.score || 100);
 
-// 2. تحديث قائمة المهام للمستخدم
-const newDbTasks = await refreshUserTasks(userId);
+  // 2. تحديث قائمة المهام للمستخدم (هنا يتم جلب المهام الجديدة من Planner)
+  const newDbTasks = await refreshUserTasks(userId);
 
-// ============================================================
-// 🔥 3. المنطق الجديد: تحديد الدرس القادم (Sticky Subject Logic)
-// ============================================================
+  // ============================================================
+  // 🔥 التعديل الجذري: منطق اختيار الدرس القادم (Smart Next Step)
+  // ============================================================
 
-// أ. معرفة مادة الدرس الذي أنهاه للتو
-let currentSubjectId = null;
-// نحاول جلبه من البيانات المحملة مسبقاً (Context) أو جلبه من قاعدة البيانات
-if (currentContext?.lessonId === signal.id && typeof lessonData !== 'undefined') {
-    currentSubjectId = lessonData.subject_id;
-} else {
-    // جلب سريع احتياطي في حال عدم توفر البيانات
-    const { data: l } = await supabase.from('lessons').select('subject_id').eq('id', signal.id).single();
-    currentSubjectId = l?.subject_id;
-}
+  // أ. معرفة مادة الدرس الذي أنهاه للتو
+  let currentSubjectId = null;
+  // نحاول جلبه من البيانات المحملة مسبقاً (Context) أو جلبه من قاعدة البيانات
+  if (currentContext?.lessonId === signal.id && typeof lessonData !== 'undefined') {
+      currentSubjectId = lessonData.subject_id;
+  } else {
+      // جلب سريع احتياطي في حال عدم توفر البيانات
+      const { data: l } = await supabase.from('lessons').select('subject_id').eq('id', signal.id).single();
+      currentSubjectId = l?.subject_id;
+  }
 
-// ب. تصفية المهام القادمة (استبعاد الدرس الحالي)
-const validNextTasks = (newDbTasks || []).filter(t => t.meta?.relatedLessonId !== signal.id);
+  // ب. تصفية المهام القادمة (استبعاد الدرس الحالي نهائياً)
+  // هذا يحل مشكلة اقتراح نفس الدرس
+  const validNextTasks = (newDbTasks || []).filter(t => t.meta?.relatedLessonId !== signal.id);
 
-let nextTask = null;
-let transitionReason = "";
+  let nextTask = null;
+  let transitionReason = "";
 
-// ج. البحث عن درس في "نفس المادة" أولاً (Priority 1)
-const sameSubjectTask = validNextTasks.find(t => t.meta?.relatedSubjectId === currentSubjectId);
+  // ج. البحث عن درس في "نفس المادة" أولاً (Priority 1: Sticky Subject)
+  const sameSubjectTask = validNextTasks.find(t => t.meta?.relatedSubjectId === currentSubjectId);
 
-if (sameSubjectTask) {
-    // ✅ وجدنا درساً في نفس المادة (نحافظ على التركيز)
-    nextTask = sameSubjectTask;
-    transitionReason = "same_subject"; 
-} else {
-    // ❌ لا يوجد، ننتقل لأهم مهمة عامة (Priority 2)
-    nextTask = validNextTasks.length > 0 ? validNextTasks[0] : null;
-    transitionReason = "global_priority";
-}
+  if (sameSubjectTask) {
+      // ✅ وجدنا درساً في نفس المادة (نحافظ على التركيز)
+      nextTask = sameSubjectTask;
+      transitionReason = "same_subject"; 
+  } else {
+      // ❌ لا يوجد (المادة انتهت أو لا توجد دروس أخرى)، ننتقل لأهم مهمة عامة (Priority 2: Global Gravity)
+      nextTask = validNextTasks.length > 0 ? validNextTasks[0] : null;
+      transitionReason = "global_priority";
+  }
 
-// د. إرفاق المهمة القادمة بالرد (ليستخدمها الفرونت إند في زر "المهمة التالية")
-if (nextTask) {
-    parsedResponse.next_task = nextTask;
-    parsedResponse.transition_reason = transitionReason;
-}
+  // د. إرفاق المهمة القادمة بالرد (ليستخدمها الفرونت إند في زر "المهمة التالية")
+  if (nextTask) {
+      parsedResponse.next_task = nextTask;
+      parsedResponse.transition_reason = transitionReason;
+  }
 
 // ============================================================
 // 💰 4. معالجة المكافآت والردود (Reward Logic)
@@ -679,34 +680,26 @@ if (gatekeeperResult.reward) {
   const isLateNight = currentHour >= 22 || currentHour < 5; 
   const isExamEmergency = gravityContext?.isExam; 
 
-  let recommendationText = "";
-      if (isExamEmergency && isLateNight) {
-        recommendationText = `\n\n🛑 **حبس هنا!** غدوة عندك امتحان والوقت راه روطار. **روح ترقد دوكا** باش مخك يثبت المعلومات. تصبح على خير! 😴`;
-
-        parsedResponse.widgets = (parsedResponse.widgets || []).filter(w => w.type !== 'action_button');
-        parsedResponse.widgets.push({
-          type: 'action_button',
-          data: { label: 'إغلاق التطبيق والنوم 🌙', action: 'close_app' }
-        });
+ let recommendationText = "";
+  
+  if (nextTask) {
+      if (transitionReason === "same_subject") {
+          recommendationText = `\n\n🔗 **بما أننا سخنّا في هاد المادة، نكملو:** ${nextTask.title}`;
+      } else {
+          recommendationText = `\n\n💡 **كملنا هاد المادة! (أو ماكانش دروس)، الخطوة التالية:** ${nextTask.title}`;
       }
-     else if (nextTask) {
-    // تخصيص الرسالة
-    if (transitionReason === "same_subject") {
-        recommendationText = `\n\n🔗 **بما أننا في نفس السياق، نكملو:** ${nextTask.title}`;
-    } else {
-        recommendationText = `\n\n💡 **كملنا هاد المادة! الخطوة التالية:** ${nextTask.title}`;
-    }
 
-    parsedResponse.widgets = parsedResponse.widgets || [];
-    parsedResponse.widgets.push({
-      type: 'action_button',
-      data: { label: `ابدأ: ${nextTask.title}`, action: 'navigate', targetId: nextTask.meta?.relatedLessonId }
-    });
+      parsedResponse.widgets = parsedResponse.widgets || [];
+      parsedResponse.widgets.push({
+        type: 'action_button',
+        data: { label: `ابدأ: ${nextTask.title}`, action: 'navigate', targetId: nextTask.meta?.relatedLessonId }
+      });
+  } else {
+      recommendationText = `\n\n🎉 كملت كلش لليوم! ارتاح يا بطل.`;
   }
-  else {
-    recommendationText = `\n\n🎉 كملت كلش لليوم! ارتاح.`;
-  }
-
+  
+  parsedResponse.reply += recommendationText;
+}
       parsedResponse.widgets = parsedResponse.widgets || [];
       parsedResponse.widgets.push({ type: 'event_trigger', data: { event: 'tasks_updated' } });
       parsedResponse.reply += recommendationText;
