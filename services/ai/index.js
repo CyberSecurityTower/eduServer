@@ -19,68 +19,86 @@ async function initializeModelPools() {
 }
 
 async function _callModelInstance(unused_instance, prompt, timeoutMs, label) {
-  let keyObj = null;
+  const MAX_KEY_RETRIES = 3; // سنحاول مع 3 مفاتيح مختلفة كحد أقصى
+  let lastError = null;
 
-  const isTransientError = (err) => {
-    const msg = (err && (err.message || String(err))) || '';
-    return /429|503|Quota|Overloaded/i.test(msg);
-  };
+  for (let attempt = 0; attempt < MAX_KEY_RETRIES; attempt++) {
+    let keyObj = null;
+    
+    try {
+      // 1. الحصول على مفتاح
+      keyObj = await keyManager.acquireKey();
+      
+      // 2. محاولة الموديلات على هذا المفتاح
+      for (const modelName of MODEL_CASCADE) {
+        try {
+          const model = keyObj.client.getGenerativeModel({ model: modelName });
+          const generationConfig = { temperature: 0.4 };
 
-  try {
-    keyObj = await keyManager.acquireKey();
-    let lastError = null;
-    let successText = null;
+          const result = await withTimeout(
+            model.generateContent({
+              contents: [
+                {
+                  role: 'user',
+                  parts: [{ text: typeof prompt === 'string' ? prompt : JSON.stringify(prompt) }]
+                }
+              ],
+              generationConfig
+            }),
+            timeoutMs,
+            `${label} [${modelName}]`
+          );
 
-    for (const modelName of MODEL_CASCADE) {
-      try {
-        const model = keyObj.client.getGenerativeModel({ model: modelName });
-        const generationConfig = { temperature: 0.4 };
+          const response = await result.response;
+          const successText = typeof response.text === 'function' ? await response.text() : String(response);
 
-        const result = await withTimeout(
-          model.generateContent({
-            contents: [
-              {
-                role: 'user',
-                parts: [{ text: typeof prompt === 'string' ? prompt : JSON.stringify(prompt) }]
-              }
-            ],
-            generationConfig
-          }),
-          timeoutMs,
-          `${label} [${modelName}]`
-        );
+          // تسجيل الاستهلاك
+          const usageMetadata = response.usageMetadata ?? result?.usageMetadata;
+          const totalTokens = (usageMetadata?.promptTokenCount || 0) + (usageMetadata?.candidatesTokenCount || 0);
+          liveMonitor.trackAiGeneration(totalTokens);
+          
+          if (usageMetadata) {
+            keyManager.recordUsage(keyObj.key, usageMetadata, null, modelName);
+          }
 
-        const response = await result.response;
-        successText = typeof response.text === 'function' ? await response.text() : String(response);
+          // ✅ نجاح! نطلق سراح المفتاح ونرجع النتيجة
+          keyManager.releaseKey(keyObj.key, true);
+          return successText;
 
-        // ✅ هنا نسجل الطلب الحقيقي للذكاء الاصطناعي
-        const usageMetadata = response.usageMetadata ?? result?.usageMetadata;
-        const totalTokens = (usageMetadata?.promptTokenCount || 0) + (usageMetadata?.candidatesTokenCount || 0);
-        
-        liveMonitor.trackAiGeneration(totalTokens); // 🔥 تسجيل النبضة
-        
-        if (usageMetadata) {
-          keyManager.recordUsage(keyObj.key, usageMetadata, null, modelName);
+        } catch (modelErr) {
+          // إذا كان الخطأ ليس 429 (مثلاً خطأ في الموديل نفسه)، نجرب الموديل التالي
+          // أما إذا كان 429، فهذا يعني المفتاح مات، نكسر الحلقة الداخلية لنغير المفتاح
+          if (String(modelErr).includes('429') || String(modelErr).includes('Quota')) {
+             throw modelErr; // ارمِ الخطأ لنغير المفتاح فوراً
+          }
+          logger.warn(`⚠️ Model ${modelName} failed on key ${keyObj.nickname}. Trying next model...`);
         }
+      }
+      
+      // إذا وصلنا هنا، يعني جربنا كل الموديلات على هذا المفتاح وفشلت (بدون 429)
+      throw new Error('All models failed on this key');
 
-        break; 
-      } catch (err) {
-        lastError = err;
-        if (!isTransientError(err)) throw err;
-        logger.warn(`⚠️ Model ${modelName} exhausted. Trying next...`);
+    } catch (keyErr) {
+      lastError = keyErr;
+      const isRateLimit = String(keyErr).includes('429') || String(keyErr).includes('Quota');
+      
+      if (keyObj) {
+        // إذا كان الخطأ 429، نبلغ المدير بوضع المفتاح في "التبريد" (Cooldown)
+        keyManager.releaseKey(keyObj.key, false, isRateLimit ? '429' : 'error');
+      }
+
+      if (isRateLimit) {
+        logger.warn(`❄️ Key Rate Limited (Attempt ${attempt + 1}/${MAX_KEY_RETRIES}). Switching key...`);
+        continue; // 🔄 جرب المفتاح التالي في الحلقة الخارجية
+      } else {
+        // إذا كان خطأ آخر غير الكوتا، ربما لا فائدة من التكرار
+        logger.error(`❌ Non-Quota Error: ${keyErr.message}`);
       }
     }
-
-    if (successText != null) {
-      keyManager.releaseKey(keyObj.key, true);
-      return successText;
-    } else {
-      throw lastError ?? new Error('All models failed');
-    }
-  } catch (err) {
-    if (keyObj) keyManager.releaseKey(keyObj.key, false, 'error');
-    throw err;
   }
+
+  // إذا فشلت كل المحاولات
+  throw lastError ?? new Error('Service Busy: All keys exhausted.');
 }
 
 module.exports = {
