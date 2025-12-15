@@ -13,7 +13,6 @@ const adminController = require('../controllers/adminController');
 const announcementController = require('../controllers/announcementController');
 const { runStreakRescueMission } = require('../services/jobs/streakRescue');
 const streakController = require('../controllers/streakController'); 
-router.post('/admin/run-streak-rescue', requireAdmin, adminController.triggerStreakRescue);
 
 // ⏰ تشغيل منقذ الستريك كل ساعة (60 دقيقة)
 setInterval(() => {
@@ -134,6 +133,7 @@ router.post('/admin/push-mission', requireAdmin, adminController.pushDiscoveryMi
 router.post('/admin/index-lesson', requireAdmin, adminController.indexSpecificLesson);
 router.post('/admin/run-chrono-analysis', requireAdmin, adminController.runDailyChronoAnalysis);
 router.post('/admin/reveal-password', requireAdmin, adminController.revealUserPassword);
+router.post('/admin/run-streak-rescue', requireAdmin, adminController.triggerStreakRescue);
 
 // ==========================================
 // 5. Wallet & Economy (EduCoin) 🪙
