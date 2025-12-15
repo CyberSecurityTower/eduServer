@@ -1,4 +1,3 @@
---- START OF FILE services/jobs/streakRescue.js ---
 
 // services/jobs/streakRescue.js
 'use strict';
