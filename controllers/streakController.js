@@ -42,6 +42,19 @@ async function dailyCheckIn(req, res) {
     // حالة النجاح (تمت زيادة الستريك)
     logger.success(`🔥 Streak updated for ${userId}: ${data.new_streak} days (+${data.coins_added} coins)`);
     
+    // ------------------------------------------------------------------
+    // 🔥 Kill Switch: حذف أي رسالة إنقاذ مجدولة لأن المستخدم قد دخل بالفعل
+    // ------------------------------------------------------------------
+    await supabase
+      .from('scheduled_actions')
+      .delete()
+      .eq('user_id', userId)
+      .eq('type', 'streak_rescue')
+      .eq('status', 'pending');
+
+    logger.info(`🗑️ Cancelled pending rescue messages for ${userId}`);
+    // ------------------------------------------------------------------
+
     return res.status(200).json({
       success: true,
       message: `مبروك! حافظت على الستريك لـ ${data.new_streak} أيام.`,
