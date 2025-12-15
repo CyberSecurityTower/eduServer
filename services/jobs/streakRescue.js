@@ -2,7 +2,7 @@
 // services/jobs/streakRescue.js
 'use strict';
 
-const supabase = require('../../data/supabase');
+const supabase = require('../data/supabase');
 const { getProfile, sendUserNotification } = require('../../data/helpers');
 const { extractTextFromResult } = require('../../utils');
 const PROMPTS = require('../../config/ai-prompts');
