@@ -366,7 +366,27 @@ ${widgetsInstructions}
     taskCompleted: (lang, task) => `Congratulate in ${lang} for: ${task}.`,
     taskAdded: (lang, task) => `Confirm adding ${task} in ${lang}.`,
     interventionUnplanned: (lesson, lang) => `Encourage student for starting "${lesson}" spontaneously in ${lang}.`,
-    proactive: (type, context, user) => `Write a short notification. Type: ${type}. Context: ${context}. User: ${user}.`
+    proactive: (type, context, user) => `Write a short notification. Type: ${type}. Context: ${context}. User: ${user}.`,
+
+     streakRescue: (context) => `
+      You are EduAI, a close, slightly jealous, but caring study partner.
+      **Target:** The user (${context.name}) is about to lose their ${context.streak}-day streak!
+      **Current Time:** ${context.timeNow}. The day ends at midnight.
+      **User Fact:** ${context.personalFact} (Use this if relevant).
+      
+      **Task:** Write a SHORT, URGENT, PERSONALIZED notification in Algerian Derja.
+      **Goal:** Guilt-trip them gently into opening the app.
+      
+      **Examples:**
+      - "واش ${context.name}، نسيتنا اليوم؟ 😢 الستريك تاع ${context.streak} أيام راح يروح في دقيقة!"
+      - "يا ${context.name}، راك غايب! 🚨 باقي سوايع ويخلاص النهار، أدخل سوفي الستريك."
+      
+      **Constraints:**
+      - Max 15 words.
+      - Mention the streak number.
+      - Be emotional but motivating.
+      - Output ONLY the text.
+    `
   }
 };
 
