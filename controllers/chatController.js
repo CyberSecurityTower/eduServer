@@ -528,6 +528,27 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
     // ---------------------------------------------------------
 
 
+// 🔥 شبكة الأمان: استخراج العلامة يدوياً إذا نسي الـ AI
+if (!parsedResponse.lesson_signal) {
+    // نبحث عن نمط مثل "7/8" أو "7 من 8" في رسالة المستخدم
+    const scoreMatch = message.match(/(\d+)\s*(?:\/|من)\s*(\d+)/);
+    if (scoreMatch) {
+        const score = parseInt(scoreMatch[1]);
+        const total = parseInt(scoreMatch[2]);
+        const percentage = (score / total) * 100;
+
+        // إذا كانت العلامة جيدة ولم يقم الـ AI بتفعيل الإشارة، نفعلها نحن يدوياً
+        if (percentage >= 50) {
+            logger.info(`🔧 Manual Override: Detected score ${score}/${total}, forcing lesson completion.`);
+            parsedResponse.lesson_signal = {
+                type: 'complete',
+                id: currentContext.lessonId || 'manual_entry',
+                score: percentage
+            };
+        }
+    }
+}
+
 // Handle Lesson Completion
 if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'complete') {
   const signal = parsedResponse.lesson_signal;
