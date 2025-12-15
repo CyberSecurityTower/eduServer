@@ -87,21 +87,26 @@ async function markLessonComplete(userId, lessonIdentifier, score = 100, addedTi
         last_interaction: new Date().toISOString()
     }, { onConflict: 'user_id, lesson_id' });
 
-    // 3. 🪙 منطق الكوينز (تم تخفيفه للتجربة)
+     // 3. منطق الكوينز
     let coinsEarned = 0;
     let rewardReason = '';
+    let alreadyClaimed = false; // 🆕 علم جديد
 
-    // 🔥 تعديل مؤقت: نكافئ دائماً إذا كانت العلامة فوق 50 للتجربة 🔥
-    if (score >= 50) {
-        if (!wasCompletedBefore) {
-            coinsEarned = 50;
-            rewardReason = 'lesson_completion';
+    if (!wasCompletedBefore) {
+        coinsEarned = 50;
+        rewardReason = 'lesson_completion';
+    } else {
+        alreadyClaimed = true; // 🆕 نعم، لقد أخذها سابقاً
+        
+        // بونوس الإعادة فقط للعلامة الكاملة
+        if (score >= 95) {
+            coinsEarned = 5;
+            rewardReason = 'review_mastery';
         } else {
-            // حتى لو مكرر، نعطيه 10 كوينز للتجربة
-            coinsEarned = 10; 
-            rewardReason = 'review_practice';
+            rewardReason = 'already_claimed'; // السبب: تم استلامها
         }
     }
+
 
     console.log(`💰 Coins Calculated: ${coinsEarned}`); // LOG 4
 
@@ -128,10 +133,15 @@ async function markLessonComplete(userId, lessonIdentifier, score = 100, addedTi
         newTotalCoins = u?.coins || 0;
     }
 
+    
     return { 
         success: true, 
-        message: "Lesson unlocked!",
-        reward: coinsEarned > 0 ? { coins_added: coinsEarned, reason: rewardReason } : null,
+        message: "Lesson processed",
+        reward: { 
+            coins_added: coinsEarned, 
+            reason: rewardReason,
+            already_claimed: alreadyClaimed // 🆕 نرسل هذه المعلومة للمتحكم
+        },
         new_total_coins: newTotalCoins
     };
 
