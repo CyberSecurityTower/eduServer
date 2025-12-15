@@ -631,8 +631,9 @@ if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'compl
       parsedResponse.widgets = parsedResponse.widgets || [];
       parsedResponse.widgets.push({ type: 'event_trigger', data: { event: 'tasks_updated' } });
       parsedResponse.reply += recommendationText;
-      parsedResponse.widgets.push({ type: 'celebration', data: { message: 'إنجاز عظيم! 🚀' } });
-    }}
+            parsedResponse.widgets.push({ type: 'celebration', data: { message: 'إنجاز عظيم! 🚀' } });
+    }
+
 
     // EduNexus Updates
     if (CONFIG.ENABLE_EDUNEXUS && parsedResponse.memory_update && groupId) {
