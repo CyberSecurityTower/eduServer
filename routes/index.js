@@ -4,7 +4,6 @@
 const express = require('express');
 const router = express.Router();
 const walletController = require('../controllers/walletController');
-const streakController = require('../controllers/streakController');
 // Controllers
 const tasksController = require('../controllers/tasksController'); 
 const authController = require('../controllers/authController'); 
