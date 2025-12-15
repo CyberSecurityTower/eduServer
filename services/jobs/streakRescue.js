@@ -1,7 +1,10 @@
+--- START OF FILE services/jobs/streakRescue.js ---
+
+// services/jobs/streakRescue.js
 'use strict';
 
 const supabase = require('../../data/supabase');
-const { getProfile } = require('../../data/helpers');
+const { getProfile, sendUserNotification } = require('../../data/helpers');
 const { extractTextFromResult } = require('../../utils');
 const PROMPTS = require('../../config/ai-prompts');
 const logger = require('../../utils/logger');
@@ -10,6 +13,7 @@ let generateWithFailoverRef;
 
 function initStreakRescue(dependencies) {
   generateWithFailoverRef = dependencies.generateWithFailover;
+  logger.info('🚑 Streak Rescue Service Initialized.');
 }
 
 async function runStreakRescueMission() {
@@ -23,7 +27,7 @@ async function runStreakRescueMission() {
     .from('users')
     .select('id, first_name, streak_count, last_streak_date, ai_scheduler_meta, last_rescue_warning')
     .gt('streak_count', 0)
-    .lt('last_streak_date', todayStr)
+    .lt('last_streak_date', todayStr) // لم يسجلوا اليوم
     .neq('last_rescue_warning', todayStr); // لم نجدول لهم اليوم
 
   if (error) {
@@ -55,13 +59,13 @@ async function scheduleUserRescue(user) {
     let executionTime = new Date();
     executionTime.setHours(bestHour, 0, 0, 0);
 
-    // منطق التصحيح:
+    // منطق التصحيح (Safety Valve Logic):
     // أ. إذا كان الوقت المفضل قد فات -> أرسل بعد دقيقتين من الآن (فوري)
     if (executionTime <= now) {
         executionTime = new Date(now.getTime() + 2 * 60 * 1000);
     }
+    
     // ب. إذا كان الوقت المفضل بعد "وقت الخطر" (مثلاً 11 ليلاً) -> أرسل في 9 ليلاً
-    // (نترك هامش 3 ساعات قبل منتصف الليل)
     const dangerTime = new Date(streakDeadline.getTime() - 3 * 60 * 60 * 1000); // 21:00
     if (executionTime > dangerTime) {
         executionTime = dangerTime;
@@ -69,35 +73,27 @@ async function scheduleUserRescue(user) {
         if (executionTime <= now) executionTime = new Date(now.getTime() + 2 * 60 * 1000);
     }
 
-    // 3. 🧠 الحيلة الذكية: حساب السياق المستقبلي للـ AI
-    // نحسب الوقت المتبقي بناءً على وقت الإرسال (وليس الآن)
+    // 3. حساب السياق المستقبلي للـ AI
     const msLeftAtExecution = streakDeadline - executionTime;
     const hoursLeftAtExecution = Math.max(0, Math.floor(msLeftAtExecution / (1000 * 60 * 60)));
-    
-    // تنسيق وقت الإرسال كنص (مثلاً "20:00")
     const executionTimeStr = `${executionTime.getHours()}:${executionTime.getMinutes().toString().padStart(2, '0')}`;
 
-    // 4. تجهيز البرومبت (Time Travel Prompt)
+    // 4. تجهيز البرومبت
     const profile = await getProfile(user.id);
     const facts = profile.facts || {};
-    // ... (اختيار personalFact كما في الكود السابق) ...
     const personalFact = facts.dream ? `dream: ${facts.dream}` : 'loves winning';
 
     const context = {
       name: user.first_name || 'Champion',
       streak: user.streak_count,
-      timeNow: executionTimeStr, // 👈 نخدع الـ AI بالوقت المستقبلي
+      timeNow: executionTimeStr,
       personalFact: personalFact,
-      timeLeft: `${hoursLeftAtExecution} hours` // 👈 الوقت المتبقي عند الاستلام
+      timeLeft: `${hoursLeftAtExecution} hours`
     };
 
-    const prompt = `
-      ${PROMPTS.notification.streakRescue(context)}
-      **CRITICAL CONTEXT:**
-      - Imagine the current time is exactly **${context.timeNow}**.
-      - The user has ONLY **${context.timeLeft}** left before midnight!
-      - Create a sense of urgency appropriate for ${context.timeNow}.
-    `;
+    const prompt = PROMPTS.notification.streakRescue 
+        ? PROMPTS.notification.streakRescue(context)
+        : `User ${user.first_name} is losing streak. Write urgent message.`;
 
     let message = `يا ${user.first_name}، باقي ${hoursLeftAtExecution} سوايع ويخلاص النهار! سوفي الستريك!`;
 
@@ -123,11 +119,10 @@ async function scheduleUserRescue(user) {
     });
 
     if (!error) {
-        // 6. تحديث المستخدم لكي لا نجدول له مرة أخرى اليوم
+        // 6. تحديث المستخدم
         const todayStr = new Date().toISOString().split('T')[0];
         await supabase.from('users').update({ last_rescue_warning: todayStr }).eq('id', user.id);
-        
-        logger.success(`📅 Scheduled Rescue for ${user.first_name} at ${executionTimeStr} (Time left at delivery: ${hoursLeftAtExecution}h)`);
+        logger.success(`📅 Scheduled Rescue for ${user.first_name} at ${executionTimeStr}`);
     }
 
   } catch (err) {
