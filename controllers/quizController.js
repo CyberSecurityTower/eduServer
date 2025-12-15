@@ -6,6 +6,7 @@ const { markLessonComplete } = require('../services/engines/gatekeeper'); // ✅
 const { refreshUserTasks } = require('../services/data/helpers'); // ✅ استيراد
 const { getAlgiersTimeContext } = require('../utils'); // ✅ استيراد
 const logger = require('../utils/logger');
+const supabase = require('../services/data/supabase'); // نحتاج هذا للتعامل المباشر
 
 async function analyzeQuiz(req, res) {
   try {
@@ -16,63 +17,84 @@ async function analyzeQuiz(req, res) {
       return res.status(400).json({ error: 'Invalid data.' });
     }
 
-    // 1. تشغيل المحلل النفسي (AI) للحصول على الفيدباك فقط
-    // ملاحظة: سنتجاهل اقتراحه للخطوة التالية ونستبدله بمنطقنا
+    // 1. تشغيل المحلل النفسي (AI) للحصول على الفيدباك
     const analysis = await runQuizAnalyzer({ lessonTitle, quizQuestions, userAnswers, totalScore });
 
-    // 2. إذا كانت العلامة جيدة (> 70%)، نعتبر الدرس مكتملاً
-    const scorePercentage = (totalScore / quizQuestions.length) * 100;
-    if (scorePercentage >= 70 && lessonId) {
-        await markLessonComplete(userId, lessonId, scorePercentage);
+    // 2. حساب النسبة المئوية
+    const maxScore = quizQuestions.length;
+    const userScore = Number(totalScore);
+    const percentage = maxScore > 0 ? (userScore / maxScore) * 100 : 0;
+
+    // 3. 🔥 منطق المكافآت (EduCoin Logic) 🔥
+    let rewardData = null;
+    let newTotalCoins = 0;
+
+    // نكافئ فقط إذا تجاوز 50%
+    if (percentage >= 50) {
+        // معادلة المكافأة: 
+        // العلامة الكاملة = 50 كوينز
+        // نصف العلامة = 10 كوينز (تشجيعية)
+        // ما بينهما يحسب نسبياً
+        let coinsEarned = Math.floor((percentage / 100) * 50);
+        
+        // بونوس العلامة الكاملة
+        if (percentage === 100) coinsEarned += 10; 
+
+        // تنفيذ المعاملة المالية
+        // نستخدم RPC لضمان السرعة والأمان
+        const { data: balance, error } = await supabase.rpc('process_coin_transaction', {
+            p_user_id: userId,
+            p_amount: coinsEarned,
+            p_reason: 'quiz_reward',
+            p_meta: { 
+                lesson_id: lessonId, 
+                score_percentage: percentage,
+                lesson_title: lessonTitle 
+            }
+        });
+
+        if (!error) {
+            newTotalCoins = balance;
+            rewardData = {
+                coins_added: coinsEarned,
+                reason: percentage === 100 ? 'perfect_score' : 'quiz_passed'
+            };
+            logger.success(`🪙 User ${userId} earned ${coinsEarned} coins from Quiz (${percentage}%).`);
+        }
     }
 
-    // 3. 🔥 تشغيل محرك الجاذبية لمعرفة "ماذا بعد؟"
+    // 4. إذا كان الدرس مرتبطاً بـ ID، نحدث حالة الإكمال في Gatekeeper أيضاً
+    // (Gatekeeper ذكي ولن يعطي مكافأة مزدوجة إذا قمنا بضبطه، لكن للأمان هنا حسبنا المكافأة يدوياً)
+    if (lessonId && percentage >= 70) {
+        // نرسل 0 كوينز إضافية لأننا حسبناها في الخطوة 3
+        await markLessonComplete(userId, lessonId, percentage, 0); 
+    }
+
+    // 5. تحديث المهام (Gravity Engine)
     const newTasks = await refreshUserTasks(userId);
-    
-    // تصفية الدرس الحالي من القائمة (لضمان عدم تكراره)
     const nextTasks = newTasks.filter(t => t.meta?.relatedLessonId !== lessonId);
     const topTask = nextTasks.length > 0 ? nextTasks[0] : null;
 
-    // 4. 🛡️ تطبيق "حارس النوم" و "طوارئ الامتحان"
+    // 6. تحديد الخطوة التالية (نفس المنطق السابق)
     const algiersTime = getAlgiersTimeContext();
     const isLateNight = algiersTime.hour >= 22 || algiersTime.hour < 5;
-    const isExamEmergency = topTask?.meta?.isExamPrep || false; // هل المهمة القادمة هي تحضير لامتحان؟
+    let smartNextStep = topTask ? `الدرس التالي: ${topTask.title}` : "استراحة";
+    let actionType = "navigate";
 
-    let smartNextStep = "";
-    let actionType = "navigate"; // navigate | sleep | review
-
-    // السيناريو A: وقت متأخر + امتحان غداً = نوم إجباري
-    if (isExamEmergency && isLateNight) {
-        smartNextStep = "🛑 حبس هنا! غدوة عندك امتحان. الخطوة التالية هي: النوم فوراً لترسيخ المعلومات.";
+    if (isLateNight) {
+        smartNextStep = "الوقت تأخر، روح ترقد وتدي الراحة.";
         actionType = "sleep";
     }
-    // السيناريو B: وقت متأخر عادي = اقتراح النوم
-    else if (isLateNight) {
-        smartNextStep = "يعطيك الصحة! الوقت تأخر، روح تريح وغدوة نكملو.";
-        actionType = "sleep";
-    }
-    // السيناريو C: امتحان غداً (والوقت ليس متأخراً) = مراجعة الامتحان
-    else if (isExamEmergency) {
-        smartNextStep = `🚨 حالة طوارئ: الانتقال فوراً لمراجعة ${topTask.title} للامتحان!`;
-        actionType = "navigate";
-    }
-    // السيناريو D: الوضع الطبيعي = الدرس التالي
-    else if (topTask) {
-        smartNextStep = `الخطوة التالية: درس ${topTask.title}`;
-        actionType = "navigate";
-    } 
-    // السيناريو E: لا توجد مهام
-    else {
-        smartNextStep = "أكملت كل مهامك! استمتع بوقتك.";
-        actionType = "chill";
-    }
 
-    // 5. دمج النتائج (Override AI Suggestion)
+    // 7. إرسال الرد النهائي
     const finalResponse = {
         ...analysis,
-        suggestedNextStep: smartNextStep, // ✅ استبدلنا اقتراح الـ AI الغبي باقتراحنا الذكي
-        nextTaskMeta: topTask ? topTask.meta : null, // نرسل الميتا للفرونت أند للتوجيه
-        actionType: actionType
+        suggestedNextStep: smartNextStep,
+        nextTaskMeta: topTask ? topTask.meta : null,
+        actionType: actionType,
+        // ✅ البيانات الجديدة للمحفظة
+        reward: rewardData,
+        new_total_coins: newTotalCoins
     };
 
     return res.status(200).json(finalResponse);
@@ -83,6 +105,4 @@ async function analyzeQuiz(req, res) {
   }
 }
 
-module.exports = {
-  analyzeQuiz,
-};
+module.exports = { analyzeQuiz };
