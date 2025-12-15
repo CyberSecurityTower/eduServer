@@ -18,7 +18,7 @@ const { calculateSmartPrimeTime } = require('../services/engines/chronoV2');
 const { predictSystemHealth } = require('../services/ai/keyPredictor');
 const { decryptForAdmin } = require('../utils/crypto');
 const { clearSystemFeatureCache } = require('../services/data/helpers'); // استيراد
-const liveMonitor = require('../services/monitoring/liveStats'); 
+const liveMonitor = require('../services/monitoring/realtimeStats');
 
 const db = getFirestoreInstance();
 
