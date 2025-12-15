@@ -535,10 +535,6 @@ if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'compl
   // 1. تسجيل الإكمال (واستلام المكافأة)
   // ✅ التعديل هنا: استقبال نتيجة Gatekeeper
   const gatekeeperResult = await markLessonComplete(userId, signal.id, signal.score || 100);
-
-  // 1. تسجيل الإكمال
-  await markLessonComplete(userId, signal.id, signal.score || 100);
-  
   // 2. تحديث المهام
   const newDbTasks = await refreshUserTasks(userId);
 
@@ -592,7 +588,7 @@ if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'compl
           new_total_coins: gatekeeperResult.new_total_coins
       };
   }
-}
+
 
   // 4. صياغة الرد بناءً على السياق
   const algiersTime = getAlgiersTimeContext(); 
