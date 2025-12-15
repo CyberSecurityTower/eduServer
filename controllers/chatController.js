@@ -703,7 +703,7 @@ if (gatekeeperResult.reward) {
       parsedResponse.widgets = parsedResponse.widgets || [];
       parsedResponse.widgets.push({ type: 'event_trigger', data: { event: 'tasks_updated' } });
       parsedResponse.reply += recommendationText;
-    }
+    
 
 
     // EduNexus Updates
