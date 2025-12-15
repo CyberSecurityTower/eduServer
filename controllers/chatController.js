@@ -569,9 +569,10 @@ if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'compl
       nextTask = validNextTasks.length > 0 ? validNextTasks[0] : null;
       transitionReason = "global_priority";
   }
- // 4. إضافة المكافأة للرد النهائي
+
+  // 4. إضافة المكافأة للرد النهائي
   if (gatekeeperResult.reward) {
-      // نضيف ويدجت احتفال خاص بالكوينز
+      // ✅ احتفال الكوينز (الأهم)
       parsedResponse.widgets = parsedResponse.widgets || [];
       parsedResponse.widgets.push({ 
           type: 'celebration', 
@@ -581,12 +582,14 @@ if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'compl
           } 
       });
       
-      // نمرر البيانات الخام للفرونت أند ليحدث الـ State
-      // (هذا ليس جزءاً من الـ JSON القياسي للـ AI، بل نضيفه للكائن النهائي)
       res.locals.rewardData = {
           reward: gatekeeperResult.reward,
           new_total_coins: gatekeeperResult.new_total_coins
       };
+  } else {
+      // ✅ احتفال عادي (فقط إذا لم يكسب كوينز لتجنب الازدحام)
+      parsedResponse.widgets = parsedResponse.widgets || [];
+      parsedResponse.widgets.push({ type: 'celebration', data: { message: 'إنجاز عظيم! 🚀' } });
   }
 
 
@@ -627,7 +630,6 @@ if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'compl
       parsedResponse.widgets = parsedResponse.widgets || [];
       parsedResponse.widgets.push({ type: 'event_trigger', data: { event: 'tasks_updated' } });
       parsedResponse.reply += recommendationText;
-            parsedResponse.widgets.push({ type: 'celebration', data: { message: 'إنجاز عظيم! 🚀' } });
     }
 
 
