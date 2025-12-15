@@ -528,21 +528,20 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
     // ---------------------------------------------------------
 
 
-// 🔥 شبكة الأمان: استخراج العلامة يدوياً إذا نسي الـ AI
+// 🔥 شبكة الأمان: إذا لم يرسل الـ AI إشارة، نكتشف العلامة يدوياً
 if (!parsedResponse.lesson_signal) {
-    // نبحث عن نمط مثل "7/8" أو "7 من 8" في رسالة المستخدم
+    // نبحث عن نمط مثل "7/8" أو "7 من 8"
     const scoreMatch = message.match(/(\d+)\s*(?:\/|من)\s*(\d+)/);
     if (scoreMatch) {
         const score = parseInt(scoreMatch[1]);
         const total = parseInt(scoreMatch[2]);
         const percentage = (score / total) * 100;
 
-        // إذا كانت العلامة جيدة ولم يقم الـ AI بتفعيل الإشارة، نفعلها نحن يدوياً
         if (percentage >= 50) {
-            logger.info(`🔧 Manual Override: Detected score ${score}/${total}, forcing lesson completion.`);
+            console.log(`🔧 Manual Override Triggered: Score ${percentage}%`); // LOG
             parsedResponse.lesson_signal = {
                 type: 'complete',
-                id: currentContext.lessonId || 'manual_entry',
+                id: currentContext.lessonId || 'chat_quiz', // تأكد أن currentContext ليس فارغاً
                 score: percentage
             };
         }
