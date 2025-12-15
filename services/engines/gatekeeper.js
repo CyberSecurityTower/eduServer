@@ -51,102 +51,122 @@ async function trackStudyTime(userId, lessonId, secondsToAdd) {
  */
 async function markLessonComplete(userId, lessonIdentifier, score = 100, addedTime = 0) {
   try {
-    console.log(`🔐 Gatekeeper: Processing lesson completion for ${userId}...`); // LOG 1
+    console.log(`🔐 Gatekeeper: Processing for ${userId} (Input: ${lessonIdentifier})`);
 
     let finalLessonId = lessonIdentifier;
+    let isGenericActivity = false; // 🆕 علم جديد: هل النشاط عام أم درس محدد؟
+
+    // 1. محاولة العثور على الدرس
     const isTitle = /[\u0600-\u06FF\s]/.test(lessonIdentifier) || lessonIdentifier.length > 50;
 
     if (isTitle) {
-        const { data: lesson } = await supabase.from('lessons').select('id').ilike('title', `%${lessonIdentifier}%`).limit(1).maybeSingle();
-        if (lesson) finalLessonId = lesson.id;
-        else {
-            console.log("❌ Gatekeeper: Lesson not found by title."); // LOG 2
-            return { success: false, reason: 'lesson_not_found' };
+        // تنظيف العنوان قليلاً لزيادة فرص العثور عليه
+        const cleanTitle = lessonIdentifier.replace(/درس|مادة|شرح/g, '').trim();
+        
+        const { data: lesson } = await supabase
+            .from('lessons')
+            .select('id')
+            .ilike('title', `%${cleanTitle}%`) // بحث مرن
+            .limit(1)
+            .maybeSingle();
+
+        if (lesson) {
+            finalLessonId = lesson.id;
+        } else {
+            console.warn(`⚠️ Gatekeeper: Lesson "${lessonIdentifier}" not found. Switching to GENERIC REWARD mode.`);
+            isGenericActivity = true; // لم نجد الدرس، لكن لن نوقف العملية
+            finalLessonId = null;
         }
     }
 
-    // 1. جلب الحالة السابقة
-    const { data: current } = await supabase
-        .from('user_progress')
-        .select('status, time_spent_seconds')
-        .eq('user_id', userId)
-        .eq('lesson_id', finalLessonId)
-        .maybeSingle();
+    // 2. تحديث التقدم (فقط إذا عرفنا الدرس المحدد)
+    let wasCompletedBefore = false;
+    
+    if (!isGenericActivity && finalLessonId) {
+        const { data: current } = await supabase
+            .from('user_progress')
+            .select('status, time_spent_seconds')
+            .eq('user_id', userId)
+            .eq('lesson_id', finalLessonId)
+            .maybeSingle();
 
-    const wasCompletedBefore = current?.status === 'completed';
-    console.log(`📊 Status: Completed Before? ${wasCompletedBefore}, Score: ${score}`); // LOG 3
+        wasCompletedBefore = current?.status === 'completed';
+        const totalTime = (current?.time_spent_seconds || 0) + addedTime;
 
-    // 2. تحديث الحالة
-    const totalTime = (current?.time_spent_seconds || 0) + addedTime;
-    await supabase.from('user_progress').upsert({
-        user_id: userId,
-        lesson_id: finalLessonId,
-        status: 'completed',
-        mastery_score: score,
-        time_spent_seconds: totalTime,
-        last_interaction: new Date().toISOString()
-    }, { onConflict: 'user_id, lesson_id' });
+        await supabase.from('user_progress').upsert({
+            user_id: userId,
+            lesson_id: finalLessonId,
+            status: 'completed',
+            mastery_score: score,
+            time_spent_seconds: totalTime,
+            last_interaction: new Date().toISOString()
+        }, { onConflict: 'user_id, lesson_id' });
+    }
 
-     // 3. منطق الكوينز
+    // 3. 🪙 حساب الكوينز (الآن يعمل حتى لو لم نجد الدرس)
     let coinsEarned = 0;
     let rewardReason = '';
-    let alreadyClaimed = false; // 🆕 علم جديد
 
-    if (!wasCompletedBefore) {
-        coinsEarned = 50;
-        rewardReason = 'lesson_completion';
+    if (isGenericActivity) {
+        // حالة خاصة: نشاط عام (كويز عشوائي أو درس غير معروف)
+        // نعطي مكافأة ثابتة لضمان رضا المستخدم
+        coinsEarned = 30; 
+        rewardReason = 'general_activity_reward';
     } else {
-        alreadyClaimed = true; // 🆕 نعم، لقد أخذها سابقاً
-        
-        // بونوس الإعادة فقط للعلامة الكاملة
-        if (score >= 95) {
-            coinsEarned = 5;
-            rewardReason = 'review_mastery';
+        // حالة الدرس المعروف
+        if (!wasCompletedBefore) {
+            coinsEarned = 50;
+            rewardReason = 'lesson_completion';
         } else {
-            rewardReason = 'already_claimed'; // السبب: تم استلامها
+            // إعادة الدرس
+            if (score >= 95) {
+                coinsEarned = 5;
+                rewardReason = 'review_mastery';
+            } else {
+                rewardReason = 'already_claimed';
+            }
         }
     }
-
-
-    console.log(`💰 Coins Calculated: ${coinsEarned}`); // LOG 4
 
     let newTotalCoins = 0;
 
+    // 4. تنفيذ المعاملة المالية
     if (coinsEarned > 0) {
-        // استدعاء الـ RPC
         const { data: balance, error } = await supabase.rpc('process_coin_transaction', {
             p_user_id: userId,
             p_amount: coinsEarned,
             p_reason: rewardReason,
-            p_meta: { lesson_id: finalLessonId, score: score }
+            p_meta: { 
+                lesson_identifier: lessonIdentifier, // نسجل الاسم الأصلي للمراجعة
+                is_generic: isGenericActivity,
+                score: score 
+            }
         });
         
-        if (error) {
-            console.error("❌ RPC Error:", error.message); // LOG 5 (أهم واحد)
-        } else {
-            console.log("✅ RPC Success! New Balance:", balance); // LOG 6
+        if (!error) {
+            console.log(`✅ Coins Added: ${coinsEarned}. New Balance: ${balance}`);
             newTotalCoins = balance;
+        } else {
+            console.error("❌ RPC Error:", error.message);
         }
     } else {
-        // جلب الرصيد فقط
         const { data: u } = await supabase.from('users').select('coins').eq('id', userId).single();
         newTotalCoins = u?.coins || 0;
     }
 
-    
     return { 
         success: true, 
-        message: "Lesson processed",
+        message: "Processed",
         reward: { 
             coins_added: coinsEarned, 
             reason: rewardReason,
-            already_claimed: alreadyClaimed // 🆕 نرسل هذه المعلومة للمتحكم
+            already_claimed: (!isGenericActivity && wasCompletedBefore && coinsEarned === 0)
         },
         new_total_coins: newTotalCoins
     };
 
   } catch (err) {
-    logger.error('Gatekeeper Error:', err.message);
+    logger.error('Gatekeeper Critical Error:', err.message);
     return { success: false };
   }
 }
