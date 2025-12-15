@@ -47,55 +47,90 @@ async function trackStudyTime(userId, lessonId, secondsToAdd) {
 }
 
 /**
- * إشارة إكمال الدرس (عند النجاح في الكويز أو الضغط على زر إنهاء)
+ * إشارة إكمال الدرس + نظام المكافآت (EduCoin Integration) 🪙
  */
 async function markLessonComplete(userId, lessonIdentifier, score = 100, addedTime = 0) {
   try {
     let finalLessonId = lessonIdentifier;
-
-    // التحقق هل هو ID أم عنوان
     const isTitle = /[\u0600-\u06FF\s]/.test(lessonIdentifier) || lessonIdentifier.length > 50;
 
     if (isTitle) {
-        const { data: lesson } = await supabase
-            .from('lessons')
-            .select('id')
-            .ilike('title', `%${lessonIdentifier}%`)
-            .limit(1)
-            .maybeSingle();
-
+        const { data: lesson } = await supabase.from('lessons').select('id').ilike('title', `%${lessonIdentifier}%`).limit(1).maybeSingle();
         if (lesson) finalLessonId = lesson.id;
         else return { success: false, reason: 'lesson_not_found' };
     }
 
-    // جلب الوقت القديم لإضافته (لا نريد تصفير العداد عند الإكمال)
+    // 1. جلب الحالة السابقة (لمعرفة هل نكافئه أم لا)
     const { data: current } = await supabase
         .from('user_progress')
-        .select('time_spent_seconds')
+        .select('status, time_spent_seconds')
         .eq('user_id', userId)
         .eq('lesson_id', finalLessonId)
         .maybeSingle();
 
+    const wasCompletedBefore = current?.status === 'completed';
     const totalTime = (current?.time_spent_seconds || 0) + addedTime;
 
-    logger.info(`🔐 Gatekeeper: Marking lesson ${finalLessonId} COMPLETE (Total Time: ${totalTime}s)`);
-
-    // تحديث الحالة إلى completed
-    await supabase
-      .from('user_progress')
-      .upsert({
+    // 2. تحديث حالة الدرس
+    await supabase.from('user_progress').upsert({
         user_id: userId,
         lesson_id: finalLessonId,
         status: 'completed',
         mastery_score: score,
         time_spent_seconds: totalTime,
         last_interaction: new Date().toISOString()
-      }, { onConflict: 'user_id, lesson_id' });
+    }, { onConflict: 'user_id, lesson_id' });
 
-    // زيادة نقاط الخبرة
-    try { await supabase.rpc('increment_user_xp', { x: 50, uid: userId }); } catch (e) {}
+    // 3. 🪙 حساب وتوزيع الكوينز (EduCoin Logic)
+    let coinsEarned = 0;
+    let rewardReason = '';
 
-    return { success: true, message: "Lesson unlocked!" };
+    if (!wasCompletedBefore) {
+        // مكافأة الإكمال لأول مرة
+        coinsEarned += 50; 
+        rewardReason = 'lesson_completion';
+        
+        // بونوس العلامة الكاملة
+        if (score >= 90) {
+            coinsEarned += 20;
+            rewardReason += '_with_honors';
+        }
+    } else {
+        // إعادة الدرس (مكافأة رمزية للتشجيع على المراجعة)
+        // نعطيه فقط إذا حصل على علامة ممتازة هذه المرة
+        if (score >= 95) {
+            coinsEarned += 5;
+            rewardReason = 'review_mastery';
+        }
+    }
+
+    let newTotalCoins = 0;
+
+    // 4. تنفيذ المعاملة المالية إذا كان هناك ربح
+    if (coinsEarned > 0) {
+        const { data: balance, error } = await supabase.rpc('process_coin_transaction', {
+            p_user_id: userId,
+            p_amount: coinsEarned,
+            p_reason: rewardReason,
+            p_meta: { lesson_id: finalLessonId, score: score }
+        });
+        
+        if (!error) newTotalCoins = balance;
+        logger.success(`🪙 User ${userId} earned ${coinsEarned} coins via Gatekeeper.`);
+    } else {
+        // إذا لم يكسب، نجلب الرصيد الحالي فقط للعرض
+        const { data: u } = await supabase.from('users').select('coins').eq('id', userId).single();
+        newTotalCoins = u?.coins || 0;
+    }
+
+    // 5. إرجاع النتيجة للفرونت أند
+    return { 
+        success: true, 
+        message: "Lesson unlocked!",
+        // البيانات التي ينتظرها الفرونت أند
+        reward: coinsEarned > 0 ? { coins_added: coinsEarned, reason: rewardReason } : null,
+        new_total_coins: newTotalCoins
+    };
 
   } catch (err) {
     logger.error('Gatekeeper Error:', err.message);
