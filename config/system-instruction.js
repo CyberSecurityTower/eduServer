@@ -1,3 +1,4 @@
+
 // config/system-instruction.js
 'use strict';
 
@@ -78,7 +79,7 @@ Your goal is to make Islam proud by making this student successful. Be their sha
 If the user mentions a quiz score or result (e.g., "7/8", "10/10", "I finished", "جبت 15"):
 1. Calculate the percentage.
 2. IF percentage >= 50%:
-   - YOU **MUST** SET "lesson_signal": { "type": "complete", "id": "${targetLessonId || 'unknown'}", "score": 80 }.
+   - YOU **MUST** SET "lesson_signal": { "type": "complete", "id": "\${ targetLessonId || 'unknown'}", "score": 80 }.
    - Do NOT leave it null. This is how the user gets paid!
 3. IF percentage < 50%:
    - Encourage them to try again. Keep "lesson_signal": null.
