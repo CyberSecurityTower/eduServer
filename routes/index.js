@@ -12,7 +12,12 @@ const analyticsController = require('../controllers/analyticsController');
 const chatController = require('../controllers/chatController');
 const adminController = require('../controllers/adminController');
 const announcementController = require('../controllers/announcementController');
-
+const { runStreakRescueMission } = require('./services/jobs/streakRescue');
+// ⏰ تشغيل منقذ الستريك كل ساعة (60 دقيقة)
+setInterval(() => {
+  console.log('⏰ Hourly Cron: Checking for streaks at risk...');
+  runStreakRescueMission().catch(err => console.error(err));
+}, 60 * 60 * 1000);
 // محاولة استيراد quizController بشكل آمن (لتجنب الأخطاء إذا لم يكن الملف مكتملاً)
 let quizController;
 try {
