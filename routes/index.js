@@ -3,8 +3,8 @@
 
 const express = require('express');
 const router = express.Router();
-const walletController = require('../controllers/walletController'); // ✅ استيراد جديد
-
+const walletController = require('../controllers/walletController');
+const streakController = require('../controllers/streakController');
 // Controllers
 const tasksController = require('../controllers/tasksController'); 
 const authController = require('../controllers/authController'); 
@@ -133,7 +133,12 @@ router.post('/admin/reveal-password', requireAdmin, adminController.revealUserPa
 // ==========================================
 router.get('/wallet/balance', requireAuth, walletController.getBalance);
 router.post('/wallet/spend', requireAuth, walletController.spendCoins);
-
+// ==========================================
+// 6. Streak & Daily Rewards 🔥
+// ==========================================
+// يتطلب requireAuth لأننا نحتاج معرف المستخدم
+router.post('/streak/check-in', requireAuth, streakController.dailyCheckIn);
+router.get('/streak/status', requireAuth, streakController.getStreakStatus);
 // Cron Job
 router.post('/run-nightly-analysis', adminController.runNightlyAnalysis);
 
