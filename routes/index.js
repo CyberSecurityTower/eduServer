@@ -3,6 +3,7 @@
 
 const express = require('express');
 const router = express.Router();
+const walletController = require('../controllers/walletController'); // ✅ استيراد جديد
 
 // Controllers
 const tasksController = require('../controllers/tasksController'); 
@@ -126,6 +127,12 @@ router.post('/admin/push-mission', requireAdmin, adminController.pushDiscoveryMi
 router.post('/admin/index-lesson', requireAdmin, adminController.indexSpecificLesson);
 router.post('/admin/run-chrono-analysis', requireAdmin, adminController.runDailyChronoAnalysis);
 router.post('/admin/reveal-password', requireAdmin, adminController.revealUserPassword);
+
+// ==========================================
+// 5. Wallet & Economy (EduCoin) 🪙
+// ==========================================
+router.get('/wallet/balance', requireAuth, walletController.getBalance);
+router.post('/wallet/spend', requireAuth, walletController.spendCoins);
 
 // Cron Job
 router.post('/run-nightly-analysis', adminController.runNightlyAnalysis);
