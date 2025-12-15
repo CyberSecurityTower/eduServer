@@ -19,6 +19,7 @@ const { predictSystemHealth } = require('../services/ai/keyPredictor');
 const { decryptForAdmin } = require('../utils/crypto');
 const { clearSystemFeatureCache } = require('../services/data/helpers'); // استيراد
 const liveMonitor = require('../services/monitoring/realtimeStats');
+const { runStreakRescueMission } = require('../services/jobs/streakRescue');
 
 const db = getFirestoreInstance();
 
@@ -889,6 +890,17 @@ async function getLiveTraffic(req, res) {
     res.status(500).json({ error: e.message });
   }
 }
+
+// ✅ دالة جديدة لتشغيل الإنقاذ يدوياً
+async function triggerStreakRescue(req, res) {
+  if (req.headers['x-job-secret'] !== CONFIG.NIGHTLY_JOB_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  // Fire & Forget
+  runStreakRescueMission().catch(e => logger.error('Manual Rescue Error:', e));
+  res.json({ message: '🚑 Streak Rescue Mission Launched!' });
+}
+
 module.exports = {
   initAdminController,
   indexSpecificLesson,
@@ -917,5 +929,6 @@ module.exports = {
   getGroups,    
   searchUsers,
   getDashboardStatsV2,
-  getLiveTraffic
+  getLiveTraffic,
+  triggerStreakRescue 
 };
