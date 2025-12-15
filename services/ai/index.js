@@ -5,7 +5,7 @@ const CONFIG = require('../../config');
 const logger = require('../../utils/logger');
 const { withTimeout } = require('../../utils');
 const keyManager = require('./keyManager');
-const liveMonitor = require('../monitoring/liveStats'); // ✅ استيراد المراقب
+const liveMonitor = require('../monitoring/realtimeStats');
 
 const MODEL_CASCADE = [
   'gemini-2.5-flash',
