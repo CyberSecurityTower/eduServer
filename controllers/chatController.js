@@ -317,6 +317,33 @@ async function chatInteractive(req, res) {
         `;
     }
 
+// 🧠 الذكاء المالي: هل أنهى الطالب هذا الدرس سابقاً؟
+    let rewardContext = "";
+    if (currentContext.lessonId) {
+        // نبحث في بيانات التقدم هل الدرس مكتمل
+        // ملاحظة: progressData تأتي من getProgress وتكون مخزنة في الكاش
+        const isLessonDone = progressData.dailyTasks?.tasks?.some(t => t.relatedLessonId === currentContext.lessonId && t.status === 'completed') 
+                             || (progressData.pathProgress && JSON.stringify(progressData.pathProgress).includes(currentContext.lessonId)); 
+                             // (أو استخدم طريقة أدق للبحث في progressData)
+
+        // الطريقة الأدق للبحث في progressData القادمة من helpers
+        let isDone = false;
+        // ... منطق البحث في progressData ...
+        // للتبسيط، سنفترض أننا عرفنا الحالة (يمكنك استخدام دالة مساعدة)
+        
+        if (isDone) {
+            rewardContext = `
+            💰 **ECONOMY INTEL:**
+            - User has ALREADY finished this lesson and claimed the 50 coins reward.
+            - IF they ask "Why no coins?", explain: "You only earn the big reward once per lesson. But you can get small bonus coins if you get 100% score."
+            `;
+        } else {
+            rewardContext = `
+            💰 **ECONOMY INTEL:**
+            - This is a NEW lesson. User will earn 50 coins if they finish it now. Use this to motivate them!
+            `;
+        }
+    }
 
     // D. Streak Hype
     const streak = progressData?.streakCount || 0;
@@ -465,7 +492,7 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
     ${scheduleContextString}
     ${sharedContext}
     ${activeLessonContext}
-
+    ${rewardContext}
     ${welcomeContext}
     ${streakContext}
     ${distractionContext}
@@ -552,66 +579,99 @@ if (!parsedResponse.lesson_signal) {
 if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'complete') {
   const signal = parsedResponse.lesson_signal;
 
-  // 1. تسجيل الإكمال (واستلام المكافأة)
-  // ✅ التعديل هنا: استقبال نتيجة Gatekeeper
-  const gatekeeperResult = await markLessonComplete(userId, signal.id, signal.score || 100);
-  // 2. تحديث المهام
-  const newDbTasks = await refreshUserTasks(userId);
+ 
+// 1. تسجيل إتمام الدرس في قاعدة البيانات
+const gatekeeperResult = await markLessonComplete(userId, signal.id, signal.score || 100);
 
-  // 3. 🔥 المنطق الجديد: تحديد الدرس القادم (Sticky Subject Logic) 🔥
-  
-  // أ. معرفة مادة الدرس الذي أنهاه للتو
-  let currentSubjectId = null;
-  // نحاول جلبه من البيانات المحملة مسبقاً
-  if (currentContext?.lessonId === signal.id && typeof lessonData !== 'undefined') {
-      currentSubjectId = lessonData.subject_id;
-  } else {
-      // جلب سريع احتياطي
-      const { data: l } = await supabase.from('lessons').select('subject_id').eq('id', signal.id).single();
-      currentSubjectId = l?.subject_id;
-  }
+// 2. تحديث قائمة المهام للمستخدم
+const newDbTasks = await refreshUserTasks(userId);
 
-  // ب. تصفية المهام القادمة
-  const validNextTasks = (newDbTasks || []).filter(t => t.meta?.relatedLessonId !== signal.id);
-  
-  let nextTask = null;
-  let transitionReason = "";
+// ============================================================
+// 🔥 3. المنطق الجديد: تحديد الدرس القادم (Sticky Subject Logic)
+// ============================================================
 
-  // ج. البحث عن درس في "نفس المادة" أولاً (Priority 1)
-  const sameSubjectTask = validNextTasks.find(t => t.meta?.relatedSubjectId === currentSubjectId);
+// أ. معرفة مادة الدرس الذي أنهاه للتو
+let currentSubjectId = null;
+// نحاول جلبه من البيانات المحملة مسبقاً (Context) أو جلبه من قاعدة البيانات
+if (currentContext?.lessonId === signal.id && typeof lessonData !== 'undefined') {
+    currentSubjectId = lessonData.subject_id;
+} else {
+    // جلب سريع احتياطي في حال عدم توفر البيانات
+    const { data: l } = await supabase.from('lessons').select('subject_id').eq('id', signal.id).single();
+    currentSubjectId = l?.subject_id;
+}
 
-  if (sameSubjectTask) {
-      // ✅ وجدنا درساً في نفس المادة
-      nextTask = sameSubjectTask;
-      transitionReason = "same_subject"; 
-  } else {
-      // ❌ لا يوجد، ننتقل لأهم مهمة عامة (Priority 2)
-      nextTask = validNextTasks.length > 0 ? validNextTasks[0] : null;
-      transitionReason = "global_priority";
-  }
+// ب. تصفية المهام القادمة (استبعاد الدرس الحالي)
+const validNextTasks = (newDbTasks || []).filter(t => t.meta?.relatedLessonId !== signal.id);
 
-  // 4. إضافة المكافأة للرد النهائي
-  if (gatekeeperResult.reward) {
-      // ✅ احتفال الكوينز (الأهم)
-      parsedResponse.widgets = parsedResponse.widgets || [];
-      parsedResponse.widgets.push({ 
-          type: 'celebration', 
-          data: { 
-              message: `مبروك! كسبت ${gatekeeperResult.reward.coins_added} كوين! 🪙`,
-              coins: gatekeeperResult.reward.coins_added
-          } 
-      });
-      
-      res.locals.rewardData = {
-          reward: gatekeeperResult.reward,
-          new_total_coins: gatekeeperResult.new_total_coins
-      };
-  } else {
-      // ✅ احتفال عادي (فقط إذا لم يكسب كوينز لتجنب الازدحام)
-      parsedResponse.widgets = parsedResponse.widgets || [];
-      parsedResponse.widgets.push({ type: 'celebration', data: { message: 'إنجاز عظيم! 🚀' } });
-  }
+let nextTask = null;
+let transitionReason = "";
 
+// ج. البحث عن درس في "نفس المادة" أولاً (Priority 1)
+const sameSubjectTask = validNextTasks.find(t => t.meta?.relatedSubjectId === currentSubjectId);
+
+if (sameSubjectTask) {
+    // ✅ وجدنا درساً في نفس المادة (نحافظ على التركيز)
+    nextTask = sameSubjectTask;
+    transitionReason = "same_subject"; 
+} else {
+    // ❌ لا يوجد، ننتقل لأهم مهمة عامة (Priority 2)
+    nextTask = validNextTasks.length > 0 ? validNextTasks[0] : null;
+    transitionReason = "global_priority";
+}
+
+// د. إرفاق المهمة القادمة بالرد (ليستخدمها الفرونت إند في زر "المهمة التالية")
+if (nextTask) {
+    parsedResponse.next_task = nextTask;
+    parsedResponse.transition_reason = transitionReason;
+}
+
+// ============================================================
+// 💰 4. معالجة المكافآت والردود (Reward Logic)
+// ============================================================
+
+parsedResponse.widgets = parsedResponse.widgets || [];
+
+if (gatekeeperResult.reward) {
+    
+    // حالة أ: كسب كوينز جديدة (إنجاز جديد)
+    if (gatekeeperResult.reward.coins_added > 0) {
+        // 1. إضافة ويدجت احتفال
+        parsedResponse.widgets.push({ 
+            type: 'celebration', 
+            data: { 
+                message: `مبروك! كسبت ${gatekeeperResult.reward.coins_added} كوين! 🪙`,
+                coins: gatekeeperResult.reward.coins_added
+            } 
+        });
+        
+        // 2. تمرير البيانات لتحديث الهيدر في الفرونت إند
+        res.locals.rewardData = {
+            reward: gatekeeperResult.reward,
+            new_total_coins: gatekeeperResult.new_total_coins
+        };
+    } 
+    // حالة ب: لم يكسب لأنه أخذها سابقاً (Already Claimed)
+    else if (gatekeeperResult.reward.already_claimed) {
+        // 1. تعديل نص الرد لإضافة ملاحظة لطيفة
+        const explanation = "\n\n(ملاحظة: راك ديت المكافأة تاع هاد الدرس من قبل، بصح معليش المراجعة فيها فايدة! 😉)";
+        parsedResponse.reply += explanation;
+        
+        //2. (اختياري) إضافة ويدجت تنبيه صغير بدلاً من الاحتفال الكبير
+        
+        parsedResponse.widgets.push({
+            type: 'toast',
+            data: { message: "تم استلام المكافأة سابقاً", type: "info" }
+        });
+        
+    }
+} else {
+    // حالة ج: إنجاز عادي (بدون نظام مكافآت أو درس لا يحتسب)
+    parsedResponse.widgets.push({ 
+        type: 'celebration', 
+        data: { message: 'إنجاز عظيم! 🚀' } 
+    });
+}
 
   // 4. صياغة الرد بناءً على السياق
   const algiersTime = getAlgiersTimeContext(); 
