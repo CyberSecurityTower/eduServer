@@ -527,9 +527,14 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
     // 10. Action Layer & Agenda Updates
     // ---------------------------------------------------------
 
-    // Handle Lesson Completion
+
+// Handle Lesson Completion
 if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'complete') {
   const signal = parsedResponse.lesson_signal;
+
+  // 1. تسجيل الإكمال (واستلام المكافأة)
+  // ✅ التعديل هنا: استقبال نتيجة Gatekeeper
+  const gatekeeperResult = await markLessonComplete(userId, signal.id, signal.score || 100);
 
   // 1. تسجيل الإكمال
   await markLessonComplete(userId, signal.id, signal.score || 100);
@@ -568,6 +573,26 @@ if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'compl
       nextTask = validNextTasks.length > 0 ? validNextTasks[0] : null;
       transitionReason = "global_priority";
   }
+ // 4. إضافة المكافأة للرد النهائي
+  if (gatekeeperResult.reward) {
+      // نضيف ويدجت احتفال خاص بالكوينز
+      parsedResponse.widgets = parsedResponse.widgets || [];
+      parsedResponse.widgets.push({ 
+          type: 'celebration', 
+          data: { 
+              message: `مبروك! كسبت ${gatekeeperResult.reward.coins_added} كوين! 🪙`,
+              coins: gatekeeperResult.reward.coins_added
+          } 
+      });
+      
+      // نمرر البيانات الخام للفرونت أند ليحدث الـ State
+      // (هذا ليس جزءاً من الـ JSON القياسي للـ AI، بل نضيفه للكائن النهائي)
+      res.locals.rewardData = {
+          reward: gatekeeperResult.reward,
+          new_total_coins: gatekeeperResult.new_total_coins
+      };
+  }
+}
 
   // 4. صياغة الرد بناءً على السياق
   const algiersTime = getAlgiersTimeContext(); 
@@ -652,7 +677,9 @@ if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'compl
       reply: parsedResponse.reply,
       widgets: parsedResponse.widgets || [],
       sessionId: sessionId,
-      mood: parsedResponse.newMood
+      mood: parsedResponse.newMood,
+      ...(res.locals?.rewardData || {}) 
+
     });
 
     // Background processing (Fire and Forget)
