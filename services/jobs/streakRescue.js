@@ -31,8 +31,7 @@ async function runStreakRescueMission() {
     .select('id, first_name, streak_count, last_streak_date, last_rescue_warning') // جلبنا الحقول للتأكد
     .gt('streak_count', 0)
     .lt('last_streak_date', todayStr)
-    .neq('last_rescue_warning', todayStr); // هذا الشرط قد يكون السبب إذا كان الحقل NULL
-
+    .or(`last_rescue_warning.is.null,last_rescue_warning.neq.${todayStr}`);
   // في Supabase، مقارنة neq مع NULL قد تكون خادعة أحياناً، سنعالجها
   // لكن دعنا نرى النتيجة أولاً
 
