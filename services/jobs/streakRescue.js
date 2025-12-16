@@ -21,17 +21,33 @@ async function runStreakRescueMission() {
   const now = new Date();
   const todayStr = now.toISOString().split('T')[0];
 
-  // 1. جلب المستخدمين المعرضين للخطر
+  // طباعة التاريخ الذي يبحث عنه السيرفر
+  console.log(`🔍 DEBUG: Server Date (UTC): ${todayStr}`);
+  console.log(`🔍 DEBUG: Searching for users with last_streak_date < ${todayStr} AND last_rescue_warning != ${todayStr}`);
+
+  // 1. جلب المستخدمين
   const { data: users, error } = await supabase
     .from('users')
-    .select('id, first_name, streak_count, last_streak_date, ai_scheduler_meta, last_rescue_warning')
+    .select('id, first_name, streak_count, last_streak_date, last_rescue_warning') // جلبنا الحقول للتأكد
     .gt('streak_count', 0)
-    .lt('last_streak_date', todayStr) // لم يسجلوا اليوم
-    .neq('last_rescue_warning', todayStr); // لم نجدول لهم اليوم
+    .lt('last_streak_date', todayStr)
+    .neq('last_rescue_warning', todayStr); // هذا الشرط قد يكون السبب إذا كان الحقل NULL
+
+  // في Supabase، مقارنة neq مع NULL قد تكون خادعة أحياناً، سنعالجها
+  // لكن دعنا نرى النتيجة أولاً
 
   if (error) {
     logger.error('Streak Rescue DB Error:', error.message);
     return;
+  }
+
+  console.log(`🔍 DEBUG: Found ${users?.length || 0} users.`);
+  
+  // طباعة أول مستخدم وجده (إن وجد)
+  if (users && users.length > 0) {
+      console.log('🔍 DEBUG: Sample User:', users[0]);
+  } else {
+      console.log('❌ DEBUG: No users found. Check your DB row!');
   }
 
   if (!users || users.length === 0) return;
