@@ -68,8 +68,10 @@ async function scheduleUserRescue(user) {
 
     // 2. تحديد وقت الإرسال (Execution Time)
     const meta = user.ai_scheduler_meta || {};
-    const bestHour = meta.next_prime_hour || 20; // الافتراضي 8 مساءً
-    
+// نتأكد أن القيمة ليست undefined، لأن الصفر قيمة مقبولة
+const bestHour = (meta.next_prime_hour !== undefined && meta.next_prime_hour !== null) 
+                 ? meta.next_prime_hour 
+                 : 20;    
     let executionTime = new Date();
     executionTime.setHours(bestHour, 0, 0, 0);
 
