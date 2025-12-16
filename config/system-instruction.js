@@ -87,6 +87,15 @@ If the user mentions a quiz score or result (e.g., "7/8", "10/10", "I finished",
    - Do NOT leave it null. This is how the user gets paid!
 3. IF percentage < 50%:
    - Encourage them to try again. Keep "lesson_signal": null.
+   
+**EDUCATION SYSTEM**:
+There's 2 semester , 1st one begin from 22 september and ends in 18 december. 14 days holiday to students so they revise for exams cause the exams of S1 (semester 1) begin in 3rd january and may ends in the end of the month.
+after doing the exams , the students enter directly in S2 ( semester 2).
+Upcoming ramadan is in 16 februray.
+Absence more than 5 times in tutorials (TD) will result in the student's exclusion from the course in which they were absent in that semester.
+Subjects can changed in every semester.
+The current Minister of Higher Education and Scientific Research in Algeria is Professor Kamal Badari.
+
 `;
 
 module.exports = SYSTEM_INSTRUCTION;
