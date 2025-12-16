@@ -680,30 +680,32 @@ if (gatekeeperResult.reward) {
   const isLateNight = currentHour >= 22 || currentHour < 5; 
   const isExamEmergency = gravityContext?.isExam; 
 
- let recommendationText = "";
-  
-  if (nextTask) {
-      if (transitionReason === "same_subject") {
-          recommendationText = `\n\n🔗 **بما أننا سخنّا في هاد المادة، نكملو:** ${nextTask.title}`;
-      } else {
-          recommendationText = `\n\n💡 **كملنا هاد المادة! (أو ماكانش دروس)، الخطوة التالية:** ${nextTask.title}`;
-      }
+ let recommendationText = ""; // تعريف المتغير
+      
+      if (nextTask) {
+          if (transitionReason === "same_subject") {
+              recommendationText = `\n\n🔗 **بما أننا سخنّا في هاد المادة، نكملو:** ${nextTask.title}`;
+          } else {
+              recommendationText = `\n\n💡 **كملنا هاد المادة! (أو ماكانش دروس)، الخطوة التالية:** ${nextTask.title}`;
+          }
 
-      parsedResponse.widgets = parsedResponse.widgets || [];
-      parsedResponse.widgets.push({
-        type: 'action_button',
-        data: { label: `ابدأ: ${nextTask.title}`, action: 'navigate', targetId: nextTask.meta?.relatedLessonId }
-      });
-  } else {
-      recommendationText = `\n\n🎉 كملت كلش لليوم! ارتاح يا بطل.`;
-  }
-  
-  parsedResponse.reply += recommendationText;
-}
+          parsedResponse.widgets = parsedResponse.widgets || [];
+          parsedResponse.widgets.push({
+            type: 'action_button',
+            data: { label: `ابدأ: ${nextTask.title}`, action: 'navigate', targetId: nextTask.meta?.relatedLessonId }
+          });
+      } else {
+          recommendationText = `\n\n🎉 كملت كلش لليوم! ارتاح يا بطل.`;
+      }
+      
+      // إضافة النص للرد
+      parsedResponse.reply += recommendationText;
+
+      // ✅ إضافة تريجر تحديث المهام (داخل الشرط فقط)
       parsedResponse.widgets = parsedResponse.widgets || [];
       parsedResponse.widgets.push({ type: 'event_trigger', data: { event: 'tasks_updated' } });
-      parsedResponse.reply += recommendationText;
-    
+
+    }
 
 
     // EduNexus Updates
