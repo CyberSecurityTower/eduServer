@@ -20,50 +20,48 @@ function initGhostEngine(dependencies) {
 async function scanAndFillEmptyLessons() {
   logger.info('👻 Ghost Teacher Scanner Started (Safe Mode)...');
   
-  // 1. جلب الدروس فقط (بدون Join لتجنب خطأ العلاقات)
+  // 1. جلب الدروس (بدون Join لتجنب مشاكل العلاقات)
   const { data: allLessons, error: lessonsError } = await supabase
     .from('lessons')
-    .select('id, title, subject_id'); // 👈 حذفنا subjects(title)
+    .select('id, title, subject_id');
 
   if (lessonsError || !allLessons) {
     logger.error('❌ Error loading lessons:', lessonsError?.message);
     return;
   }
 
-  // 2. جلب أسماء المواد يدوياً (Manual Mapping)
-  // نجمع كل الـ subject_ids الفريدة
+  // 2. جلب أسماء المواد يدوياً
   const subjectIds = [...new Set(allLessons.map(l => l.subject_id).filter(Boolean))];
-  
   const { data: subjectsData } = await supabase
     .from('subjects')
     .select('id, title')
     .in('id', subjectIds);
 
-  // نصنع خريطة سريعة: { subject_id: "Math", ... }
   const subjectMap = {};
   if (subjectsData) {
       subjectsData.forEach(s => { subjectMap[s.id] = s.title; });
   }
 
-  // 3. دمج البيانات يدوياً
   const enrichedLessons = allLessons.map(lesson => ({
       ...lesson,
-      subjects: { title: subjectMap[lesson.subject_id] || 'General' } // 👈 محاكاة الهيكل القديم
+      subjects: { title: subjectMap[lesson.subject_id] || 'General' }
   }));
 
-  // 4. جلب المحتوى الموجود (نفس الكود القديم)
+  // 3. جلب المحتوى الموجود
+  // 🔴 التعديل هنا: غيرنا lesson_id إلى id بناءً على صورة الداتابيز
   const { data: existingContents, error: contentError } = await supabase
     .from('lessons_content')
-    .select('lesson_id');
+    .select('id'); // 👈 كان lesson_id وأصبح id
 
   if (contentError) {
     logger.error('❌ Error loading lesson contents:', contentError.message);
     return;
   }
 
-  const existingIds = new Set(existingContents?.map(x => x.lesson_id) || []);
+  // 🔴 التعديل هنا أيضاً: الخريطة تقرأ id
+  const existingIds = new Set(existingContents?.map(x => x.id) || []);
 
-  // 5. الفلترة (نستخدم القائمة المدمجة enrichedLessons)
+  // 4. الفلترة
   const emptyLessons = enrichedLessons.filter(l => !existingIds.has(l.id));
 
   if (emptyLessons.length === 0) {
@@ -77,7 +75,6 @@ async function scanAndFillEmptyLessons() {
     await generateAndSaveLessonContent(lesson);
   }
 }
-
 /**
  * Generate lesson Markdown and save it in DB
  */
