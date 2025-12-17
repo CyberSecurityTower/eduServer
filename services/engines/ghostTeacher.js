@@ -16,21 +16,41 @@ function initGhostEngine(dependencies) {
 /**
  * 🕵️‍♂️ الماسح الضوئي الذكي (Smart Scanner)
  * يبحث عن الدروس التي ليس لها سجل في جدول المحتوى
- */
-async function scanAndFillEmptyLessons() {
-  logger.info('👻 Ghost Teacher Scanner Started (Direct Check Mode)...');
+ */async function scanAndFillEmptyLessons() {
+  logger.info('👻 Ghost Teacher Scanner Started (Safe Mode)...');
   
-  // 1. Fetch all lessons
+  // 1. جلب الدروس فقط (بدون Join لتجنب خطأ العلاقات)
   const { data: allLessons, error: lessonsError } = await supabase
     .from('lessons')
-    .select('id, title, subject_id, subjects(title)');
+    .select('id, title, subject_id'); // 👈 حذفنا subjects(title)
 
   if (lessonsError || !allLessons) {
     logger.error('❌ Error loading lessons:', lessonsError?.message);
     return;
   }
 
-  // 2. Fetch existing lesson content IDs
+  // 2. جلب أسماء المواد يدوياً (Manual Mapping)
+  // نجمع كل الـ subject_ids الفريدة
+  const subjectIds = [...new Set(allLessons.map(l => l.subject_id).filter(Boolean))];
+  
+  const { data: subjectsData } = await supabase
+    .from('subjects')
+    .select('id, title')
+    .in('id', subjectIds);
+
+  // نصنع خريطة سريعة: { subject_id: "Math", ... }
+  const subjectMap = {};
+  if (subjectsData) {
+      subjectsData.forEach(s => { subjectMap[s.id] = s.title; });
+  }
+
+  // 3. دمج البيانات يدوياً
+  const enrichedLessons = allLessons.map(lesson => ({
+      ...lesson,
+      subjects: { title: subjectMap[lesson.subject_id] || 'General' } // 👈 محاكاة الهيكل القديم
+  }));
+
+  // 4. جلب المحتوى الموجود (نفس الكود القديم)
   const { data: existingContents, error: contentError } = await supabase
     .from('lessons_content')
     .select('lesson_id');
@@ -42,8 +62,8 @@ async function scanAndFillEmptyLessons() {
 
   const existingIds = new Set(existingContents?.map(x => x.lesson_id) || []);
 
-  // 3. Filter empty lessons
-  const emptyLessons = allLessons.filter(l => !existingIds.has(l.id));
+  // 5. الفلترة (نستخدم القائمة المدمجة enrichedLessons)
+  const emptyLessons = enrichedLessons.filter(l => !existingIds.has(l.id));
 
   if (emptyLessons.length === 0) {
     logger.info('👻 All lessons have content. System is clean.');
@@ -56,7 +76,6 @@ async function scanAndFillEmptyLessons() {
     await generateAndSaveLessonContent(lesson);
   }
 }
-
 
 /**
  * Generate lesson Markdown and save it in DB
