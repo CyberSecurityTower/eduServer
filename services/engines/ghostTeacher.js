@@ -1,3 +1,14 @@
+The error occurs because you are using backticks ( ) inside a JavaScript template literal (which is also defined by backticks). This causes the JavaScript parser to think the string has ended early, leading to theSyntaxError`.
+
+To fix this, you must escape every backtick inside the prompt string using a backslash (```).
+
+Here is the corrected file:
+
+code
+JavaScript
+download
+content_copy
+expand_less
 // services/engines/ghostTeacher.js
 'use strict';
 
@@ -64,7 +75,7 @@ async function generateAndSaveLessonContent(lesson) {
   try {
       const subjectTitle = lesson.subjects?.title || 'General';
       
-      // 🔥 البرومبت المعدل: محتوى خام مباشر (Direct Content)
+      // 🔥 البرومبت المعدل: تم الهروب من علامات التنصيص المائلة (Backticks) لتجنب أخطاء الكود
       const prompt = `
       You are an Academic Content Generator.
       Subject: ${subjectTitle}
@@ -86,47 +97,47 @@ async function generateAndSaveLessonContent(lesson) {
 1.  **Direction & Language:** The output MUST be in the same language as the input (Arabic or English). If Arabic, ensure the flow is logical for Right-to-Left reading.
 2.  **Bold Headers:** All headers (# H1, ## H2, ### H3) must be concise and catchy.
 3.  **Emphasis:** Use **Bold** frequently for key terms, definitions, and important concepts within paragraphs.
-4.  **No Nesting:** NEVER put a `spoiler`, `chart`, or `steps` block INSIDE a blockquote (`> !tip`). Interactive elements must stand alone on their own lines.
-5.  **Math Formatting:** Do NOT use complex LaTeX (like `\text{}`). Write math equations in a clean, readable format inside the `math` block. Example: `H2O -> 2H + O` or `Assets = Liabilities + Equity`.
+4.  **No Nesting:** NEVER put a \`spoiler\`, \`chart\`, or \`steps\` block INSIDE a blockquote (\`> !tip\`). Interactive elements must stand alone on their own lines.
+5.  **Math Formatting:** Do NOT use complex LaTeX (like \`\\text{}\`). Write math equations in a clean, readable format inside the \`math\` block. Example: \`H2O -> 2H + O\` or \`Assets = Liabilities + Equity\`.
 6.  **Visual Spacing:** Do not stack two visual components (like a Chart and a Table) immediately after each other. Always put a sentence or two of explanation in between.
 
 ### YOUR TOOLKIT (Custom Markdown):
 
 **1. Text Structure:**
-   - `# Main Title` (Only one at the top)
-   - `## Section Title` (Use for main topics)
-   - `### Sub-section` (Use for details)
-   - `**Bold**` for emphasis.
-   - `*` for bullet points.
+   - \`# Main Title\` (Only one at the top)
+   - \`## Section Title\` (Use for main topics)
+   - \`### Sub-section\` (Use for details)
+   - \`**Bold**\` for emphasis.
+   - \`*\` for bullet points.
 
 **2. Alert Boxes (Blockquotes):**
    - Use these to break monotony.
-   - `> !tip This is a helpful tip.`
-   - `> !warn Watch out for this common mistake.`
-   - `> !info Fun fact or extra context.`
-   - `> !note Key takeaway for exams.`
-   - `> "Quote text here" | Author Name`
+   - \`> !tip This is a helpful tip.\`
+   - \`> !warn Watch out for this common mistake.\`
+   - \`> !info Fun fact or extra context.\`
+   - \`> !note Key takeaway for exams.\`
+   - \`> "Quote text here" | Author Name\`
 
-**3. Interactive Components (Use ```code blocks):**
+**3. Interactive Components (Use \`\`\`code blocks):**
    *Write the JSON on a SINGLE line to avoid parsing errors.*
 
    - **Spoiler (Hidden Info):**
-     ```spoiler The hidden answer is here ```
+     \`\`\`spoiler The hidden answer is here \`\`\`
 
    - **Math Equation:**
-     ```math E = mc^2 ```
+     \`\`\`math E = mc^2 \`\`\`
 
    - **Steps (Process/Timeline):**
-     Language: `steps`
-     JSON: `[{"label": "Step 1", "desc": "Description", "active": true}, {"label": "Step 2", "desc": "Description", "active": false}]`
+     Language: \`steps\`
+     JSON: \`[{"label": "Step 1", "desc": "Description", "active": true}, {"label": "Step 2", "desc": "Description", "active": false}]\`
 
    - **Comparison Table:**
-     Language: `table`
-     JSON: `{"headers": ["Col A", "Col B"], "rows": [["Val 1", "Val 2"], ["Val 3", "Val 4"]]}`
+     Language: \`table\`
+     JSON: \`{"headers": ["Col A", "Col B"], "rows": [["Val 1", "Val 2"], ["Val 3", "Val 4"]]}\`
 
    - **Charts (Only if data exists):**
-     Language: `chart:pie` OR `chart:bar`
-     JSON: `{"labels": ["A", "B"], "datasets": [{"data": [10, 20]}]}`
+     Language: \`chart:pie\` OR \`chart:bar\`
+     JSON: \`{"labels": ["A", "B"], "datasets": [{"data": [10, 20]}]}\`
 
 ### INPUT PROCESSING:
 **Input:** Lesson Title + Source Material.
@@ -144,20 +155,20 @@ Generate the Markdown content now. Ensure no Markdown syntax errors.
 ### ⚠️ قواعد صارمة جداً (لا تخالفها أبداً):
 
 1. **تنسيق المكونات التفاعلية (Interactive Components):**
-   - يجب كتابة الكود داخل "Code Block" ثلاثي العلامات (```).
+   - يجب كتابة الكود داخل "Code Block" ثلاثي العلامات (\`\`\`).
    - **هام جداً:** يجب أن يكون اسم المكون (اللغة) في السطر الأول، والـ JSON في السطر الثاني، وإغلاق العلامات في السطر الثالث.
    
    ✅ **الشكل الصحيح (مقبول):**
-   ```steps
+   \`\`\`steps
    [{"label": "خطوة 1", "desc": "شرح", "active": true}]
-   ```
+   \`\`\`
 
    ❌ **الشكل الخاطئ (مرفوض):**
-   ```steps [{"label": "خطوة 1"}] ```
+   \`\`\`steps [{"label": "خطوة 1"}] \`\`\`
 
 2. **قواعد الـ JSON:**
    - يجب أن يكون الـ JSON في **سطر واحد فقط** (Minified).
-   - تأكد من إغلاق جميع الأقواس `[]` و `{}`.
+   - تأكد من إغلاق جميع الأقواس \`[]\` و \`{}\`.
    - لا تضع أي نص إضافي قبل أو بعد الـ JSON داخل البلوك.
 
 3. **اللغة والتنسيق:**
@@ -169,24 +180,24 @@ Generate the Markdown content now. Ensure no Markdown syntax errors.
 ### 🛠️ المكونات المتاحة (انسخ الأسماء بدقة):
 
 - **خطوات (Steps):**
-  ```steps
+  \`\`\`steps
   [{"label": "العنوان", "desc": "الوصف", "active": true}]
-  ```
+  \`\`\`
 
 - **جدول (Table):**
-  ```table
+  \`\`\`table
   {"headers": ["أ", "ب"], "rows": [["1", "2"]]}
-  ```
+  \`\`\`
 
 - **معادلة (Math):**
-  ```math
+  \`\`\`math
   الناتج = الدخل - الاستهلاك
-  ```
+  \`\`\`
 
 - **إجابة مخفية (Spoiler):**
-  ```spoiler
+  \`\`\`spoiler
   الإجابة الصحيحة هي...
-  ```
+  \`\`\`
 
 - **ملاحظات (Blockquotes):**
   > !tip نصيحة مفيدة
@@ -201,10 +212,10 @@ Generate the Markdown content now. Ensure no Markdown syntax errors.
 كود Markdown فقط، بدون مقدمات أو خاتمة من عندك. ابدأ بالكود فوراً.
 
 4. **التنسيق الجمالي (Visual Styling):**
-   - استخدم الفاصل الأفقي `---` (ثلاث شرطات) للفصل بين كل قسم رئيسي وآخر. هذا سيتحول تلقائياً لخط فاصل ملون وأنيق.
-   - اجعل العنوان الرئيسي للدرس يبدأ بـ `#` (هاشتاج واحد).
-   - اجعل عناوين الفقرات تبدأ بـ `##` (هاشتاجين).
-   - لا تستخدم العناوين الفرعية `###` إلا للضرورة القصوى. او عنوان الدرس في البداية او العناصر الأساسية
+   - استخدم الفاصل الأفقي \`---\` (ثلاث شرطات) للفصل بين كل قسم رئيسي وآخر. هذا سيتحول تلقائياً لخط فاصل ملون وأنيق.
+   - اجعل العنوان الرئيسي للدرس يبدأ بـ \`#\` (هاشتاج واحد).
+   - اجعل عناوين الفقرات تبدأ بـ \`##\` (هاشتاجين).
+   - لا تستخدم العناوين الفرعية \`###\` إلا للضرورة القصوى. او عنوان الدرس في البداية او العناصر الأساسية
    here's full example:
    
 # مدخل نظري عام إلى علم الاقتصاد وعلاقته بالعلوم الأخرى
@@ -243,9 +254,9 @@ Generate the Markdown content now. Ensure no Markdown syntax errors.
 
 حاول تخمين المعادلة الأساسية للمشكلة الاقتصادية قبل كشفها:
 
-```spoiler
+\`\`\`spoiler
 المشكلة الاقتصادية = حاجات بشرية لا نهائية + موارد طبيعية محدودة
-```
+\`\`\`
 
 ---
 
@@ -273,9 +284,9 @@ Generate the Markdown content now. Ensure no Markdown syntax errors.
 
 إليك مقارنة دقيقة بين الفرعين:
 
-```table
+\`\`\`table
 {"headers": ["وجه المقارنة", "الاقتصاد الجزئي (Micro)", "الاقتصاد الكلي (Macro)"], "rows": [["وحدة الدراسة", "الفرد، الأسرة، الشركة", "الدولة، المجتمع الدولي"], ["الهدف", "تعظيم منفعة الفرد/ربح الشركة", "تحقيق الاستقرار والنمو الاقتصادي"], ["مثال", "سعر البرتقال في السوق", "معدل البطالة أو التضخم في الجزائر"]]}
-```
+\`\`\`
 
 ---
 
@@ -283,9 +294,9 @@ Generate the Markdown content now. Ensure no Markdown syntax errors.
 
 السبب الرئيسي لوجود علم الاقتصاد هو **"الندرة"**. لو كانت الموارد وفيرة كالخيال، لما احتجنا للاقتصاد. أي نظام اقتصادي في العالم يحاول الإجابة على ثلاث أسئلة مصيرية لحل هذه المشكلة:
 
-```steps
+\`\`\`steps
 [{"label": "1. ماذا ننتج؟", "desc": "تحديد نوع وكمية السلع (هل نزرع قمحاً أم نصنع سيارات؟)", "active": true}, {"label": "2. كيف ننتج؟", "desc": "تحديد التقنية والموارد المستخدمة (عمالة كثيفة أم آلات متطورة؟)", "active": false}, {"label": "3. لمن ننتج؟", "desc": "كيفية توزيع الناتج والعائد على أفراد المجتمع (من يستفيد؟)", "active": false}]
-```
+\`\`\`
 
 > !warn **مفهوم الندرة:**
 > الندرة في الاقتصاد لا تعني "الفقر"، بل تعني أن الموارد **محدودة** مقارنة بالرغبات. حتى الدول الغنية تعاني من الندرة لأنها لا تستطيع تحقيق *كل* رغبات مواطنيها في آن واحد.
@@ -303,9 +314,9 @@ Generate the Markdown content now. Ensure no Markdown syntax errors.
 
 يمكن تمثيل ذلك بمعادلة إنتاجية بسيطة:
 
-```math
+\`\`\`math
 الإنتاج = الأرض + العمل + رأس المال + التنظيم
-```
+\`\`\`
 
 ---
 
@@ -316,7 +327,7 @@ Generate the Markdown content now. Ensure no Markdown syntax errors.
 *   ينقسم إلى **جزئي** (دراسة الوحدات الفردية) و **كلي** (دراسة المتغيرات القومية).
 *   محور الدراسة هو الإجابة على الأسئلة الثلاثة: **ماذا ننتج؟ كيف ننتج؟ ولمن ننتج؟**   
 ---
-<https://youtu.be/5M30gz5uF-8?si=lCJ7j2jzy>                  
+<yt_link_url>             
      
       `;
 
