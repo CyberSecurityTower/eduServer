@@ -16,7 +16,8 @@ function initGhostEngine(dependencies) {
 /**
  * 🕵️‍♂️ الماسح الضوئي الذكي (Smart Scanner)
  * يبحث عن الدروس التي ليس لها سجل في جدول المحتوى
- */async function scanAndFillEmptyLessons() {
+ */
+async function scanAndFillEmptyLessons() {
   logger.info('👻 Ghost Teacher Scanner Started (Safe Mode)...');
   
   // 1. جلب الدروس فقط (بدون Join لتجنب خطأ العلاقات)
