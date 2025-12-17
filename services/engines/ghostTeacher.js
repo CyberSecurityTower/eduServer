@@ -1,14 +1,4 @@
-The error occurs because you are using backticks ( ) inside a JavaScript template literal (which is also defined by backticks). This causes the JavaScript parser to think the string has ended early, leading to theSyntaxError`.
 
-To fix this, you must escape every backtick inside the prompt string using a backslash (```).
-
-Here is the corrected file:
-
-code
-JavaScript
-download
-content_copy
-expand_less
 // services/engines/ghostTeacher.js
 'use strict';
 
