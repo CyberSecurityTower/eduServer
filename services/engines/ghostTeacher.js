@@ -69,9 +69,9 @@ async function scanAndFillEmptyLessons() {
     return;
   }
 
-  logger.info(`👻 Found ${emptyLessons.length} truly empty lessons. Processing batch of 5...`);
+  logger.info(`👻 Found ${emptyLessons.length} truly empty lessons. Processing batch of 15...`);
 
-  for (const lesson of emptyLessons.slice(0, 5)) {
+  for (const lesson of emptyLessons.slice(0, 15)) {
     await generateAndSaveLessonContent(lesson);
   }
 }
