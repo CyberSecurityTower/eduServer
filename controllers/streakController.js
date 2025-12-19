@@ -7,18 +7,12 @@ const logger = require('../utils/logger');
 /**
  * دالة تسجيل الدخول اليومي (Daily Check-in)
  * تستدعي دالة SQL الآمنة لحساب الستريك والنقاط
- */
-async function dailyCheckIn(req, res) {
+ */async function dailyCheckIn(req, res) {
   try {
-    // 1. الحصول على معرف المستخدم من التوكن (لضمان الأمان)
     const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
 
-    if (!userId) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-
-    // 2. استدعاء دالة SQL عبر RPC (Remote Procedure Call)
-    // اسم الدالة في قاعدة البيانات هو 'update_streak_secure'
+    // استدعاء الدالة الذكية
     const { data, error } = await supabase.rpc('update_streak_secure', {
       target_user_id: userId
     });
@@ -28,36 +22,43 @@ async function dailyCheckIn(req, res) {
       return res.status(500).json({ error: 'Failed to update streak' });
     }
 
-    // 3. تحليل النتيجة القادمة من قاعدة البيانات
-    // الدالة ترجع JSON مثل: { status: 'success', new_streak: 5, coins_added: 15, ... }
-    
+    // 1. حالة المطالبة المسبقة
     if (data.status === 'already_claimed') {
       return res.status(200).json({
         success: true,
-        message: 'تم تسجيل الحضور اليوم مسبقاً.',
+        message: 'راك جيت اليوم ديجا، ولي غدوة!',
         data: data
       });
     }
 
-    // حالة النجاح (تمت زيادة الستريك)
-    logger.success(`🔥 Streak updated for ${userId}: ${data.new_streak} days (+${data.coins_added} coins)`);
-    
-    // ------------------------------------------------------------------
-    // 🔥 Kill Switch: حذف أي رسالة إنقاذ مجدولة لأن المستخدم قد دخل بالفعل
-    // ------------------------------------------------------------------
-    await supabase
-      .from('scheduled_actions')
-      .delete()
-      .eq('user_id', userId)
-      .eq('type', 'streak_rescue')
-      .eq('status', 'pending');
+    // 2. حالة الخصم (Reset) - هنا التقرير المصغر
+    if (data.status === 'reset') {
+      logger.warn(`💔 User ${userId} lost streak. Penalty: -${data.penalty_deducted}`);
+      
+      // تنفيذ الـ Kill Switch (حذف رسائل الإنقاذ)
+      await supabase.from('scheduled_actions').delete().eq('user_id', userId).eq('type', 'streak_rescue');
 
-    logger.info(`🗑️ Cancelled pending rescue messages for ${userId}`);
-    // ------------------------------------------------------------------
+      return res.status(200).json({
+        success: true,
+        wasReset: true,
+        message: `للأسف ضيعت ستريك ${data.lost_streak} يوم.. وخصمنا ${data.penalty_deducted} كوينز (65%) من أرباحك السابقة.`,
+        penaltyReport: {
+          lostStreak: data.lost_streak,
+          deductedCoins: data.penalty_deducted,
+          newStreak: 1
+        }
+      });
+    }
+
+    // 3. حالة النجاح العادي
+    logger.success(`🔥 Streak updated for ${userId}: ${data.new_streak} days`);
+    
+    // تنفيذ الـ Kill Switch
+    await supabase.from('scheduled_actions').delete().eq('user_id', userId).eq('type', 'streak_rescue');
 
     return res.status(200).json({
       success: true,
-      message: `مبروك! حافظت على الستريك لـ ${data.new_streak} أيام.`,
+      message: `مبروك! راك في ${data.new_streak} يوم ستريك.`,
       data: data
     });
 
