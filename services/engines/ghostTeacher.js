@@ -88,7 +88,7 @@ async function generateAndSaveLessonContent(lesson) {
       Subject: ${subjectTitle}
       Lesson: "${lesson.title}"
 
-      **Task:** Generate the lesson content in **Formal Arabic (الفصحى)**.
+      **Task:** Generate the lesson content in **Formal Title's Language ( arabic or english or frensh (depending on title's language))**.
       
       **STRICT RULES:**
       1. **NO INTRODUCTIONS:** Do NOT say "Welcome students", "Today we discuss", or "In this lesson".
