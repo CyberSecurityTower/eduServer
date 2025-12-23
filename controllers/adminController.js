@@ -307,40 +307,55 @@ async function triggerFullIndexing(req, res) {
 }
 
 // 🔥 المحرك الفعلي الذي يعمل في الخلفية
+
 async function runBackgroundIndexing() {
   console.log('==========================================');
-  console.log('📡 STARTING BACKGROUND INDEXING JOB...');
+  console.log('📡 STARTING ROBUST BACKGROUND INDEXING...');
   console.log('==========================================');
 
   try {
-    // أ. جلب كل المحتوى من جدول lessons_content
-    // نستخدم Join لجلب عنوان الدرس واسم المادة المرتبطة به
-    const { data: contents, error } = await supabase
+    // 1. جلب المحتوى الخام (بدون Join لتجنب الخطأ)
+    console.log('📥 Fetching raw content...');
+    const { data: contents, error: contentError } = await supabase
       .from('lessons_content')
-      .select(`
-        id,
-        content,
-        lesson_id, 
-        lessons:lesson_id (
-          id,
-          title,
-          subject_id,
-          subjects:subject_id ( title )
-        )
-      `);
+      .select('lesson_id, content');
 
-    if (error) throw new Error(`Fetch Error: ${error.message}`);
-    
+    if (contentError) throw new Error(`Content Fetch Error: ${contentError.message}`);
     if (!contents || contents.length === 0) {
-      console.log('⚠️ No content found in lessons_content table.');
+      console.log('⚠️ No content found.');
       return;
     }
 
-    console.log(`📥 Found ${contents.length} content rows. Checking for un-indexed lessons...`);
+    // 2. جلب معلومات الدروس (العناوين)
+    console.log('📥 Fetching lessons metadata...');
+    const { data: lessonsMeta, error: metaError } = await supabase
+      .from('lessons')
+      .select('id, title, subject_id');
 
-    // ب. جلب قائمة الدروس التي تمت فهرستها سابقاً (لتجنب التكرار)
-    // نتحقق من metadata->>lesson_id في جدول curriculum_embeddings
-    // ملاحظة: هذه الطريقة للتحقق قد تكون ثقيلة إذا كان الجدول ضخماً، لكنها مناسبة للبداية
+    if (metaError) throw new Error(`Meta Fetch Error: ${metaError.message}`);
+
+    // 3. جلب أسماء المواد
+    console.log('📥 Fetching subjects...');
+    const { data: subjects, error: subjectError } = await supabase
+      .from('subjects')
+      .select('id, title'); // تأكد أن اسم العمود هو title أو name حسب جدولك
+
+    // 4. تجهيز الخرائط (Maps) للسرعة
+    // هذا يحول المصفوفات إلى كائنات ليسهل البحث فيها
+    const subjectsMap = {};
+    if (subjects) subjects.forEach(s => subjectsMap[s.id] = s.title);
+
+    const lessonsMap = {};
+    if (lessonsMeta) {
+      lessonsMeta.forEach(l => {
+        lessonsMap[l.id] = {
+          title: l.title,
+          subject_title: subjectsMap[l.subject_id] || 'General'
+        };
+      });
+    }
+
+    // 5. التحقق من المفهرس سابقاً (لتجنب التكرار)
     const { data: existingEmbeddings } = await supabase
       .from('curriculum_embeddings')
       .select('metadata');
@@ -354,81 +369,60 @@ async function runBackgroundIndexing() {
       });
     }
 
-    // ج. تصفية الدروس الجديدة فقط
-    const tasks = contents.filter(item => {
-      // item.lessons هو الدرس المرتبط، وقد يكون null إذا كان الرابط مكسوراً
-      // item.lesson_id هو المفتاح الأجنبي
-      const lId = item.lesson_id; 
-      // إذا لم يكن موجوداً في القائمة المفهرسة، نقبله
-      return !indexedLessonIds.has(lId);
-    });
+    // 6. تصفية الدروس الجديدة
+    const tasks = contents.filter(item => !indexedLessonIds.has(item.lesson_id));
 
     if (tasks.length === 0) {
-      console.log('✅ All lessons are already indexed! Nothing to do.');
+      console.log('✅ All lessons are already indexed!');
       return;
     }
 
     console.log(`🚀 Starting to index ${tasks.length} NEW lessons...`);
-
     let successCount = 0;
 
-    // د. حلقة المعالجة
+    // 7. الحلقة الرئيسية
     for (const item of tasks) {
-      const lessonData = item.lessons; // البيانات القادمة من الـ Join
-      const lessonTitle = lessonData?.title || 'Unknown Lesson';
-      const subjectTitle = lessonData?.subjects?.title || 'General Subject';
+      // هنا نستخدم الـ Map بدلاً من الـ Join
+      const meta = lessonsMap[item.lesson_id] || { title: 'Unknown Lesson', subject_title: 'Unknown Subject' };
       const rawText = item.content;
 
-      if (!rawText || rawText.length < 50) {
-        console.log(`⚠️ Skipping short content for lesson: ${lessonTitle}`);
-        continue;
-      }
+      if (!rawText || rawText.length < 50) continue;
 
-      console.log(`🔹 Processing: [${subjectTitle}] -> ${lessonTitle}`);
+      console.log(`🔹 Processing: [${meta.subject_title}] -> ${meta.title}`);
 
       // تقسيم النص
       const chunks = rawText.match(/[\s\S]{1,1000}/g) || [rawText];
 
       for (const chunk of chunks) {
-        // 🔥 السر هنا: ربط النص بالعنوان والمادة (Contextual Embedding)
-        const richText = `المادة: ${subjectTitle}\nالدرس: ${lessonTitle}\nالمحتوى: ${chunk}`;
+        // دمج العنوان مع النص
+        const richText = `المادة: ${meta.subject_title}\nالدرس: ${meta.title}\nالمحتوى: ${chunk}`;
 
         // توليد الفيكتور
         const embedding = await embeddingService.generateEmbedding(richText);
 
-        if (embedding && embedding.length > 0) {
-          // الحفظ في Supabase
+        if (embedding) {
           await supabase.from('curriculum_embeddings').insert({
-            path_id: 'UAlger3_L1_ITCF', // معرف تخصصك (تأكد منه)
+            path_id: 'UAlger3_L1_ITCF', // تأكد من هذا الكود
             content: richText,
             embedding: embedding,
             metadata: {
               lesson_id: item.lesson_id,
-              lesson_title: lessonTitle,
-              subject_id: lessonData?.subject_id,
-              subject_title: subjectTitle,
-              source: 'api_indexer'
+              lesson_title: meta.title,
+              subject_title: meta.subject_title,
+              source: 'api_indexer_v2'
             }
           });
         }
-        
-        // انتظار صغير لتجنب حظر Gemini (Rate Limit)
+        // تأخير بسيط
         await new Promise(r => setTimeout(r, 500));
       }
-
       successCount++;
-      // طباعة نسبة التقدم كل 5 دروس
-      if (successCount % 5 === 0) {
-        console.log(`⏳ Progress: ${successCount}/${tasks.length} lessons indexed.`);
-      }
     }
 
-    console.log('==========================================');
-    console.log(`🎉 JOB COMPLETE! Successfully indexed ${successCount} lessons.`);
-    console.log('==========================================');
+    console.log(`🎉 DONE! Indexed ${successCount} lessons.`);
 
   } catch (err) {
-    console.error('❌ CRITICAL INDEXING ERROR:', err);
+    console.error('❌ ERROR:', err);
   }
 }
 
