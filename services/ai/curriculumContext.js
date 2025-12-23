@@ -1,102 +1,47 @@
 
-// src/services/ai/curriculumContext.js
 'use strict';
-
-// تأكد أن المسار صحيح بالنسبة لمكان الملف
-const supabase = require('../../services/data/supabase'); 
+const supabase = require('../data/supabase'); 
 
 let cachedContext = null;
 let lastFetchTime = 0;
-const CACHE_DURATION = 1000 * 60 * 60; 
 
 async function getCurriculumContext() {
-    const now = Date.now();
-    if (cachedContext && (now - lastFetchTime < CACHE_DURATION)) {
-        return cachedContext;
-    }
-
-    console.log('🔄 [Context] Fetching Curriculum Data...');
+    if (cachedContext && (Date.now() - lastFetchTime < 3600000)) return cachedContext;
 
     try {
-        // 1. جلب الفصل الحالي
-        let currentSemester = 'S1'; // الافتراضي
-        const { data: setting, error: setErr } = await supabase
-            .from('system_settings')
-            .select('value')
-            .eq('key', 'current_semester')
-            .maybeSingle(); // نستخدم maybeSingle لتجنب الخطأ لو لم يوجد
+        // 1. جلب الفصل الدراسي
+        const { data: settings } = await supabase.from('system_settings').select('value').eq('key', 'current_semester').maybeSingle();
+        const semester = settings?.value || 'S1';
 
-        if (setting?.value) currentSemester = setting.value;
-        console.log(`ℹ️ [Context] Current Semester: ${currentSemester}`);
-
-        // 2. جلب المواد
-        const { data: subjects, error: subError } = await supabase
+        // 2. جلب المواد والدروس بضربة واحدة (Join)
+        // سنستخدم استعلاماً بسيطاً يضمن جلب كل شيء
+        const { data: subjects, error: subErr } = await supabase
             .from('subjects')
-            .select('id, title')
-            .eq('semester', currentSemester);
+            .select(`id, title, lessons ( title )`)
+            .eq('semester', semester);
 
-        if (subError) {
-            console.error('❌ [Context] Error fetching subjects:', subError.message);
-            return "";
+        if (subErr || !subjects || subjects.length === 0) {
+            console.error("❌ [CURRICULUM] No data found for semester:", semester);
+            return "⚠️ تنبيه: لم يتم العثور على مواد في قاعدة البيانات لهذا الفصل.";
         }
 
-        if (!subjects || subjects.length === 0) {
-            console.warn(`⚠️ [Context] No subjects found for semester ${currentSemester}`);
-            return "No subjects found in database.";
-        }
-        console.log(`✅ [Context] Found ${subjects.length} subjects.`);
-
-        const subjectIds = subjects.map(s => s.id);
-
-        // 3. جلب الدروس
-        const { data: lessons, error: lesError } = await supabase
-            .from('lessons')
-            .select('title, subject_id')
-            .in('subject_id', subjectIds)
-            .order('order_index', { ascending: true });
-
-        if (lesError) {
-            console.error('❌ [Context] Error fetching lessons:', lesError.message);
-            return "";
-        }
-        console.log(`✅ [Context] Found ${lessons.length} total lessons.`);
-
-        // 4. البناء
-        let contextString = `--- 🎓 CURRICULUM STRUCTURE (Semester: ${currentSemester}) ---\n`;
-        contextString += `📊 Stats: ${subjects.length} Subjects, ${lessons.length} Total Lessons.\n`;
-        
-        subjects.forEach(sub => {
-const subLessons = lessons.filter(l => l.subject_id === sub.id);
-contextString += `📌 Subject: ${sub.title.trim()} (${subLessons.length} lessons):\n`;
-
-if (subLessons.length > 0) {
-    // تنظيف العناوين من أي حروف تحكم أو مسافات زائدة
-    const cleanedTitles = subLessons.map(l => 
-        l.title.replace(/[\x00-\x1F\x7F-\x9F]/g, "").trim() 
-    );
-    contextString += `   - ${cleanedTitles.join('\n   - ')}\n`;
-} else {
-    contextString += `   - (No lessons yet)\n`;
-}
-            contextString += `\n`;
+        // 3. بناء النص
+        let map = `المنهج الدراسي الحالي (${semester}):\n`;
+        subjects.forEach(s => {
+            map += `- مادة ${s.title}: (${s.lessons?.length || 0} دروس)\n`;
+            if (s.lessons) {
+                s.lessons.forEach(l => map += `  * ${l.title}\n`);
+            }
         });
-        contextString += `--- END OF STRUCTURE ---\n`;
 
-        cachedContext = contextString;
-        lastFetchTime = now;
-        
-        return contextString;
-
-    } catch (error) {
-        console.error('❌ [Context] CRITICAL ERROR:', error);
-        return "";
+        cachedContext = map;
+        lastFetchTime = Date.now();
+        console.log("✅ [CURRICULUM] Context Built Successfully.");
+        return map;
+    } catch (e) {
+        console.error("❌ [CURRICULUM] Critical Error:", e);
+        return "خطأ في جلب البيانات.";
     }
 }
 
-function clearCurriculumCache() {
-    console.log('🧹 [Context] Cache cleared.');
-    cachedContext = null;
-    lastFetchTime = 0;
-}
-
-module.exports = { getCurriculumContext, clearCurriculumCache };
+module.exports = { getCurriculumContext };
