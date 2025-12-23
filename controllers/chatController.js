@@ -67,37 +67,37 @@ async function handleGeneralQuestion(req, res) {
   try {
     const { message, history } = req.body;
     
-    // 1. جلب السياق
+    // 1. جلب المنهج
     const curriculumMap = await getCurriculumContext();
 
-    // 2. 🛡️ طباعة للتشخيص (ستراها في Render Logs)
-    console.log("================ AI CONTEXT CHECK ================");
-    console.log(curriculumMap); 
-    console.log("==================================================");
+    // 2. طباعة إجبارية في الـ Logs للتأكد (ستراها في Render)
+    console.log("🔥 AI IS SEEING THIS DATA NOW:");
+    console.log(curriculumMap);
 
-    // 3. بناء التعليمات الصارمة
-    const dynamicSystemInstruction = `
+    // 3. دمج التعليمات
+    const finalInstruction = `
       ${SYSTEM_INSTRUCTION}
       
-      قائمة المنهج الدراسي الحالية (مصدرك الوحيد للمواد والدروس):
-      ${curriculumMap || "⚠️ تنبيه: قائمة المنهج فارغة حالياً في قاعدة البيانات."}
+      [DATA_SOURCE_START]
+      ${curriculumMap}
+      [DATA_SOURCE_END]
 
-      تنبيه صارم: 
-      - إذا كانت القائمة أعلاه فارغة، قل للمستخدم "أنا لا أرى الدروس حالياً، (قم بالمراوغة و لاتظهر جاهلا) ".
-      - لا تخترع أسماء دروس من عندك.
-      - أجب بناءً على القائمة أعلاه فقط فيما يخص هيكلة المواد.
+      تعليمات إضافية:
+      - استخدم القائمة بين [DATA_SOURCE] للإجابة على أسئلة العدد والمحتوى.
+      - إذا سألك "كم مادة؟" احسب المواد من القائمة أعلاه وأجبه.
+      - لا تقل "لا أعرف العدد"، القائمة أمامك!
     `;
 
-    // إرسال للموديل...
+    // 4. الإرسال للموديل
     const response = await generateWithFailover('chat', message, {
-      systemInstruction: dynamicSystemInstruction,
+      systemInstruction: finalInstruction, // تأكد أن هذا المتغير يمرر فعلاً للموديل
       history: history || []
     });
 
     res.json({ reply: response.text });
   } catch (error) {
-    logger.error('Chat Error:', error);
-    res.status(500).json({ error: 'حدث خطأ في معالجة طلبك.' });
+    console.error("Chat Error:", error);
+    res.status(500).json({ error: error.message });
   }
 }
 
