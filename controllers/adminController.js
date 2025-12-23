@@ -310,24 +310,27 @@ async function triggerFullIndexing(req, res) {
 
 async function runBackgroundIndexing() {
   console.log('==========================================');
-  console.log('📡 STARTING ROBUST BACKGROUND INDEXING (METADATA FIX)...');
+  console.log('📡 STARTING INDEXING (DIRECT ID MODE)...');
   console.log('==========================================');
 
   try {
-    // 1. جلب المحتوى مع الميتاداتا (لأن الـ ID مخبأ داخلها)
+    // 1. جلب المحتوى والـ ID مباشرة
     console.log('📥 Fetching raw content...');
-    // التغيير هنا: طلبنا metadata بدلاً من lesson_id
+    // التغيير: نجلب id و content فقط
     const { data: contents, error: contentError } = await supabase
       .from('lessons_content')
-      .select('content, metadata'); 
+      .select('id, content'); 
 
     if (contentError) throw new Error(`Content Fetch Error: ${contentError.message}`);
+    
     if (!contents || contents.length === 0) {
-      console.log('⚠️ No content found.');
+      console.log('⚠️ No content found in lessons_content table.');
       return;
     }
 
-    // 2. جلب معلومات الدروس (العناوين)
+    console.log(`📦 Found ${contents.length} content rows.`);
+
+    // 2. جلب معلومات الدروس (العناوين) لربطها
     console.log('📥 Fetching lessons metadata...');
     const { data: lessonsMeta, error: metaError } = await supabase
       .from('lessons')
@@ -341,7 +344,7 @@ async function runBackgroundIndexing() {
       .from('subjects')
       .select('id, title'); 
 
-    // 4. تجهيز الخرائط (Maps) للسرعة
+    // 4. تجهيز الخرائط (Maps)
     const subjectsMap = {};
     if (subjects) subjects.forEach(s => subjectsMap[s.id] = s.title);
 
@@ -355,7 +358,8 @@ async function runBackgroundIndexing() {
       });
     }
 
-    // 5. التحقق من المفهرس سابقاً (لتجنب التكرار)
+    // 5. التحقق مما تم فهرسته سابقاً (لتجنب التكرار)
+    // سنقارن الـ id القادم من lessons_content مع metadata->>lesson_id في جدول embeddings
     const { data: existingEmbeddings } = await supabase
       .from('curriculum_embeddings')
       .select('metadata');
@@ -369,16 +373,16 @@ async function runBackgroundIndexing() {
       });
     }
 
-    // 6. تصفية الدروس الجديدة
-    // التغيير هنا: نستخرج الـ ID من الميتاداتا
+    // 6. تصفية الدروس (المهمة جداً)
     const tasks = contents.filter(item => {
-        const lId = item.metadata?.lesson_id;
-        // نتأكد أن الـ ID موجود وأنه لم تتم فهرسته من قبل
-        return lId && !indexedLessonIds.has(lId);
+        // هنا التغيير الجوهري: نستخدم item.id مباشرة
+        const lessonId = item.id; 
+        // نقبل الدرس إذا لم يكن موجوداً في قائمة المفهرسات
+        return !indexedLessonIds.has(lessonId);
     });
 
     if (tasks.length === 0) {
-      console.log('✅ All lessons are already indexed!');
+      console.log('✅ All lessons are already indexed! (Table is up to date)');
       return;
     }
 
@@ -387,22 +391,25 @@ async function runBackgroundIndexing() {
 
     // 7. الحلقة الرئيسية
     for (const item of tasks) {
-      // استخراج الـ ID من الميتاداتا
-      const lessonId = item.metadata?.lesson_id;
+      const lessonId = item.id; // adm_1, com_1, etc.
       
-      // البحث عن تفاصيل الدرس باستخدام الـ ID المستخرج
+      // البحث عن العنوان باستخدام الـ ID
       const meta = lessonsMap[lessonId] || { title: 'Unknown Lesson', subject_title: 'Unknown Subject' };
       const rawText = item.content;
 
-      if (!rawText || rawText.length < 50) continue;
+      // تخطي المحتوى الفارغ أو القصير جداً
+      if (!rawText || rawText.length < 20) {
+          console.log(`⚠️ Skipping empty/short lesson: ${lessonId}`);
+          continue;
+      }
 
-      console.log(`🔹 Processing: [${meta.subject_title}] -> ${meta.title}`);
+      console.log(`🔹 Processing: [${meta.subject_title}] -> ${meta.title} (${lessonId})`);
 
       // تقسيم النص
       const chunks = rawText.match(/[\s\S]{1,1000}/g) || [rawText];
 
       for (const chunk of chunks) {
-        // دمج العنوان مع النص
+        // دمج العنوان مع النص لزيادة دقة البحث
         const richText = `المادة: ${meta.subject_title}\nالدرس: ${meta.title}\nالمحتوى: ${chunk}`;
 
         // توليد الفيكتور
@@ -414,26 +421,29 @@ async function runBackgroundIndexing() {
             content: richText,
             embedding: embedding,
             metadata: {
-              lesson_id: lessonId, // نستخدم الـ ID المستخرج
+              lesson_id: lessonId, // نحفظ الـ ID هنا لنعرف مستقبلاً أنه تمت فهرسته
               lesson_title: meta.title,
               subject_title: meta.subject_title,
-              source: 'api_indexer_v3'
+              source: 'api_indexer_final'
             }
           });
         }
-        // تأخير بسيط لتجنب Rate Limit
+        
+        // تأخير بسيط (نصف ثانية) لتجنب حظر Gemini
         await new Promise(r => setTimeout(r, 500));
       }
       successCount++;
+      
+      // طباعة تقدم كل 5 دروس
+      if (successCount % 5 === 0) console.log(`⏳ Progress: ${successCount}/${tasks.length}`);
     }
 
-    console.log(`🎉 DONE! Indexed ${successCount} lessons.`);
+    console.log(`🎉 DONE! Successfully indexed ${successCount} lessons.`);
 
   } catch (err) {
     console.error('❌ ERROR:', err);
   }
 }
-
 async function triggerNightWatch(req, res) {
   try {
     if (!CONFIG.ENABLE_EDUNEXUS) {
