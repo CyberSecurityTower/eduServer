@@ -26,6 +26,8 @@ try {
 } catch (e) {
     console.warn("⚠️ QuizController not found or incomplete.");
 }
+//index lessons (RAG system)
+router.post('/admin/trigger-indexing', requireAdmin, adminController.triggerFullIndexing);
 
 // Middleware
 const requireAuth = require('../middleware/authMiddleware'); // للمستخدمين
