@@ -62,46 +62,39 @@ function initChatController(dependencies) {
 // 3. Helper Handlers
 // ==========================================
 
+
 async function handleGeneralQuestion(req, res) {
   try {
     const { message, history } = req.body;
-    const userId = req.user ? req.user.id : 'guest'; // حسب نظام المصادقة لديك
-
-    // 1. 🔥 جلب الخريطة الذهنية للمواد (من الكاش أو الداتابيز)
+    
+    // 1. جلب السياق
     const curriculumMap = await getCurriculumContext();
 
-    // 2. 🔥 دمج التعليمات: الشخصية + المعلومات الحية
-    // نضيف تعليمات صارمة للذكاء الاصطناعي لكي يلتزم بهذه القائمة
+    // 2. 🛡️ طباعة للتشخيص (ستراها في Render Logs)
+    console.log("================ AI CONTEXT CHECK ================");
+    console.log(curriculumMap); 
+    console.log("==================================================");
+
+    // 3. بناء التعليمات الصارمة
     const dynamicSystemInstruction = `
-${SYSTEM_INSTRUCTION}
+      ${SYSTEM_INSTRUCTION}
+      
+      قائمة المنهج الدراسي الحالية (مصدرك الوحيد للمواد والدروس):
+      ${curriculumMap || "⚠️ تنبيه: قائمة المنهج فارغة حالياً في قاعدة البيانات."}
 
-=================================================================
-📚 LIVE CURRICULUM CONTEXT (SEMESTER AWARENESS)
-=================================================================
-${curriculumMap}
+      تنبيه صارم: 
+      - إذا كانت القائمة أعلاه فارغة، قل للمستخدم "أنا لا أرى الدروس حالياً، (قم بالمراوغة و لاتظهر جاهلا) ".
+      - لا تخترع أسماء دروس من عندك.
+      - أجب بناءً على القائمة أعلاه فقط فيما يخص هيكلة المواد.
+    `;
 
-⚠️ STRICT INSTRUCTION FOR EDUAI:
-1. The list above contains the ONLY valid subjects and lessons for this semester.
-2. If the user asks "What do we study?" or "List lessons for [Subject]", use the list above EXACTLY.
-3. Do NOT hallucinate lesson titles that are not in the list.
-4. If a lesson is in the list, you are an expert in it.
-=================================================================
-`;
-
-    // 3. إرسال البرومبت المدمج إلى الموديل
-    // ملاحظة: تأكد من تمرير dynamicSystemInstruction بدلاً من SYSTEM_INSTRUCTION القديم
+    // إرسال للموديل...
     const response = await generateWithFailover('chat', message, {
-      systemInstruction: dynamicSystemInstruction, // 👈 هنا السر
-      history: history || [],
-      userId: userId
+      systemInstruction: dynamicSystemInstruction,
+      history: history || []
     });
 
-    // 4. إرسال الرد للمستخدم
-    res.json({ 
-      reply: response.text, 
-      // يمكنك إضافة أي بيانات أخرى
-    });
-
+    res.json({ reply: response.text });
   } catch (error) {
     logger.error('Chat Error:', error);
     res.status(500).json({ error: 'حدث خطأ في معالجة طلبك.' });
