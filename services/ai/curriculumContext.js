@@ -1,95 +1,96 @@
 
-// services/ai/curriculumContext.js
+// src/services/ai/curriculumContext.js
 'use strict';
 
-const supabase = require('../data/supabase');
-const logger = require('../../utils/logger'); 
+// تأكد أن المسار صحيح بالنسبة لمكان الملف
+const supabase = require('../../services/data/supabase'); 
 
-// سنستخدم متغيرات لتخزين البيانات مؤقتاً (Caching)
 let cachedContext = null;
 let lastFetchTime = 0;
-const CACHE_DURATION = 1000 * 60 * 60; // تحديث البيانات كل ساعة واحدة
+const CACHE_DURATION = 1000 * 60 * 60; 
 
 async function getCurriculumContext() {
     const now = Date.now();
-
-    // 1. إذا كانت البيانات موجودة وحديثة، أعدها فوراً (السرعة القصوى)
     if (cachedContext && (now - lastFetchTime < CACHE_DURATION)) {
         return cachedContext;
     }
 
-    console.log('🔄 Refreshing AI Curriculum Context...');
+    console.log('🔄 [Context] Fetching Curriculum Data...');
 
     try {
-        // 2. معرفة الفصل الدراسي الحالي
-        const { data: setting } = await supabase
+        // 1. جلب الفصل الحالي
+        let currentSemester = 'S1'; // الافتراضي
+        const { data: setting, error: setErr } = await supabase
             .from('system_settings')
             .select('value')
             .eq('key', 'current_semester')
-            .single();
+            .maybeSingle(); // نستخدم maybeSingle لتجنب الخطأ لو لم يوجد
 
-        const currentSemester = setting?.value || 'S1'; // الافتراضي S1
+        if (setting?.value) currentSemester = setting.value;
+        console.log(`ℹ️ [Context] Current Semester: ${currentSemester}`);
 
-        // 3. جلب المواد الخاصة بهذا الفصل فقط
+        // 2. جلب المواد
         const { data: subjects, error: subError } = await supabase
             .from('subjects')
             .select('id, title')
             .eq('semester', currentSemester);
 
-        if (subError) throw subError;
+        if (subError) {
+            console.error('❌ [Context] Error fetching subjects:', subError.message);
+            return "";
+        }
 
         if (!subjects || subjects.length === 0) {
-            return "لا توجد مواد مسجلة لهذا الفصل.";
+            console.warn(`⚠️ [Context] No subjects found for semester ${currentSemester}`);
+            return "No subjects found in database.";
         }
+        console.log(`✅ [Context] Found ${subjects.length} subjects.`);
 
         const subjectIds = subjects.map(s => s.id);
 
-        // 4. جلب عناوين الدروس المرتبطة بهذه المواد
+        // 3. جلب الدروس
         const { data: lessons, error: lesError } = await supabase
             .from('lessons')
             .select('title, subject_id')
             .in('subject_id', subjectIds)
-            .order('order_index', { ascending: true }); // ترتيب الدروس مهم
+            .order('order_index', { ascending: true });
 
-        if (lesError) throw lesError;
+        if (lesError) {
+            console.error('❌ [Context] Error fetching lessons:', lesError.message);
+            return "";
+        }
+        console.log(`✅ [Context] Found ${lessons.length} total lessons.`);
 
-        // 5. بناء الهيكل النصي (الخريطة الذهنية)
+        // 4. البناء
         let contextString = `--- 🎓 CURRICULUM STRUCTURE (Semester: ${currentSemester}) ---\n`;
         contextString += `📊 Stats: ${subjects.length} Subjects, ${lessons.length} Total Lessons.\n`;
-        contextString += `⚠️ INSTRUCTION: Use this list ONLY to list subjects/lessons. Do NOT hallucinate lesson titles.\n\n`;
-
+        
         subjects.forEach(sub => {
-            // تصفية الدروس الخاصة بهذه المادة
-            const subLessons = lessons
-                .filter(l => l.subject_id === sub.id)
-                .map(l => l.title);
-
+            const subLessons = lessons.filter(l => l.subject_id === sub.id);
             contextString += `📌 Subject: ${sub.title} (${subLessons.length} lessons):\n`;
             if (subLessons.length > 0) {
-                contextString += `   - ${subLessons.join('\n   - ')}\n`;
+                // نأخذ العناوين فقط
+                contextString += `   - ${subLessons.map(l => l.title).join('\n   - ')}\n`;
             } else {
-                contextString += `   - (No lessons yet)\n`;
+                contextString += `   - (No lessons uploaded yet)\n`;
             }
             contextString += `\n`;
         });
-
         contextString += `--- END OF STRUCTURE ---\n`;
 
-        // 6. الحفظ في الكاش
         cachedContext = contextString;
         lastFetchTime = now;
-
+        
         return contextString;
 
     } catch (error) {
-        console.error('❌ Error building curriculum context:', error);
-        // في حالة الخطأ، نرجع الكاش القديم إذا وجد أو نص فارغ
-        return cachedContext || "";
+        console.error('❌ [Context] CRITICAL ERROR:', error);
+        return "";
     }
 }
 
-// دالة لمسح الكاش يدوياً (مثلاً عند إضافة درس جديد)
 function clearCurriculumCache() {
+    console.log('🧹 [Context] Cache cleared.');
     cachedContext = null;
     lastFetchTime = 0;
 }
