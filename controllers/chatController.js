@@ -7,7 +7,6 @@
 const crypto = require('crypto');
 const CONFIG = require('../config');
 const supabase = require('../services/data/supabase');
-const logger = require('../utils/logger');
 const PROMPTS = require('../config/ai-prompts');
 
 // Engines & Managers
