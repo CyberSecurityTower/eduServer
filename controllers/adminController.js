@@ -20,6 +20,7 @@ const { decryptForAdmin } = require('../utils/crypto');
 const { clearSystemFeatureCache } = require('../services/data/helpers'); // استيراد
 const liveMonitor = require('../services/monitoring/realtimeStats');
 const { runStreakRescueMission } = require('../services/jobs/streakRescue');
+const { clearCurriculumCache } = require('../services/ai/curriculumContext');
 
 const db = getFirestoreInstance();
 
@@ -439,7 +440,9 @@ async function runBackgroundIndexing() {
     }
 
     console.log(`🎉 DONE! Successfully indexed ${successCount} lessons.`);
-
+      
+    console.log('🔄 Clearing Curriculum Cache to update AI awareness...');
+    clearCurriculumCache();
   } catch (err) {
     console.error('❌ ERROR:', err);
   }
