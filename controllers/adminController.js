@@ -288,88 +288,147 @@ async function calculateUserPrimeTime(userId) {
 }
 
 async function triggerFullIndexing(req, res) {
-  if (req.headers['x-admin-secret'] !== 'my-secret-islam-123') {
-    return res.status(401).json({ error: 'Unauthorized' });
+  // 1. حماية المسار: تأكد من أنك أنت فقط من يستطيع استدعاءه
+  // يمكنك وضع هذا المفتاح في Headers عند الطلب من Postman
+  if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized: Access Denied' });
   }
 
-  res.json({ message: 'Started Contextual Indexing (V3)...' });
+  // 2. الرد الفوري لتجنب Timeout في Render
+  res.json({ 
+    success: true, 
+    message: '🚀 Indexing process started in background. Check Render Logs for progress.' 
+  });
+
+  // 3. بدء العمل في الخلفية (Fire and Forget)
+  runBackgroundIndexing().catch(err => {
+    logger.error('❌ Background Indexing Failed:', err);
+  });
+}
+
+// 🔥 المحرك الفعلي الذي يعمل في الخلفية
+async function runBackgroundIndexing() {
+  console.log('==========================================');
+  console.log('📡 STARTING BACKGROUND INDEXING JOB...');
+  console.log('==========================================');
 
   try {
-    console.log('🚨 STARTING CONTEXTUAL INDEXING 🚨');
-
-    // 1. Fetch Content
-    const { data: contents, error: contentError } = await supabase
+    // أ. جلب كل المحتوى من جدول lessons_content
+    // نستخدم Join لجلب عنوان الدرس واسم المادة المرتبطة به
+    const { data: contents, error } = await supabase
       .from('lessons_content')
-      .select('*');
+      .select(`
+        id,
+        content,
+        lesson_id, 
+        lessons:lesson_id (
+          id,
+          title,
+          subject_id,
+          subjects:subject_id ( title )
+        )
+      `);
 
-    if (contentError || !contents) {
-      console.error('❌ Error fetching content:', contentError);
+    if (error) throw new Error(`Fetch Error: ${error.message}`);
+    
+    if (!contents || contents.length === 0) {
+      console.log('⚠️ No content found in lessons_content table.');
       return;
     }
 
-    // 2. Fetch Titles (Meta Data)
-    const { data: lessonsMeta, error: metaError } = await supabase
-      .from('lessons')
-      .select('id, title');
+    console.log(`📥 Found ${contents.length} content rows. Checking for un-indexed lessons...`);
 
-    if (metaError) console.error('⚠️ Could not fetch titles:', metaError);
-
-    const titlesMap = {};
-    if (lessonsMeta) {
-        lessonsMeta.forEach(l => { titlesMap[l.id] = l.title; });
+    // ب. جلب قائمة الدروس التي تمت فهرستها سابقاً (لتجنب التكرار)
+    // نتحقق من metadata->>lesson_id في جدول curriculum_embeddings
+    // ملاحظة: هذه الطريقة للتحقق قد تكون ثقيلة إذا كان الجدول ضخماً، لكنها مناسبة للبداية
+    const { data: existingEmbeddings } = await supabase
+      .from('curriculum_embeddings')
+      .select('metadata');
+    
+    const indexedLessonIds = new Set();
+    if (existingEmbeddings) {
+      existingEmbeddings.forEach(row => {
+        if (row.metadata && row.metadata.lesson_id) {
+          indexedLessonIds.add(row.metadata.lesson_id);
+        }
+      });
     }
 
-    console.log(`✅ Found ${contents.length} lessons content to process.`);
+    // ج. تصفية الدروس الجديدة فقط
+    const tasks = contents.filter(item => {
+      // item.lessons هو الدرس المرتبط، وقد يكون null إذا كان الرابط مكسوراً
+      // item.lesson_id هو المفتاح الأجنبي
+      const lId = item.lesson_id; 
+      // إذا لم يكن موجوداً في القائمة المفهرسة، نقبله
+      return !indexedLessonIds.has(lId);
+    });
 
-    let totalChunks = 0;
+    if (tasks.length === 0) {
+      console.log('✅ All lessons are already indexed! Nothing to do.');
+      return;
+    }
 
-    for (const item of contents) {
-      const rawContent = item.content;
-      const lessonId = item.id;
-      
-      const lessonTitle = titlesMap[lessonId] || 'درس تعليمي'; 
+    console.log(`🚀 Starting to index ${tasks.length} NEW lessons...`);
 
-      if (!rawContent || rawContent.length < 5) continue;
+    let successCount = 0;
 
-      const chunks = rawContent.match(/[\s\S]{1,1000}/g) || [rawContent];
+    // د. حلقة المعالجة
+    for (const item of tasks) {
+      const lessonData = item.lessons; // البيانات القادمة من الـ Join
+      const lessonTitle = lessonData?.title || 'Unknown Lesson';
+      const subjectTitle = lessonData?.subjects?.title || 'General Subject';
+      const rawText = item.content;
+
+      if (!rawText || rawText.length < 50) {
+        console.log(`⚠️ Skipping short content for lesson: ${lessonTitle}`);
+        continue;
+      }
+
+      console.log(`🔹 Processing: [${subjectTitle}] -> ${lessonTitle}`);
+
+      // تقسيم النص
+      const chunks = rawText.match(/[\s\S]{1,1000}/g) || [rawText];
 
       for (const chunk of chunks) {
-        
-        // Enrich context with title
-        const richText = `عنوان الدرس: ${lessonTitle}\n---\n${chunk}`;
+        // 🔥 السر هنا: ربط النص بالعنوان والمادة (Contextual Embedding)
+        const richText = `المادة: ${subjectTitle}\nالدرس: ${lessonTitle}\nالمحتوى: ${chunk}`;
 
-        const vector = await embeddingService.generateEmbedding(richText);
+        // توليد الفيكتور
+        const embedding = await embeddingService.generateEmbedding(richText);
 
-        if (!vector || vector.length === 0) continue;
-
-        const { error: insertError } = await supabase
-          .from('curriculum_embeddings')
-          .insert({
-            path_id: 'UAlger3_L1_ITCF',
+        if (embedding && embedding.length > 0) {
+          // الحفظ في Supabase
+          await supabase.from('curriculum_embeddings').insert({
+            path_id: 'UAlger3_L1_ITCF', // معرف تخصصك (تأكد منه)
             content: richText,
-            embedding: vector,
+            embedding: embedding,
             metadata: {
-              lesson_id: lessonId,
+              lesson_id: item.lesson_id,
               lesson_title: lessonTitle,
-              subject_id: item.subject_id,
-              source: 'contextual_indexer'
-            },
-            created_at: new Date().toISOString()
+              subject_id: lessonData?.subject_id,
+              subject_title: subjectTitle,
+              source: 'api_indexer'
+            }
           });
-
-        if (!insertError) {
-           totalChunks++;
-           if (totalChunks % 5 === 0) console.log(`💾 Indexed ${totalChunks} contextual chunks...`);
         }
         
-        await new Promise(r => setTimeout(r, 200));
+        // انتظار صغير لتجنب حظر Gemini (Rate Limit)
+        await new Promise(r => setTimeout(r, 500));
+      }
+
+      successCount++;
+      // طباعة نسبة التقدم كل 5 دروس
+      if (successCount % 5 === 0) {
+        console.log(`⏳ Progress: ${successCount}/${tasks.length} lessons indexed.`);
       }
     }
 
-    console.log(`🎉 FINISHED V3! Total contextual chunks: ${totalChunks}`);
+    console.log('==========================================');
+    console.log(`🎉 JOB COMPLETE! Successfully indexed ${successCount} lessons.`);
+    console.log('==========================================');
 
   } catch (err) {
-    console.error('❌ FATAL ERROR:', err);
+    console.error('❌ CRITICAL INDEXING ERROR:', err);
   }
 }
 
