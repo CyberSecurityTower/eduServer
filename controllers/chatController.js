@@ -21,6 +21,10 @@ const { explainLessonContent } = require('../services/engines/ghostTeacher');
 const { getNexusMemory, updateNexusKnowledge } = require('../services/ai/eduNexus');
 const { getSystemFeatureFlag } = require('../services/data/helpers'); 
 
+const { generateWithFailover } = require('../services/ai/failover'); 
+const SYSTEM_INSTRUCTION = require('../config/system-instruction');
+const { getCurriculumContext } = require('../services/ai/curriculumContext');
+const logger = require('../utils/logger');
 // Utilities
 const { toCamelCase, nowISO } = require('../services/data/dbUtils');
 const { getHumanTimeDiff } = require('../utils');
@@ -58,11 +62,51 @@ function initChatController(dependencies) {
 // ==========================================
 // 3. Helper Handlers
 // ==========================================
-async function handleGeneralQuestion(message, language, studentName) {
-  const prompt = `You are EduAI. User: ${studentName}. Q: "${message}". Reply in ${language}. Short.`;
-  if (!generateWithFailoverRef) return "Service unavailable.";
-  const modelResp = await generateWithFailoverRef('chat', prompt, { label: 'GeneralQuestion' });
-  return await extractTextFromResult(modelResp);
+
+async function handleGeneralQuestion(req, res) {
+  try {
+    const { message, history } = req.body;
+    const userId = req.user ? req.user.id : 'guest'; // حسب نظام المصادقة لديك
+
+    // 1. 🔥 جلب الخريطة الذهنية للمواد (من الكاش أو الداتابيز)
+    const curriculumMap = await getCurriculumContext();
+
+    // 2. 🔥 دمج التعليمات: الشخصية + المعلومات الحية
+    // نضيف تعليمات صارمة للذكاء الاصطناعي لكي يلتزم بهذه القائمة
+    const dynamicSystemInstruction = `
+${SYSTEM_INSTRUCTION}
+
+=================================================================
+📚 LIVE CURRICULUM CONTEXT (SEMESTER AWARENESS)
+=================================================================
+${curriculumMap}
+
+⚠️ STRICT INSTRUCTION FOR EDUAI:
+1. The list above contains the ONLY valid subjects and lessons for this semester.
+2. If the user asks "What do we study?" or "List lessons for [Subject]", use the list above EXACTLY.
+3. Do NOT hallucinate lesson titles that are not in the list.
+4. If a lesson is in the list, you are an expert in it.
+=================================================================
+`;
+
+    // 3. إرسال البرومبت المدمج إلى الموديل
+    // ملاحظة: تأكد من تمرير dynamicSystemInstruction بدلاً من SYSTEM_INSTRUCTION القديم
+    const response = await generateWithFailover('chat', message, {
+      systemInstruction: dynamicSystemInstruction, // 👈 هنا السر
+      history: history || [],
+      userId: userId
+    });
+
+    // 4. إرسال الرد للمستخدم
+    res.json({ 
+      reply: response.text, 
+      // يمكنك إضافة أي بيانات أخرى
+    });
+
+  } catch (error) {
+    logger.error('Chat Error:', error);
+    res.status(500).json({ error: 'حدث خطأ في معالجة طلبك.' });
+  }
 }
 
 async function generateChatSuggestions(req, res) {
