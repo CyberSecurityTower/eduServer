@@ -36,18 +36,18 @@ async function dailyCheckIn(req, res) {
       // حذف رسائل الإنقاذ القديمة
       await supabase.from('scheduled_actions').delete().eq('user_id', userId).eq('type', 'streak_rescue');
 
-      return res.status(200).json({
-        success: true,
-        wasReset: true,
-        message: `للأسف ضيعت الستريك.. وخصمنا ${data.penalty_deducted} كوينز.`,
-        penaltyReport: {
-          lostStreak: 'Unknown', // الدالة الحالية لا ترجع الستريك القديم، يمكن تعديلها
-          deductedCoins: data.penalty_deducted,
-          newStreak: 1
-        },
-        data: data
-      });
-    }
+     return res.status(200).json({
+    success: true,
+    wasReset: true,
+    message: `للأسف ضيعت الستريك..`,
+    penaltyReport: {
+      lostStreak: data.lost_streak, // ✅ الآن القيمة تأتي صحيحة من الداتابايز
+      deductedCoins: data.penalty_deducted,
+      newStreak: 1
+    },
+    data: data
+  });
+}
 
     // 3. حالة النجاح (زيادة الستريك أو بداية جديدة بدون عقوبة)
     logger.success(`🔥 Streak updated for ${userId}: ${data.new_streak} days`);
