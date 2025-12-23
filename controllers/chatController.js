@@ -165,6 +165,7 @@ async function chatInteractive(req, res) {
     }
 
     let userData = toCamelCase(userRaw);
+    const curriculumMap = await getCurriculumContext();
 
     // =========================================================
     // 4. GROUP ENFORCEMENT LOGIC
@@ -543,6 +544,8 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
     ${gravitySection} 
     ${antiSamataProtocol}
     
+    📚 **FULL CURRICULUM MAP:**
+    ${curriculumMap}
     ${examContext.subject ? `🚨 **EXAM ALERT:** Subject: "${examContext.subject}" is happening **${examContext.timingHuman}**. Focus on this immediately!` : ""}
     `;
 
