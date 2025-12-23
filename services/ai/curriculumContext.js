@@ -2,7 +2,7 @@
 // services/ai/curriculumContext.js
 'use strict';
 
-const supabase = require('../services/data/supabase');
+const supabase = require('./services/data/supabase');
 const logger = require('../../utils/logger'); // تأكد من المسار الصحيح للوجر
 
 // سنستخدم متغيرات لتخزين البيانات مؤقتاً (Caching)
