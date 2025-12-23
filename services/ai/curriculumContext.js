@@ -11,7 +11,7 @@ async function getCurriculumContext() {
     try {
         // 1. جلب الفصل الدراسي
         const { data: settings } = await supabase.from('system_settings').select('value').eq('key', 'current_semester').maybeSingle();
-        const semester = settings?.value || 'S1';
+const semester = (settings?.value || 'S1').trim(); 
 
         // 2. جلب المواد والدروس بضربة واحدة (Join)
         // سنستخدم استعلاماً بسيطاً يضمن جلب كل شيء
