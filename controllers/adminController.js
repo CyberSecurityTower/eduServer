@@ -310,15 +310,16 @@ async function triggerFullIndexing(req, res) {
 
 async function runBackgroundIndexing() {
   console.log('==========================================');
-  console.log('📡 STARTING ROBUST BACKGROUND INDEXING...');
+  console.log('📡 STARTING ROBUST BACKGROUND INDEXING (METADATA FIX)...');
   console.log('==========================================');
 
   try {
-    // 1. جلب المحتوى الخام (بدون Join لتجنب الخطأ)
+    // 1. جلب المحتوى مع الميتاداتا (لأن الـ ID مخبأ داخلها)
     console.log('📥 Fetching raw content...');
+    // التغيير هنا: طلبنا metadata بدلاً من lesson_id
     const { data: contents, error: contentError } = await supabase
       .from('lessons_content')
-      .select('lesson_id, content');
+      .select('content, metadata'); 
 
     if (contentError) throw new Error(`Content Fetch Error: ${contentError.message}`);
     if (!contents || contents.length === 0) {
@@ -338,10 +339,9 @@ async function runBackgroundIndexing() {
     console.log('📥 Fetching subjects...');
     const { data: subjects, error: subjectError } = await supabase
       .from('subjects')
-      .select('id, title'); // تأكد أن اسم العمود هو title أو name حسب جدولك
+      .select('id, title'); 
 
     // 4. تجهيز الخرائط (Maps) للسرعة
-    // هذا يحول المصفوفات إلى كائنات ليسهل البحث فيها
     const subjectsMap = {};
     if (subjects) subjects.forEach(s => subjectsMap[s.id] = s.title);
 
@@ -370,7 +370,12 @@ async function runBackgroundIndexing() {
     }
 
     // 6. تصفية الدروس الجديدة
-    const tasks = contents.filter(item => !indexedLessonIds.has(item.lesson_id));
+    // التغيير هنا: نستخرج الـ ID من الميتاداتا
+    const tasks = contents.filter(item => {
+        const lId = item.metadata?.lesson_id;
+        // نتأكد أن الـ ID موجود وأنه لم تتم فهرسته من قبل
+        return lId && !indexedLessonIds.has(lId);
+    });
 
     if (tasks.length === 0) {
       console.log('✅ All lessons are already indexed!');
@@ -382,8 +387,11 @@ async function runBackgroundIndexing() {
 
     // 7. الحلقة الرئيسية
     for (const item of tasks) {
-      // هنا نستخدم الـ Map بدلاً من الـ Join
-      const meta = lessonsMap[item.lesson_id] || { title: 'Unknown Lesson', subject_title: 'Unknown Subject' };
+      // استخراج الـ ID من الميتاداتا
+      const lessonId = item.metadata?.lesson_id;
+      
+      // البحث عن تفاصيل الدرس باستخدام الـ ID المستخرج
+      const meta = lessonsMap[lessonId] || { title: 'Unknown Lesson', subject_title: 'Unknown Subject' };
       const rawText = item.content;
 
       if (!rawText || rawText.length < 50) continue;
@@ -402,18 +410,18 @@ async function runBackgroundIndexing() {
 
         if (embedding) {
           await supabase.from('curriculum_embeddings').insert({
-            path_id: 'UAlger3_L1_ITCF', // تأكد من هذا الكود
+            path_id: 'UAlger3_L1_ITCF', 
             content: richText,
             embedding: embedding,
             metadata: {
-              lesson_id: item.lesson_id,
+              lesson_id: lessonId, // نستخدم الـ ID المستخرج
               lesson_title: meta.title,
               subject_title: meta.subject_title,
-              source: 'api_indexer_v2'
+              source: 'api_indexer_v3'
             }
           });
         }
-        // تأخير بسيط
+        // تأخير بسيط لتجنب Rate Limit
         await new Promise(r => setTimeout(r, 500));
       }
       successCount++;
