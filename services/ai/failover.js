@@ -1,9 +1,16 @@
-// services/ai/failover.js (Simplified)
+
+// services/ai/failover.js
 const { _callModelInstance } = require('./index');
 
 async function generateWithFailover(poolName, prompt, opts = {}) {
-    // KeyManager now handles load balancing. 
-    // We just call the function.
-    return await _callModelInstance(null, prompt, opts.timeoutMs, opts.label);
+    // نمرر كل الخيارات المهمة للدالة التي تنفذ الطلب
+    return await _callModelInstance(
+        null, 
+        prompt, 
+        opts.timeoutMs, 
+        opts.label, 
+        opts.systemInstruction,
+        opts.history           
+    );
 }
 module.exports = generateWithFailover;
