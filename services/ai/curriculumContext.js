@@ -66,14 +66,18 @@ async function getCurriculumContext() {
         contextString += `📊 Stats: ${subjects.length} Subjects, ${lessons.length} Total Lessons.\n`;
         
         subjects.forEach(sub => {
-            const subLessons = lessons.filter(l => l.subject_id === sub.id);
-            contextString += `📌 Subject: ${sub.title} (${subLessons.length} lessons):\n`;
-            if (subLessons.length > 0) {
-                // نأخذ العناوين فقط
-                contextString += `   - ${subLessons.map(l => l.title).join('\n   - ')}\n`;
-            } else {
-                contextString += `   - (No lessons uploaded yet)\n`;
-            }
+const subLessons = lessons.filter(l => l.subject_id === sub.id);
+contextString += `📌 Subject: ${sub.title.trim()} (${subLessons.length} lessons):\n`;
+
+if (subLessons.length > 0) {
+    // تنظيف العناوين من أي حروف تحكم أو مسافات زائدة
+    const cleanedTitles = subLessons.map(l => 
+        l.title.replace(/[\x00-\x1F\x7F-\x9F]/g, "").trim() 
+    );
+    contextString += `   - ${cleanedTitles.join('\n   - ')}\n`;
+} else {
+    contextString += `   - (No lessons yet)\n`;
+}
             contextString += `\n`;
         });
         contextString += `--- END OF STRUCTURE ---\n`;
