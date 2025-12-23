@@ -126,6 +126,8 @@ router.get('/admin/settings', requireAdmin, adminController.getSystemSettings);
 router.patch('/admin/settings', requireAdmin, adminController.updateSystemSetting);
 router.post('/admin/toggle-feature', requireAdmin, adminController.toggleSystemFeature);
 
+// مسار لفحص سياق المنهج
+router.get('/admin/debug-curriculum', adminController.debugCurriculumContext);
 // Tools & Triggers
 router.post('/admin/run-night-watch', requireAdmin, adminController.triggerNightWatch);
 router.post('/admin/trigger-indexing', requireAdmin, adminController.triggerFullIndexing);
