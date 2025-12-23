@@ -241,7 +241,7 @@ async function debugCurriculumContext(req, res) {
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
-  }
+  }}
 async function enqueueJobRoute(req, res) {
   try {
     const job = req.body;
