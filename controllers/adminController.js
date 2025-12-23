@@ -223,6 +223,25 @@ async function indexSpecificLesson(req, res) {
   }
 }
 
+// دالة لفحص ما يراه الذكاء الاصطناعي في المنهج
+async function debugCurriculumContext(req, res) {
+  try {
+    // التأكد من الهوية (نفس السر الذي تستخدمه للفهرسة)
+    if (req.headers['x-admin-secret'] !== CONFIG.NIGHTLY_JOB_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const { getCurriculumContext } = require('../services/ai/curriculumContext');
+    const context = await getCurriculumContext();
+
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      data_seen_by_ai: context // هذا هو النص الذي سيتم حقنه في البرومبت
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 async function enqueueJobRoute(req, res) {
   try {
     const job = req.body;
@@ -1004,5 +1023,6 @@ module.exports = {
   searchUsers,
   getDashboardStatsV2,
   getLiveTraffic,
-  triggerStreakRescue 
+  triggerStreakRescue,
+  debugCurriculumContext
 };
