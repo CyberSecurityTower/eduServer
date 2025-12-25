@@ -41,7 +41,7 @@ async function dailyCheckIn(req, res) {
     wasReset: true,
     message: `للأسف ضيعت الستريك..`,
     penaltyReport: {
-      lostStreak: data.lost_streak, // ✅ الآن القيمة تأتي صحيحة من الداتابايز
+      lostStreak: data.lost_streak,
       deductedCoins: data.penalty_deducted,
       newStreak: 1
     },
@@ -67,4 +67,41 @@ async function dailyCheckIn(req, res) {
   }
 }
 
-module.exports = { dailyCheckIn }; // تأكد من تصدير الدالة
+async function getStreakStatus(req, res) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+    const { data, error } = await supabase
+      .from('users')
+      .select('streak_count, last_streak_date, best_streak')
+      .eq('id', userId)
+      .single();
+
+    if (error) {
+       logger.error(`Get Streak Error: ${error.message}`);
+       // في حال الخطأ نرجع أصفار بدلاً من كراش
+       return res.status(200).json({
+         success: true,
+         streak: 0,
+         last_active: null,
+         best_streak: 0
+       });
+    }
+
+    return res.status(200).json({
+      success: true,
+      streak: data?.streak_count || 0,
+      last_active: data?.last_streak_date || null,
+      best_streak: data?.best_streak || 0
+    });
+
+  } catch (err) {
+    logger.error('Get Streak Status Error:', err.message);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+}
+module.exports = { 
+  dailyCheckIn, 
+  getStreakStatus 
+};
