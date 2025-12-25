@@ -12,175 +12,124 @@ const { getHumanTimeDiff, getAlgiersTimeContext } = require('../../../utils');
  */
 async function runPlannerManager(userId, pathId) {
   try {
+    // 1. تحديد المسار
     const safePathId = pathId || 'UAlger3_L1_ITCF';
-    logger.info(`🪐 Gravity V5.2: User=${userId}, Path=${safePathId}`);
+    logger.info(`🪐 Gravity Engine Start: User=${userId}, Path=${safePathId}`);
 
-    // 1. جلب الإعدادات والتقدم
-    const [settingsRes, progressRes] = await Promise.all([
-        supabase.from('system_settings').select('value').eq('key', 'current_semester').maybeSingle(),
-        supabase.from('user_progress').select('lesson_id, status, last_interaction, mastery_score').eq('user_id', userId)
-    ]);
-
-    const currentSemester = settingsRes.data?.value || null;
+    // 2. جلب إعدادات السداسي
+    const { data: settings } = await supabase
+        .from('system_settings')
+        .select('value')
+        .eq('key', 'current_semester')
+        .maybeSingle();
     
-    const progressMap = new Map();
-    if (progressRes.data) {
-        progressRes.data.forEach(p => {
-            progressMap.set(p.lesson_id, {
-                status: p.status,
-                lastInteraction: new Date(p.last_interaction),
-                score: p.mastery_score || 0
-            });
-        });
-    }
+    const currentSemester = settings?.value || null;
+    console.log(`🔍 Gravity Config: Semester='${currentSemester}'`); 
 
-    // ============================================================
-    // 🔥 الخطوة أ: جلب المواد (بدون عمود type) 🔥
-    // ============================================================
+    // 3. جلب المواد (Subjects)
     const { data: subjects, error: subjError } = await supabase
         .from('subjects')
-        .select('id, title, coefficient, semester, path_id') // ✅ تم حذف 'type'
+        .select('id, title, semester, path_id')
         .eq('path_id', safePathId);
 
-    // 🛑 كشف الأخطاء وإرسالها للتطبيق
     if (subjError) {
-        logger.error('❌ Gravity Subject Error:', subjError.message);
-        return { 
-            tasks: [{ 
-                title: `خطأ تقني: ${subjError.message}`, 
-                type: 'fix', 
-                meta: { score: 9999, displayTitle: "DB Error" } 
-            }] 
-        };
+        console.error('❌ DB Error (Subjects):', subjError.message);
+        return { tasks: [] };
     }
 
     if (!subjects || subjects.length === 0) {
-        return { 
-            tasks: [{ 
-                title: `تنبيه: لا توجد مواد في المسار ${safePathId}`, 
-                type: 'fix', 
-                meta: { score: 9999 } 
-            }] 
-        };
+        console.warn(`⚠️ No subjects found for path: '${safePathId}'. Check 'subjects' table.`);
+        return { tasks: [] }; // <--- هنا المشكلة غالباً
     }
+    console.log(`✅ Found ${subjects.length} subjects.`);
 
-    // ب. تحضير خريطة المواد
+    const subjectIds = subjects.map(s => s.id);
     const subjectsMap = {};
-    const subjectIds = [];
-    subjects.forEach(sub => {
-        subjectsMap[sub.id] = sub;
-        subjectIds.push(sub.id);
-    });
+    subjects.forEach(s => subjectsMap[s.id] = s);
 
-    // ============================================================
-    // 🔥 الخطوة ج: جلب الدروس 🔥
-    // ============================================================
+    // 4. جلب الدروس (Lessons)
     const { data: lessonsRaw, error: lessonsError } = await supabase
         .from('lessons')
-        .select('id, title, subject_id, has_content, order_index')
+        .select('id, title, subject_id')
         .in('subject_id', subjectIds)
         .order('order_index', { ascending: true });
 
     if (lessonsError) {
-        logger.error('❌ Gravity Lessons Error:', lessonsError.message);
-        return { 
-            tasks: [{ 
-                title: `خطأ في الدروس: ${lessonsError.message}`, 
-                type: 'fix', 
-                meta: { score: 9999 } 
-            }] 
-        };
+        console.error('❌ DB Error (Lessons):', lessonsError.message);
+        return { tasks: [] };
     }
 
-    // د. الدمج اليدوي
-    const lessons = lessonsRaw.map(l => ({
-        ...l,
-        subjects: subjectsMap[l.subject_id]
-    }));
-
-    if (lessons.length === 0) {
-        return { 
-            tasks: [{ 
-                title: "لا توجد دروس مسجلة بعد", 
-                type: 'study', 
-                meta: { score: 100 } 
-            }] 
-        };
+    if (!lessonsRaw || lessonsRaw.length === 0) {
+        console.warn(`⚠️ No lessons found linked to these subjects.`);
+        return { tasks: [] };
     }
+    console.log(`✅ Found ${lessonsRaw.length} raw lessons.`);
 
-    // 4. الخوارزمية (مع المراجعة اللانهائية)
+    // 5. الدمج والفلترة (Gravity Logic)
+    // ... (جلب التقدم progressMap هنا كما في كودك الأصلي) ...
+    const { data: progressData } = await supabase.from('user_progress').select('*').eq('user_id', userId);
+    const progressMap = new Map();
+    if(progressData) progressData.forEach(p => progressMap.set(p.lesson_id, p));
+
+    const lessons = lessonsRaw.map(l => ({ ...l, subjects: subjectsMap[l.subject_id] }));
+
     let candidates = lessons.map(lesson => {
-      // فلتر السداسي
-      if (currentSemester && lesson.subjects?.semester) {
-          const lSem = lesson.subjects.semester.toString().toLowerCase();
-          const sSem = currentSemester.toString().toLowerCase();
-          if (!lSem.includes(sSem) && !sSem.includes(lSem)) return null;
-      }
-
-      let gravityScore = 100;
-      let displayTitle = lesson.title;
-      let taskType = 'study';
-      
-      const userState = progressMap.get(lesson.id);
-
-      if (userState) {
-          if (userState.score < 50) {
-              gravityScore += 5000; 
-              displayTitle = `تصحيح: ${lesson.title}`;
-          } else {
-              // ✅ مراجعة لا نهائية: نقاط موجبة (10) لتظهر في القائمة
-              gravityScore = 10; 
-              taskType = 'review';
-              displayTitle = `مراجعة: ${lesson.title}`;
-          }
-      } else {
-          gravityScore += 1000;
-          displayTitle = `درس جديد: ${lesson.title}`;
-      }
-
-      return {
-        id: lesson.id,
-        title: displayTitle,
-        type: taskType,
-        score: gravityScore,
-        meta: {
-            relatedLessonId: lesson.id,
-            relatedSubjectId: lesson.subject_id,
-            relatedLessonTitle: lesson.title,
-            score: gravityScore,
-            isExamPrep: false
+        // فلتر السداسي
+        if (currentSemester && lesson.subjects?.semester) {
+            const lSem = lesson.subjects.semester.toString().toLowerCase().trim();
+            const sSem = currentSemester.toString().toLowerCase().trim();
+            
+            if (!lSem.includes(sSem) && !sSem.includes(lSem)) {
+                // console.log(`🗑️ Filtered: ${lesson.title} (${lSem} != ${sSem})`); // Uncomment to debug
+                return null;
+            }
         }
-      };
+
+        // حساب النقاط (Gravity Score)
+        let gravityScore = 100;
+        let taskType = 'study';
+        const userState = progressMap.get(lesson.id);
+
+        if (userState) {
+            if (userState.mastery_score >= 80) return null; // إخفاء المكتمل بامتياز
+            if (userState.mastery_score < 50) gravityScore += 5000; // أولوية قصوى
+            else { gravityScore = 10; taskType = 'review'; }
+        } else {
+            gravityScore += 1000; // درس جديد
+        }
+
+        return {
+            id: lesson.id,
+            title: lesson.title,
+            type: taskType,
+            score: gravityScore,
+            meta: { relatedLessonId: lesson.id, score: gravityScore }
+        };
     }).filter(Boolean);
 
-    // 5. الترتيب
-    candidates.sort((a, b) => b.score - a.score);
+    console.log(`📊 Candidates after filtering: ${candidates.length}`);
 
-    // 6. Fallback
-    if (candidates.length === 0) {
+    // 6. Fallback (إذا الفلتر حذف كل شيء)
+    if (candidates.length === 0 && lessons.length > 0) {
+        console.log("🔄 Using Fallback tasks...");
         candidates = lessons.slice(0, 3).map(l => ({
             id: l.id,
-            title: `مراجعة عامة: ${l.title}`,
+            title: `مراجعة: ${l.title}`,
             type: 'review',
             score: 5,
-            meta: { relatedLessonId: l.id, relatedLessonTitle: l.title }
+            meta: { relatedLessonId: l.id }
         }));
     }
 
+    // ترتيب وإرجاع
+    candidates.sort((a, b) => b.score - a.score);
     const finalTasks = candidates.slice(0, 3);
-    logger.success(`🏆 Gravity V5.2 Generated ${finalTasks.length} tasks.`);
     
-    return { tasks: finalTasks, source: 'Gravity_V5.2' };
+    return { tasks: finalTasks, source: 'Gravity_Debug' };
 
   } catch (err) {
-    logger.error('Gravity Critical Error:', err.message);
-    return { 
-        tasks: [{ 
-            title: `خطأ نظام: ${err.message}`, 
-            type: 'fix', 
-            meta: { score: 9999 } 
-        }] 
-    };
+    logger.error('Gravity Critical Error:', err);
+    return { tasks: [] };
   }
 }
 
