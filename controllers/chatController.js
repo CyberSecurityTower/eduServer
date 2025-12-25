@@ -207,45 +207,42 @@ async function chatInteractive(req, res) {
     // ---------------------------------------------------------
     // 5. Context Injection & Ghost Teacher Logic
     // ---------------------------------------------------------
-    let activeLessonContext = "";
+   
+let activeLessonContext = "";
 
-    if (currentContext.lessonId) {
-      const { data: lessonData } = await supabase
-        .from('lessons')
-        .select('*, subjects(title)')
-        .eq('id', currentContext.lessonId)
-        .single();
+// 2. إذا أرسل الفرونت إند ID الدرس
+if (currentContext.lessonId) {
+  // جلب بيانات الدرس
+  const { data: lessonData } = await supabase
+    .from('lessons')
+    .select('*, subjects(title)')
+    .eq('id', currentContext.lessonId)
+    .single();
 
-      if (lessonData) {
-        if (!lessonData.has_content) {
-          const isRequestingExplanation = message.toLowerCase().includes('explain') || message.includes('اشرح') || (message.length < 50 && message.includes('?'));
-
-          if (isRequestingExplanation) {
-            const ghostResult = await explainLessonContent(lessonData.id, userId);
-            const replyText = `👻 **المعلم الشبح:**\n\n${ghostResult.content}`;
-
-            saveChatSession(sessionId, userId, message, [
-              ...history,
-              { role: 'user', text: message, timestamp: nowISO() },
-              { role: 'model', text: replyText, timestamp: nowISO() }
-            ]);
-
-            return res.status(200).json({
-              reply: replyText,
-              widgets: [],
-              sessionId,
-              mood: 'excited'
-            });
-          } else {
-            activeLessonContext = `User is viewing an EMPTY lesson titled "${lessonData.title}". If they ask for content, tell them to click 'Explain'.`;
-          }
-        } else {
-          const { data: contentData } = await supabase.from('lessons_content').select('content').eq('lesson_id', lessonData.id).single();
-          const snippet = safeSnippet(contentData?.content || "", 1000);
-          activeLessonContext = `📚 **ACTIVE LESSON CONTEXT:**\nUser is reading: "${lessonData.title}".\nSnippet: "${snippet}"...\n`;
-        }
-      }
-    }
+  if (lessonData) {
+      // جلب المحتوى النصي (RAG Memory)
+      const { data: contentData } = await supabase
+          .from('lessons_content')
+          .select('content')
+          .eq('lesson_id', lessonData.id)
+          .single();
+      
+      const snippet = safeSnippet(contentData?.content || "", 1500); // نأخذ جزء كبير من الدرس
+      
+      // 3. تجهيز السياق للـ AI
+      activeLessonContext = `
+      📚 **ACTIVE LESSON CONTEXT (User is looking at this NOW):**
+      Title: "${lessonData.title}"
+      Subject: "${lessonData.subjects?.title}"
+      Content Snippet:
+      """
+      ${snippet}
+      """
+      👉 INSTRUCTION: The user is asking about THIS lesson. Use the content above to answer accurately.
+      `;
+  }
+}
+  }
 
     // =========================================================
     // 6. Data Aggregation (Parallel Fetching)
