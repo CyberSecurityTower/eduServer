@@ -242,7 +242,7 @@ if (currentContext.lessonId) {
       `;
   }
 }
-  }
+  
 
     // =========================================================
     // 6. Data Aggregation (Parallel Fetching)
