@@ -31,18 +31,16 @@ class KeyManager {
     _dailyResetCheck() {
         const now = new Date();
         // تعديل التوقيت ليكون بتوقيت الجزائر (أو السيرفر)
-        // إذا أردت 8 صباحاً بتوقيت الجزائر، تأكد من ضبط timezone السيرفر أو عدل هنا
         const currentHour = now.getHours();
         const currentDay = now.getDate();
 
         // الشرط: إذا تغير اليوم، والساعة الآن 8 أو أكثر
-        // (أو ببساطة: إذا تغير اليوم نقوم بالتصفير لضمان العمل)
         if (this.lastResetDay !== currentDay && currentHour >= 8) {
             logger.info('🌅 8:00 AM Trigger: Resetting all API Key quotas...');
             
             this.keys.forEach(keyObj => {
                 keyObj.todayRequests = 0;
-                keyObj.usage = 0; // اختياري: تصفير الاستخدام اليومي
+                keyObj.usage = 0; 
                 // 🔥 إنعاش المفاتيح الميتة
                 if (keyObj.status === 'dead' || keyObj.status === 'busy') {
                     keyObj.status = 'idle';
@@ -57,12 +55,13 @@ class KeyManager {
             // مزامنة سريعة مع الداتابايز (Fire & Forget)
             supabase.from('system_api_keys')
                 .update({ today_requests_count: 0, status: 'active', fails_count: 0 })
-                .neq('status', 'reserved') // لا نلمس المفاتيح المحجوزة
+                .neq('status', 'reserved') 
                 .then();
                 
             logger.success('✅ All Keys Revived & Quotas Reset!');
         }
     }
+
     // ============================================================
     // 1. Smart Initialization
     // ============================================================
@@ -101,7 +100,7 @@ class KeyManager {
                 const existing = dbKeyMap.get(envK.key);
 
                 if (existing) {
-                    // ✅ Case 1: Key exists in DB -> Restore stats (don't start from zero)
+                    // ✅ Case 1: Key exists in DB -> Restore stats
                     this._addKeyToMemory(
                         existing.key_value,
                         existing.nickname || envK.nick,
@@ -109,7 +108,7 @@ class KeyManager {
                         existing.usage_count,
                         existing.total_input_tokens,
                         existing.total_output_tokens,
-                        existing.today_requests_count, // 🔥 Restore daily counter
+                        existing.today_requests_count,
                         existing.last_reset_at
                     );
                     // Remove from map to avoid duplication in step D
@@ -117,11 +116,11 @@ class KeyManager {
                 } else {
                     // 🆕 Case 2: New key in .env not in DB -> Register it
                     await this._registerNewKeyInDb(envK.key, envK.nick);
-                    this._addKeyToMemory(envK.key, envK.nick); // Starts fresh
+                    this._addKeyToMemory(envK.key, envK.nick); 
                 }
             }
 
-            // D. Add keys that are ONLY in DB (e.g., added manually via Admin Panel)
+            // D. Add keys that are ONLY in DB
             for (const [keyStr, row] of dbKeyMap.entries()) {
                 if (row.status === 'active') {
                     this._addKeyToMemory(
@@ -142,7 +141,6 @@ class KeyManager {
 
         } catch (e) {
             logger.error('KeyManager Critical Init Error:', e);
-            // Fallback: If DB fails completely, load Env keys to keep server running
             this._emergencyLoadEnv();
         }
     }
@@ -157,7 +155,7 @@ class KeyManager {
                 created_at: new Date().toISOString()
             });
         } catch (e) {
-            // Ignore if key already exists (Duplicate)
+            // Ignore if key already exists
         }
     }
 
@@ -181,13 +179,10 @@ class KeyManager {
         const now = new Date();
         const lastResetDate = lastReset ? new Date(lastReset) : new Date();
 
-        // Check if day has changed (comparing date strings is safer than getDate())
         if (lastReset && lastResetDate.toDateString() !== now.toDateString()) {
             currentTodayCount = 0;
-            // Note: DB update happens lazily on next usage
         }
 
-          
         this.keys.set(keyStr, {
             key: keyStr,
             nickname,
@@ -205,13 +200,12 @@ class KeyManager {
     }
 
     // ============================================================
-    // 2. Acquire Key (تعديل: البحث بقوة أكبر)
+    // 2. Acquire Key
     // ============================================================
     async acquireKey() {
         return new Promise((resolve) => {
             const tryAcquire = () => {
-                // 1. تنظيف سريع: أي مفتاح 'busy' مر عليه أكثر من دقيقة نعيده 'idle'
-                // (حماية ضد المفاتيح التي تعلق بسبب كراش)
+                // 1. تنظيف سريع
                 const now = Date.now();
                 this.keys.forEach(k => {
                     if (k.status === 'busy' && (now - k.lastUsed > 60000)) {
@@ -219,14 +213,12 @@ class KeyManager {
                     }
                 });
 
-                // 2. الفلترة: المفاتيح المتاحة
+                // 2. الفلترة
                 const available = Array.from(this.keys.values()).filter(k => {
-                    // نقبل المفتاح إذا كان idle، أو إذا كان dead لكن مر يوم على موته (محاولة إنعاش يدوية)
                     return k.status === 'idle' && k.todayRequests < k.rpdLimit;
                 });
 
                 if (available.length > 0) {
-                    // اختيار عشوائي لتوزيع الحمل
                     const selected = shuffled(available)[0];
 
                     selected.status = 'busy';
@@ -234,7 +226,6 @@ class KeyManager {
                     selected.usage++;
                     selected.todayRequests++;
 
-                    // تحديث خفيف للداتابايز
                     this._syncKeyStats(selected.key, {
                         usage_count: selected.usage,
                         today_requests_count: selected.todayRequests,
@@ -243,17 +234,14 @@ class KeyManager {
 
                     resolve(selected);
                 } else {
-                    // 🚨 حالة الطوارئ: لا توجد مفاتيح!
-                    // بدلاً من الانتظار للأبد، نتحقق هل هناك مفاتيح "ميتة" يمكننا المخاطرة بها؟
+                    // 🚨 حالة الطوارئ
                     const deadKeys = Array.from(this.keys.values()).filter(k => k.status === 'dead');
                     if (deadKeys.length > 0) {
-                        // "يائس": جرب مفتاحاً ميتاً لعل وعسى عاد للعمل
                         const zombie = deadKeys[0];
                         logger.warn(`🧟 Desperate Mode: Trying dead key ${zombie.nickname}...`);
                         zombie.status = 'busy';
                         resolve(zombie);
                     } else {
-                        // الانتظار في الطابور
                         logger.warn('⚠️ Queueing request (System saturated)...');
                         this.queue.push(tryAcquire);
                     }
@@ -265,7 +253,7 @@ class KeyManager {
     }
 
     // ============================================================
-    // 3. Release Key (Check-In)
+    // 3. Release Key
     // ============================================================
     releaseKey(keyStr, wasSuccess = true, errorType = null) {
         const keyObj = this.keys.get(keyStr);
@@ -273,7 +261,7 @@ class KeyManager {
 
         if (wasSuccess) {
             keyObj.status = 'idle';
-            keyObj.fails = 0; // Reset fails on success
+            keyObj.fails = 0; 
         } else {
             keyObj.fails++;
             logger.warn(`❌ Key ${keyObj.nickname} failed (${keyObj.fails}/${this.MAX_FAILS}). Error: ${errorType}`);
@@ -286,7 +274,6 @@ class KeyManager {
                 keyObj.status = 'cooldown';
                 logger.warn(`❄️ Key ${keyObj.nickname} in cooldown for 1 min.`);
                 
-                // Release from cooldown after 1 minute
                 setTimeout(() => {
                     if (keyObj.status !== 'dead') keyObj.status = 'idle';
                     this._processQueue();
@@ -298,7 +285,6 @@ class KeyManager {
             this._syncKeyStats(keyStr, { fails_count: keyObj.fails });
         }
 
-        // Check Queue
         this._processQueue();
     }
 
@@ -306,13 +292,12 @@ class KeyManager {
         if (this.queue.length > 0) {
             const hasIdle = Array.from(this.keys.values()).some(k => k.status === 'idle');
             if (hasIdle) {
-                const nextRequest = this.queue.shift(); // FIFO
+                const nextRequest = this.queue.shift(); 
                 if (nextRequest) nextRequest();
             }
         }
     }
 
-    // Log Token Usage
     async recordUsage(keyStr, usageMetadata, userId = null, modelName = 'unknown') {
         const keyObj = this.keys.get(keyStr);
         if (!keyObj || !usageMetadata) return;
@@ -324,38 +309,21 @@ class KeyManager {
         keyObj.outputTokens += output;
 
         try {
-            // Atomic Update via RPC
             await supabase.rpc('increment_key_usage', {
                 key_val: keyStr,
                 inc_input: input,
                 inc_output: output
             });
-            
-            // Optional: Detailed logs table
-            /* 
-            await supabase.from('ai_usage_logs').insert({
-                user_id: userId,
-                model_name: modelName,
-                input_tokens: input,
-                output_tokens: output,
-                total_tokens: input + output,
-                key_nickname: keyObj.nickname
-            }); 
-            */
-
         } catch (e) {
             console.error('Failed to log tokens:', e.message);
         }
     }
 
     async _syncKeyStats(keyStr, updates) {
-        // Fire & Forget background update
         try {
             await supabase.from('system_api_keys').update(updates).eq('key_value', keyStr);
         } catch (e) { /* ignore */ }
     }
-
-    // --- Admin Functions ---
 
     getAllKeysStatus() {
         return Array.from(this.keys.values()).map(k => ({
@@ -393,12 +361,12 @@ class KeyManager {
         }
         return { success: false };
     }
-}
-  
-    // دالة مساعدة لمعرفة عدد المفاتيح الكلي (سنحتاجها في index.js)
+
+    // ✅ تم نقل الدالة لتكون داخل الكلاس
     getKeyCount() {
         return this.keys.size;
     }
+} // <--- إغلاق الكلاس هنا
 
 const instance = new KeyManager();
 module.exports = instance;
