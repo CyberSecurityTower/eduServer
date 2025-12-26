@@ -1,17 +1,24 @@
+
 // services/ai/keyManager.js
 'use strict';
 
 const supabase = require('../data/supabase');
 const logger = require('../../utils/logger');
-const { shuffled, sleep } = require('../../utils');
+const { shuffled } = require('../../utils');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 class KeyManager {
     constructor() {
-        this.keys = new Map(); // In-memory storage
-        this.queue = [];       // Request queue
+        this.keys = new Map();
+        this.queue = [];
         this.MAX_FAILS = 4;
         this.isInitialized = false;
+        
+        // متغير لتتبع آخر يوم تم فيه التصفير
+        this.lastResetDay = new Date().getDate(); 
+
+        // 🔥 تشغيل فاحص تلقائي كل دقيقة (لإعادة التعيين الساعة 8 صباحاً)
+        setInterval(() => this._dailyResetCheck(), 60 * 1000);
     }
 
     async reloadKeys() {
@@ -20,6 +27,42 @@ class KeyManager {
         await this.init();
     }
 
+    // ✅ الدالة الجديدة: فحص الوقت وتصفير العدادات
+    _dailyResetCheck() {
+        const now = new Date();
+        // تعديل التوقيت ليكون بتوقيت الجزائر (أو السيرفر)
+        // إذا أردت 8 صباحاً بتوقيت الجزائر، تأكد من ضبط timezone السيرفر أو عدل هنا
+        const currentHour = now.getHours();
+        const currentDay = now.getDate();
+
+        // الشرط: إذا تغير اليوم، والساعة الآن 8 أو أكثر
+        // (أو ببساطة: إذا تغير اليوم نقوم بالتصفير لضمان العمل)
+        if (this.lastResetDay !== currentDay && currentHour >= 8) {
+            logger.info('🌅 8:00 AM Trigger: Resetting all API Key quotas...');
+            
+            this.keys.forEach(keyObj => {
+                keyObj.todayRequests = 0;
+                keyObj.usage = 0; // اختياري: تصفير الاستخدام اليومي
+                // 🔥 إنعاش المفاتيح الميتة
+                if (keyObj.status === 'dead' || keyObj.status === 'busy') {
+                    keyObj.status = 'idle';
+                    keyObj.fails = 0;
+                }
+                // تحديث التاريخ
+                keyObj.lastReset = now.toISOString();
+            });
+
+            this.lastResetDay = currentDay;
+            
+            // مزامنة سريعة مع الداتابايز (Fire & Forget)
+            supabase.from('system_api_keys')
+                .update({ today_requests_count: 0, status: 'active', fails_count: 0 })
+                .neq('status', 'reserved') // لا نلمس المفاتيح المحجوزة
+                .then();
+                
+            logger.success('✅ All Keys Revived & Quotas Reset!');
+        }
+    }
     // ============================================================
     // 1. Smart Initialization
     // ============================================================
@@ -144,6 +187,7 @@ class KeyManager {
             // Note: DB update happens lazily on next usage
         }
 
+          
         this.keys.set(keyStr, {
             key: keyStr,
             nickname,
@@ -153,34 +197,44 @@ class KeyManager {
             usage: usage,
             inputTokens: inputTokens || 0,
             outputTokens: outputTokens || 0,
-            todayRequests: currentTodayCount,
-            rpdLimit: 2000, // Daily Limit (Adjust as needed, e.g., 20 or 2000)
-            rpmLimit: 5,    // RPM Limit (Not strictly enforced here but good for ref)
-            lastUsed: null
+            todayRequests: todayCount,
+            rpdLimit: 2000, 
+            lastUsed: null,
+            lastReset: lastReset
         });
     }
 
     // ============================================================
-    // 2. Acquire Key (Check-Out)
+    // 2. Acquire Key (تعديل: البحث بقوة أكبر)
     // ============================================================
     async acquireKey() {
         return new Promise((resolve) => {
             const tryAcquire = () => {
-                // 1. Filter Available Keys (Idle & Not over daily limit)
+                // 1. تنظيف سريع: أي مفتاح 'busy' مر عليه أكثر من دقيقة نعيده 'idle'
+                // (حماية ضد المفاتيح التي تعلق بسبب كراش)
+                const now = Date.now();
+                this.keys.forEach(k => {
+                    if (k.status === 'busy' && (now - k.lastUsed > 60000)) {
+                        k.status = 'idle';
+                    }
+                });
+
+                // 2. الفلترة: المفاتيح المتاحة
                 const available = Array.from(this.keys.values()).filter(k => {
+                    // نقبل المفتاح إذا كان idle، أو إذا كان dead لكن مر يوم على موته (محاولة إنعاش يدوية)
                     return k.status === 'idle' && k.todayRequests < k.rpdLimit;
                 });
 
                 if (available.length > 0) {
-                    // Load Balancing: Random Selection
+                    // اختيار عشوائي لتوزيع الحمل
                     const selected = shuffled(available)[0];
 
                     selected.status = 'busy';
                     selected.lastUsed = Date.now();
                     selected.usage++;
-                    selected.todayRequests++; // Increment memory counter
+                    selected.todayRequests++;
 
-                    // Sync to DB (Total + Daily + Last Reset Time)
+                    // تحديث خفيف للداتابايز
                     this._syncKeyStats(selected.key, {
                         usage_count: selected.usage,
                         today_requests_count: selected.todayRequests,
@@ -189,9 +243,20 @@ class KeyManager {
 
                     resolve(selected);
                 } else {
-                    // Queue request if no keys available
-                    logger.warn('⚠️ All keys reached daily limit or are busy! Queuing request...');
-                    this.queue.push(tryAcquire);
+                    // 🚨 حالة الطوارئ: لا توجد مفاتيح!
+                    // بدلاً من الانتظار للأبد، نتحقق هل هناك مفاتيح "ميتة" يمكننا المخاطرة بها؟
+                    const deadKeys = Array.from(this.keys.values()).filter(k => k.status === 'dead');
+                    if (deadKeys.length > 0) {
+                        // "يائس": جرب مفتاحاً ميتاً لعل وعسى عاد للعمل
+                        const zombie = deadKeys[0];
+                        logger.warn(`🧟 Desperate Mode: Trying dead key ${zombie.nickname}...`);
+                        zombie.status = 'busy';
+                        resolve(zombie);
+                    } else {
+                        // الانتظار في الطابور
+                        logger.warn('⚠️ Queueing request (System saturated)...');
+                        this.queue.push(tryAcquire);
+                    }
                 }
             };
 
@@ -329,6 +394,11 @@ class KeyManager {
         return { success: false };
     }
 }
-
+  
+    // دالة مساعدة لمعرفة عدد المفاتيح الكلي (سنحتاجها في index.js)
+    getKeyCount() {
+        return this.keys.size;
+    }
+}
 const instance = new KeyManager();
 module.exports = instance;
