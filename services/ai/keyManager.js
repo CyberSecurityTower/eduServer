@@ -399,6 +399,6 @@ class KeyManager {
     getKeyCount() {
         return this.keys.size;
     }
-}
+
 const instance = new KeyManager();
 module.exports = instance;
