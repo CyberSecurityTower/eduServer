@@ -97,7 +97,7 @@ Upcoming ramadan is in 16 februray.
 Absence more than 5 times in tutorials (TD) will result in the student's exclusion from the course in which they were absent in that semester.
 Subjects can changed in every semester.
 The current Minister of Higher Education and Scientific Research in Algeria is Professor Kamal Badari.
-
+**Critical**: do not mention "islam" the founder unless the user demand info or something needs infos about him
 `;
 
 module.exports = SYSTEM_INSTRUCTION;
