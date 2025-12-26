@@ -56,12 +56,18 @@ async function runPlannerManager(userId, pathId) {
         );
 
         // 3. موعد الامتحان
-        const examEntry = exams.find(e => e.subject_id === sub.id);
+         const examEntry = exams.find(e => e.subject_id === sub.id);
         let daysToExam = 999; // افتراضي بعيد جداً
+        
         if (examEntry) {
             const diffTime = new Date(examEntry.exam_date) - new Date();
             daysToExam = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
-            if (daysToExam < 0) daysToExam = 999; // فات الأوان
+            
+            // 🔥 الحماية الإضافية: إذا كان الامتحان اليوم أو فات، نعتبره غير موجود للأولوية
+            // (إلا إذا أراد أن يقترح مراجعة ليلة الامتحان، حينها اترك الصفر)
+            if (daysToExam < 0) {
+                 daysToExam = 999; // نعتبره بعيداً جداً لكي لا يأخذ أولوية الطوارئ
+            }
         }
 
         // 4. حساب معدل الحرق (Burn Rate)
