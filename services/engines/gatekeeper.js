@@ -8,41 +8,52 @@ const logger = require('../../utils/logger');
  * ⏱️ دالة تتبع الوقت التراكمي (للشات أو القراءة)
  * تضيف وقتاً للرصيد الحالي ولا تمس حالة الإكمال
  */
-async function trackStudyTime(userId, lessonId, secondsToAdd) {
-  if (!userId || !lessonId || !secondsToAdd) return;
 
+async function trackStudyTime(userId, lessonId, durationSeconds = 60) {
   try {
-    // 1. جلب السجل الحالي لمعرفة الوقت السابق
-    const { data: current } = await supabase
+    // 1. جلب السجل الحالي (إن وجد)
+    const { data: existing, error: fetchError } = await supabase
       .from('user_progress')
-      .select('time_spent_seconds, status')
+      .select('time_spent_seconds, id')
       .eq('user_id', userId)
       .eq('lesson_id', lessonId)
-      .maybeSingle();
+      .maybeSingle(); // نستخدم maybeSingle لتجنب الخطأ إذا لم يوجد
 
-    const oldTime = current?.time_spent_seconds || 0;
-    const newTime = oldTime + secondsToAdd;
-    
-    // إذا لم يكن هناك سجل، الحالة هي "قيد الدراسة"
-    const status = current?.status || 'in_progress';
+    if (fetchError) throw fetchError;
 
-    // 2. تحديث الوقت + تاريخ آخر تفاعل
-    const { error } = await supabase
-      .from('user_progress')
-      .upsert({
-        user_id: userId,
-        lesson_id: lessonId,
-        time_spent_seconds: newTime,
-        status: status, 
-        last_interaction: new Date().toISOString()
-      }, { onConflict: 'user_id, lesson_id' });
+    let newTotalTime = durationSeconds;
 
-    if (error) throw error;
+    if (existing) {
+      // 2. إذا كان موجوداً، نضيف الوقت الجديد للقديم
+      newTotalTime += (existing.time_spent_seconds || 0);
+      
+      // تحديث السجل الموجود
+      await supabase
+        .from('user_progress')
+        .update({ 
+            time_spent_seconds: newTotalTime,
+            last_interaction: new Date().toISOString()
+        })
+        .eq('id', existing.id); // نحدث بالـ ID لضمان الدقة
+        
+    } else {
+      // 3. إذا لم يكن موجوداً، ننشئ سجلاً جديداً (Upsert للأمان)
+      await supabase
+        .from('user_progress')
+        .upsert({
+          user_id: userId,
+          lesson_id: lessonId,
+          time_spent_seconds: newTotalTime,
+          last_interaction: new Date().toISOString(),
+          status: 'in_progress', // حالة افتراضية
+          mastery_score: 0
+        }, { onConflict: 'user_id, lesson_id' }); // 🔥 هذا يمنع خطأ duplicate key
+    }
 
-    // logger.info(`⏱️ Added ${secondsToAdd}s to lesson ${lessonId}`);
-
+    return true;
   } catch (err) {
-    logger.error('trackStudyTime Error:', err.message);
+    logger.error(`trackStudyTime Error for user ${userId}:`, err.message);
+    return false;
   }
 }
 
