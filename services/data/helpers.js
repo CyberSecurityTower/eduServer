@@ -103,44 +103,67 @@ async function getProfile(userId) {
 // 2. Progress & Educational Paths
 // ============================================================================
 
+/**
+ * ⚛️ ATOMIC PROGRESS AGGREGATOR
+ * يبني صورة التقدم بناءً على الذرات فقط.
+ */
 async function getProgress(userId) {
   try {
+    // 1. الكاش (مهم جداً هنا لأن الحساب قد يكون ثقيلاً)
     const cached = await cacheGet('progress', userId);
     if (cached) return cached;
 
-    // استعلام مباشر
-    const { data, error } = await supabase
-      .from('user_progress')
-      .select('*')
-      .eq('user_id', userId)
-      .single();
+    // 2. جلب كل الذرات التي لمسها المستخدم
+    const { data: atomicData, error } = await supabase
+      .from('atomic_user_mastery')
+      .select('lesson_id, current_mastery, status, last_updated')
+      .eq('user_id', userId);
 
-    if (error && error.code !== 'PGRST116') {
-        logger.error('Supabase Progress Error:', error.message);
-    }
+    if (error) throw error;
 
-    let val = { stats: { points: 0 }, streakCount: 0, pathProgress: {}, dailyTasks: { tasks: [] } };
+    // 3. تحويل القائمة المسطحة إلى هيكلية (Path -> Subject -> Lesson)
+    // ملاحظة: نحتاج لمعرفة هيكل المسار (Curriculum) لترتيب البيانات
+    // سنقوم بجلب "خريطة المنهج" (Educational Path) من الكاش أو الداتابيز
+    
+    // (للاختصار، سنفترض أننا نملك دالة getCachedPathStructure)
+    // لكن هنا سنبني هيكلاً بسيطاً يعتمد على البيانات المتوفرة
+    
+    const progressMap = {}; // lessonId -> { score, status }
+    const completedLessons = [];
+    let totalScore = 0;
 
-    if (data) {
-      // دعم الهيكلية القديمة (JSONB data) والجديدة (أعمدة منفصلة)
-      if (data.data) {
-        val = { ...val, ...data.data };
-      } else {
-        val = {
-            stats: data.stats || val.stats,
-            streakCount: data.streak_count || 0,
-            pathProgress: data.path_progress || {},
-            dailyTasks: data.daily_tasks || { tasks: [] }
+    atomicData.forEach(row => {
+        progressMap[row.lesson_id] = {
+            score: row.current_mastery,
+            status: row.current_mastery >= 95 ? 'completed' : 'in_progress',
+            lastAttempt: row.last_updated
         };
-      }
-    }
+
+        if (row.current_mastery >= 95) {
+            completedLessons.push(row.lesson_id);
+        }
+        totalScore += row.current_mastery;
+    });
+
+    // 4. بناء الكائن النهائي
+    const val = {
+        stats: {
+            lessons_started: atomicData.length,
+            lessons_mastered: completedLessons.length,
+            global_mastery: atomicData.length > 0 ? Math.round(totalScore / atomicData.length) : 0
+        },
+        // هذا الكائن هو ما سيستخدمه الـ AI والـ Planner
+        atomicMap: progressMap, 
+        // قائمة المهام اليومية (سنتركها فارغة هنا، الـ Planner هو من يملؤها)
+        dailyTasks: { tasks: [] }
+    };
 
     await cacheSet('progress', userId, val);
     return val;
 
   } catch (err) {
-    logger.error('getProgress Native Error:', err.message);
-    return { stats: { points: 0 }, dailyTasks: { tasks: [] } };
+    logger.error('Atomic getProgress Error:', err.message);
+    return { atomicMap: {}, stats: {} };
   }
 }
 
