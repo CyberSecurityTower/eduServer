@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const CONFIG = require('../config');
 const supabase = require('../services/data/supabase');
 const PROMPTS = require('../config/ai-prompts');
+const { getAtomicContext } = require('../services/atomic/atomicManager'); // استيراد
 
 // Engines & Managers
 const { markLessonComplete, trackStudyTime } = require('../services/engines/gatekeeper'); 
@@ -77,7 +78,7 @@ async function handleGeneralQuestion(req, res) {
     // 3. دمج التعليمات
     const finalInstruction = `
       ${SYSTEM_INSTRUCTION}
-      
+      ${atomicContext}
       [DATA_SOURCE_START]
       ${curriculumMap}
       [DATA_SOURCE_END]
@@ -166,7 +167,21 @@ async function chatInteractive(req, res) {
 
     let userData = toCamelCase(userRaw);
     const curriculumMap = await getCurriculumContext();
+//ATOMIC LOGIC
+       // 🔥 المحطة 2: حقن النظام الذري
+    let atomicContext = "";
+    let atomicData = null;
 
+    // نفترض أن lessonId متاح في الطلب (أو نستخرجه من السياق)
+    if (currentContext.lessonId) {
+        const atomicResult = await getAtomicContext(userId, currentContext.lessonId);
+        
+        if (atomicResult) {
+            atomicContext = atomicResult.prompt;
+            atomicData = atomicResult.rawData; // سنحتاجها في المحطة 3
+            console.log("✅ Atomic Context Injected Successfully");
+        }
+    }
     // =========================================================
     // 4. GROUP ENFORCEMENT LOGIC
     // =========================================================
