@@ -90,7 +90,7 @@ ${mappingList}
 ❌ DO NOT invent new IDs like "intro_loc" or use Arabic titles as IDs.
 ✅ Example: If user explains "الموقع الجغرافي", send: { "atomic_update": { "element_id": "geo_location_borders", "new_score": 90 } }
 `;
-    `;
+    
 
     return {
       prompt: finalPromptContext,
