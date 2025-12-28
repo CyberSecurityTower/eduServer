@@ -9,28 +9,41 @@ const CONFIG = require('../../config'); // تأكد من المسار
  * @param {string} userId 
  * @param {string} lessonId 
  */
+
 async function getAtomicContext(userId, lessonId) {
-  // 1. فحص زر الإيقاف (Kill Switch)
+  // 1. فحص زر الإيقاف
   if (!CONFIG.ATOMIC_SYSTEM?.ENABLED) {
     if (CONFIG.ATOMIC_SYSTEM?.DEBUG_MODE) console.log('⚠️ Atomic System is DISABLED.');
     return null;
   }
 
   try {
-    // 2. جلب الهيكل + تقدم الطالب (بشكل متوازي للسرعة)
+    console.log(`🔍 Atomic Lookup: Lesson=${lessonId}, User=${userId}`);
+
+    // 2. جلب الهيكل + تقدم الطالب
     const [structureRes, progressRes] = await Promise.all([
       supabase.from('atomic_lesson_structures').select('structure_data').eq('lesson_id', lessonId).single(),
       supabase.from('atomic_user_mastery').select('elements_scores').eq('user_id', userId).eq('lesson_id', lessonId).single()
     ]);
 
-    // إذا لم يكن للدرس هيكل ذري، ننسحب بهدوء (نعود للنظام القديم)
+    // 🔥 طباعة أخطاء Supabase (التشخيص الدقيق)
+    if (structureRes.error) {
+        console.error(`❌ SUPABASE ERROR (Structure):`, JSON.stringify(structureRes.error, null, 2));
+    }
+    
+    // ملاحظة: خطأ التقدم (PGRST116) طبيعي إذا كان الطالب جديداً، لذا لا نعتبره خطأً خطيراً
+    if (progressRes.error && progressRes.error.code !== 'PGRST116') {
+        console.error(`❌ SUPABASE ERROR (Progress):`, JSON.stringify(progressRes.error, null, 2));
+    }
+
+    // إذا لم يكن للدرس هيكل ذري
     if (!structureRes.data) {
-      if (CONFIG.ATOMIC_SYSTEM?.DEBUG_MODE) console.log(`ℹ️ No atomic structure found for lesson: ${lessonId}`);
+      console.log(`ℹ️ No atomic structure found for lesson: ${lessonId} (Check DB or RLS)`);
       return null;
     }
 
-    const structure = structureRes.data.structure_data; // { elements: [...] }
-    const userScores = progressRes.data?.elements_scores || {}; // { "intro_loc": 50, ... }
+    const structure = structureRes.data.structure_data;
+    const userScores = progressRes.data?.elements_scores || {};
 
     // 3. دمج البيانات وتحديد "الهدف التالي"
     let contextLines = [];
