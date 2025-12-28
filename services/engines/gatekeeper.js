@@ -4,130 +4,129 @@
 const supabase = require('../data/supabase');
 const logger = require('../../utils/logger');
 
-
 /**
- * إشارة إكمال الدرس + نظام المكافآت (EduCoin Integration) 🪙
+ * 🪙 Gatekeeper V2: Atomic Reward System
+ * يمنح المكافآت بناءً على الإتقان الذري (Atomic Mastery) فقط.
+ * تم حذف تتبع الوقت وجدول user_progress القديم نهائياً.
  */
-async function markLessonComplete(userId, lessonIdentifier, score = 100, addedTime = 0) {
+async function markLessonComplete(userId, lessonIdentifier, score = 100) {
   try {
-    console.log(`🔐 Gatekeeper: Processing for ${userId} (Input: ${lessonIdentifier})`);
+    console.log(`🔐 Gatekeeper V2: Checking rewards for ${userId} on "${lessonIdentifier}"`);
 
     let finalLessonId = lessonIdentifier;
-    let isGenericActivity = false; // 🆕 علم جديد: هل النشاط عام أم درس محدد؟
+    let isGenericActivity = false;
 
-    // 1. محاولة العثور على الدرس
+    // 1. محاولة العثور على الدرس (ID Resolution)
+    // إذا كان المدخل نصاً عربياً (عنوان)، نبحث عن الـ ID
     const isTitle = /[\u0600-\u06FF\s]/.test(lessonIdentifier) || lessonIdentifier.length > 50;
 
     if (isTitle) {
-        // تنظيف العنوان قليلاً لزيادة فرص العثور عليه
         const cleanTitle = lessonIdentifier.replace(/درس|مادة|شرح/g, '').trim();
-        
         const { data: lesson } = await supabase
             .from('lessons')
             .select('id')
-            .ilike('title', `%${cleanTitle}%`) // بحث مرن
+            .ilike('title', `%${cleanTitle}%`)
             .limit(1)
             .maybeSingle();
 
         if (lesson) {
             finalLessonId = lesson.id;
         } else {
-            console.warn(`⚠️ Gatekeeper: Lesson "${lessonIdentifier}" not found. Switching to GENERIC REWARD mode.`);
-            isGenericActivity = true; // لم نجد الدرس، لكن لن نوقف العملية
+            console.warn(`⚠️ Gatekeeper: Lesson not found. Switching to GENERIC mode.`);
+            isGenericActivity = true;
             finalLessonId = null;
         }
     }
 
-    // 2. تحديث التقدم (فقط إذا عرفنا الدرس المحدد)
-    let wasCompletedBefore = false;
-    
+    // 2. تحليل الحالة الذرية (The Atomic Logic)
+    let coinsEarned = 0;
+    let rewardReason = '';
+    let isFirstTimeMastery = false;
+
     if (!isGenericActivity && finalLessonId) {
-        const { data: current } = await supabase
-            .from('user_progress')
-            .select('status, time_spent_seconds')
+        // جلب سجل الإتقان الذري
+        const { data: atomicRecord, error } = await supabase
+            .from('atomic_user_mastery')
+            .select('current_mastery, is_rewarded')
             .eq('user_id', userId)
             .eq('lesson_id', finalLessonId)
             .maybeSingle();
 
-        wasCompletedBefore = current?.status === 'completed';
-        const totalTime = (current?.time_spent_seconds || 0) + addedTime;
+        if (atomicRecord) {
+            // الشرط: هل الإتقان تجاوز 80%؟ (يمكنك تعديل النسبة)
+            const isMastered = (atomicRecord.current_mastery >= 80);
 
-        await supabase.from('user_progress').upsert({
-            user_id: userId,
-            lesson_id: finalLessonId,
-            status: 'completed',
-            mastery_score: score,
-            time_spent_seconds: totalTime,
-            last_interaction: new Date().toISOString()
-        }, { onConflict: 'user_id, lesson_id' });
-    }
-
-    // 3. 🪙 حساب الكوينز (الآن يعمل حتى لو لم نجد الدرس)
-    let coinsEarned = 0;
-    let rewardReason = '';
-
-    if (isGenericActivity) {
-        // حالة خاصة: نشاط عام (كويز عشوائي أو درس غير معروف)
-        // نعطي مكافأة ثابتة لضمان رضا المستخدم
-        coinsEarned = 30; 
-        rewardReason = 'general_activity_reward';
-    } else {
-        // حالة الدرس المعروف
-        if (!wasCompletedBefore) {
-            coinsEarned = 50;
-            rewardReason = 'lesson_completion';
-        } else {
-            // إعادة الدرس
-            if (score >= 95) {
+            if (isMastered && !atomicRecord.is_rewarded) {
+                // 💰 الجائزة الكبرى: أول مرة يتقن الدرس
+                coinsEarned = 50;
+                rewardReason = 'atomic_mastery_unlocked';
+                isFirstTimeMastery = true;
+            } else if (atomicRecord.is_rewarded && score >= 100) {
+                // 🍬 بونوس: مراجعة مثالية
                 coinsEarned = 5;
-                rewardReason = 'review_mastery';
+                rewardReason = 'atomic_review_bonus';
             } else {
-                rewardReason = 'already_claimed';
+                rewardReason = 'already_mastered_no_bonus';
             }
+        } else {
+            // لم يبدأ الدرس في النظام الذري بعد
+            rewardReason = 'no_atomic_record';
         }
+    } else {
+        // نشاط عام (خارج الدروس المحددة)
+        coinsEarned = 10;
+        rewardReason = 'generic_activity';
     }
 
+    // 3. تنفيذ المعاملة المالية (Transaction)
     let newTotalCoins = 0;
 
-    // 4. تنفيذ المعاملة المالية
     if (coinsEarned > 0) {
         const { data: balance, error } = await supabase.rpc('process_coin_transaction', {
             p_user_id: userId,
             p_amount: coinsEarned,
             p_reason: rewardReason,
             p_meta: { 
-                lesson_identifier: lessonIdentifier, // نسجل الاسم الأصلي للمراجعة
-                is_generic: isGenericActivity,
-                score: score 
+                lesson_id: finalLessonId, 
+                mastery_score: score 
             }
         });
         
         if (!error) {
-            console.log(`✅ Coins Added: ${coinsEarned}. New Balance: ${balance}`);
+            console.log(`✅ Coins Added: +${coinsEarned} (${rewardReason})`);
             newTotalCoins = balance;
+
+            // 🔥 تحديث السجل الذري لكي لا يأخذ الجائزة الكبرى مرة أخرى
+            if (isFirstTimeMastery && finalLessonId) {
+                await supabase
+                    .from('atomic_user_mastery')
+                    .update({ is_rewarded: true })
+                    .eq('user_id', userId)
+                    .eq('lesson_id', finalLessonId);
+            }
         } else {
             console.error("❌ RPC Error:", error.message);
         }
     } else {
+        // جلب الرصيد الحالي فقط للعرض
         const { data: u } = await supabase.from('users').select('coins').eq('id', userId).single();
         newTotalCoins = u?.coins || 0;
     }
 
     return { 
         success: true, 
-        message: "Processed",
         reward: { 
             coins_added: coinsEarned, 
-            reason: rewardReason,
-            already_claimed: (!isGenericActivity && wasCompletedBefore && coinsEarned === 0)
+            reason: rewardReason
         },
         new_total_coins: newTotalCoins
     };
 
   } catch (err) {
-    logger.error('Gatekeeper Critical Error:', err.message);
+    logger.error('Gatekeeper V2 Error:', err.message);
     return { success: false };
   }
 }
 
+// تصدير الدالة الوحيدة (تم حذف trackStudyTime)
 module.exports = { markLessonComplete };
