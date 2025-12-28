@@ -10,7 +10,7 @@ const supabase = require('../services/data/supabase');
 const PROMPTS = require('../config/ai-prompts');
 const { getAtomicContext, updateAtomicProgress  } = require('../services/atomic/atomicManager'); // استيراد
 // Engines & Managers
-const { markLessonComplete, trackStudyTime } = require('../services/engines/gatekeeper'); 
+const { markLessonComplete } = require('../services/engines/gatekeeper'); 
 const { runPlannerManager } = require('../services/ai/managers/plannerManager');
 const { initSessionAnalyzer, analyzeSessionForEvents } = require('../services/ai/managers/sessionAnalyzer');
 const { runMemoryAgent, analyzeAndSaveMemory } = require('../services/ai/managers/memoryManager');
@@ -835,11 +835,7 @@ if (gatekeeperResult.reward) {
           { role: 'model', text: parsedResponse.reply, timestamp: nowISO() }
         ];
 
-        // 1. Study time tracking (If inside a lesson)
-        if (currentContext && currentContext.lessonId) {
-            await trackStudyTime(userId, currentContext.lessonId, 60)
-                .catch(err => logger.error('Tracking failed:', err));
-        }
+      
  // 🔥 تحديث النظام الذري (تم التصحيح: نستخدم updateSignal المستخرج)
         if (updateSignal && currentContext.lessonId) {
             await updateAtomicProgress(userId, currentContext.lessonId, updateSignal);
