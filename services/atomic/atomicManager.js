@@ -111,64 +111,46 @@ async function updateAtomicProgress(userId, lessonId, updateSignal) {
   if (!IS_ENABLED || !updateSignal) return;
 
   try {
-    // 1. جلب البيانات
-    const [structureRes, progressRes] = await Promise.all([
-      supabase.from('atomic_lesson_structures').select('structure_data').eq('lesson_id', lessonId).single(),
-      supabase.from('atomic_user_mastery').select('*').eq('user_id', userId).eq('lesson_id', lessonId).single()
-    ]);
+    console.log(`⚛️ Attempting Atomic Update for ${lessonId}...`);
 
-    if (!structureRes.data) return;
+    // 1. جلب الهيكل (Structure) فقط
+    // لا نجلب progress المستخدم هنا لأننا سنعتمد على Upsert لاحقاً
+    const { data: structureRes, error: structError } = await supabase
+      .from('atomic_lesson_structures')
+      .select('structure_data')
+      .eq('lesson_id', lessonId)
+      .single();
 
-    const structure = structureRes.data.structure_data;
-    let currentScores = progressRes.data?.elements_scores || {};
-
-    // 🔥 المنطق الجديد: التمييز بين التحديث الشامل والتحديث الفردي
-    if (updateSignal.element_id === 'ALL') {
-        // ==========================
-        // 🚀 BULK UPDATE (The Shortcut)
-        // ==========================
-        console.log(`🚀 ATOMIC BULK UPDATE: Setting ALL elements to ${updateSignal.new_score}%`);
-        
-        structure.elements.forEach(el => {
-currentScores[updateSignal.element_id] = updateSignal.new_score;
-
-      });
-
-    } else {
-        // ==========================
-        // 🛡️ INDIVIDUAL UPDATE (The Gatekeeper)
-        // ==========================
-        console.log(`⚛️ Atomic Update: User ${userId} -> Element ${updateSignal.element_id} = ${updateSignal.new_score}%`);
-
-        const oldScore = currentScores[updateSignal.element_id] || 0;
-       // const scoreDiff = updateSignal.new_score - oldScore;
-        let finalScore = updateSignal.new_score;
-
-        // أ. الكبح (Damping) مغلق حاليا لأنه غير فعال ... ممكن نعدله لاحقا او نطوره
-        /*if (scoreDiff > 60 && updateSignal.reason !== 'quiz_perfect') {
-            console.log(`⚠️ Gatekeeper: Damping huge jump for ${updateSignal.element_id} (${scoreDiff}%)`);
-            finalScore = oldScore + 60;
-            if (finalScore > 100) finalScore = 100;
-        }
-
-        // ب. التسلسل (Sequential Check)
-        const currentElementObj = structure.elements.find(e => e.id === updateSignal.element_id);
-        if (currentElementObj && currentElementObj.order > 1) {
-            const prevElement = structure.elements.find(e => e.order === currentElementObj.order - 1);
-            const prevScore = currentScores[prevElement.id] || 0;
-            
-            if (prevScore < 30 && finalScore > 50) {
-                 console.log(`🛡️ Gatekeeper: Holding back ${updateSignal.element_id} because previous element is weak.`);
-                 finalScore = 50;
-            }
-        }*/
- // فقط نتأكد أنها لا تتجاوز 100 ولا تقل عن 0
-        if (finalScore > 100) finalScore = 100;
-        if (finalScore < 0) finalScore = 0;
-        currentScores[updateSignal.element_id] = finalScore;
+    if (structError || !structureRes) {
+        console.warn(`⚠️ Atomic Structure missing for ${lessonId}. Update skipped.`);
+        return;
     }
 
-    // 3. إعادة حساب المعدل العام
+    const structure = structureRes.structure_data;
+    
+    // 2. جلب التقدم الحالي (للحساب فقط)
+    const { data: progressRes } = await supabase
+      .from('atomic_user_mastery')
+      .select('elements_scores')
+      .eq('user_id', userId)
+      .eq('lesson_id', lessonId)
+      .single();
+
+    let currentScores = progressRes?.elements_scores || {}; // ✅ إذا لم يوجد، نبدأ بكائن فارغ
+
+    // 3. تطبيق التحديث (Logic)
+    if (updateSignal.element_id === 'ALL') {
+        console.log(`🚀 Setting ALL elements to ${updateSignal.new_score}%`);
+        structure.elements.forEach(el => {
+            currentScores[el.id] = updateSignal.new_score;
+        });
+    } else {
+        // تحديث فردي مباشر
+        console.log(`🔧 Updating element ${updateSignal.element_id} to ${updateSignal.new_score}%`);
+        currentScores[updateSignal.element_id] = updateSignal.new_score;
+    }
+
+    // 4. إعادة حساب المعدل العام
     let totalWeightedScore = 0;
     let totalWeight = 0;
 
@@ -181,30 +163,30 @@ currentScores[updateSignal.element_id] = updateSignal.new_score;
 
     const newGlobalMastery = totalWeight > 0 ? Math.round(totalWeightedScore / totalWeight) : 0;
 
-    // 4. الحفظ
-    await supabase.from('atomic_user_mastery').upsert({
+    // 5. 🔥 الحفظ القسري (UPSERT)
+    // هذا الأمر سينشئ الصف إذا لم يكن موجوداً
+    const { error: upsertError } = await supabase.from('atomic_user_mastery').upsert({
       user_id: userId,
       lesson_id: lessonId,
       elements_scores: currentScores,
       current_mastery: newGlobalMastery,
-      last_updated: new Date().toISOString()
+      last_updated: new Date().toISOString(),
+      status: newGlobalMastery >= 100 ? 'completed' : 'started' // ✅ تحديث الحالة أيضاً
     }, { onConflict: 'user_id, lesson_id' });
 
-    console.log(`📈 New Global Mastery for ${lessonId}: ${newGlobalMastery}%`);
+    if (upsertError) {
+        console.error(`❌ DB WRITE ERROR:`, upsertError.message);
+    } else {
+        console.log(`✅ DB SUCCESS: Saved progress for ${lessonId} (Mastery: ${newGlobalMastery}%)`);
+    }
 
-    // 5. 🔥 استدعاء الحارس الذري (Atomic Gatekeeper)
-    // إذا وصل الإتقان 95%، نمنح الكوينز ونغلق الدرس
+    // 6. استدعاء الحارس للمكافآت
     if (newGlobalMastery >= 95) {
-        const rewardResult = await checkAtomicMastery(userId, lessonId, newGlobalMastery);
-        
-        if (rewardResult && rewardResult.reward) {
-            console.log(`🎉 MOLECULE STABILIZED! User ${userId} mastered ${lessonId}`);
-            // هنا لا نحتاج لفعل شيء آخر، الحارس تكفل بإضافة الكوينز وتحديث الحالة
-        }
+        await checkAtomicMastery(userId, lessonId, newGlobalMastery);
     }
 
   } catch (err) {
-    console.error('❌ Atomic Update Failed:', err.message);
+    console.error('❌ Critical Atomic Error:', err.message);
   }
 }
 
