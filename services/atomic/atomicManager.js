@@ -196,4 +196,51 @@ async function updateAtomicProgress(userId, lessonId, updateSignal) {
   }
 }
 
-module.exports = { getAtomicContext, updateAtomicProgress };
+/**
+ * 3. المجمع: جلب التقدم الذري للمستخدم (بديل getProgress القديم)
+ */
+async function getAtomicProgress(userId) {
+  try {
+    // جلب كل الذرات
+    const { data: atomicData, error } = await supabase
+      .from('atomic_user_mastery')
+      .select('lesson_id, current_mastery, status, last_updated')
+      .eq('user_id', userId);
+
+    if (error) throw error;
+
+    const progressMap = {}; 
+    const completedLessons = [];
+    let totalScore = 0;
+
+    if (atomicData) {
+        atomicData.forEach(row => {
+            progressMap[row.lesson_id] = {
+                score: row.current_mastery,
+                status: row.status || (row.current_mastery >= 95 ? 'completed' : 'in_progress'),
+                lastAttempt: row.last_updated
+            };
+
+            if (row.current_mastery >= 95) {
+                completedLessons.push(row.lesson_id);
+            }
+            totalScore += row.current_mastery;
+        });
+    }
+
+    return {
+        stats: {
+            lessons_started: atomicData ? atomicData.length : 0,
+            lessons_mastered: completedLessons.length,
+            global_mastery: (atomicData && atomicData.length > 0) ? Math.round(totalScore / atomicData.length) : 0
+        },
+        atomicMap: progressMap,
+        dailyTasks: { tasks: [] }
+    };
+
+  } catch (err) {
+    console.error('Atomic getProgress Error:', err.message);
+    return { atomicMap: {}, stats: {} };
+  }
+}
+module.exports = { getAtomicContext, updateAtomicProgress, getAtomicProgress };
