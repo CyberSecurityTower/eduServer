@@ -8,8 +8,7 @@ const crypto = require('crypto');
 const CONFIG = require('../config');
 const supabase = require('../services/data/supabase');
 const PROMPTS = require('../config/ai-prompts');
-const { getAtomicContext } = require('../services/atomic/atomicManager'); // استيراد
-
+const { getAtomicContext, updateAtomicProgress  } = require('../services/atomic/atomicManager'); // استيراد
 // Engines & Managers
 const { markLessonComplete, trackStudyTime } = require('../services/engines/gatekeeper'); 
 const { runPlannerManager } = require('../services/ai/managers/plannerManager');
@@ -78,7 +77,6 @@ async function handleGeneralQuestion(req, res) {
     // 3. دمج التعليمات
     const finalInstruction = `
       ${SYSTEM_INSTRUCTION}
-      ${atomicContext}
       [DATA_SOURCE_START]
       ${curriculumMap}
       [DATA_SOURCE_END]
@@ -171,6 +169,7 @@ async function chatInteractive(req, res) {
        // 🔥 المحطة 2: حقن النظام الذري
     let atomicContext = "";
     let atomicData = null;
+    let atomicContextString = ""; 
 
     // نفترض أن lessonId متاح في الطلب (أو نستخرجه من السياق)
     if (currentContext.lessonId) {
@@ -594,14 +593,31 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
       updatedContextForPrompt,
       gravityContext,
       absenceContext,
-      enabledFeatures
+      enabledFeatures,
+      atomicContext,
+      atomicContextString 
     );
 
-    const modelResp = await generateWithFailoverRef('chat', finalPrompt, { label: 'MasterChat', timeoutMs: CONFIG.TIMEOUTS.chat });
+   const modelResp = await generateWithFailoverRef('chat', finalPrompt, { label: 'MasterChat', timeoutMs: CONFIG.TIMEOUTS.chat });
     const rawText = await extractTextFromResult(modelResp);
     let parsedResponse = await ensureJsonOrRepair(rawText, 'analysis');
 
     if (!parsedResponse?.reply) parsedResponse = { reply: rawText || "Error.", widgets: [] };
+    // 🆕 المحطة 3: المراقب (The Monitor)
+    // استخراج إشارة التحديث الذري من رد الـ AI
+    let atomicUpdateSignal = null;
+    if (parsedResponse.atomic_update) {
+        atomicUpdateSignal = parsedResponse.atomic_update;
+        // الـ reply جاهز للعرض، لا داعي لتنظيفه لأن الـ AI وضعه في حقل منفصل
+    }
+    // 🔥 3. المراقب (The Monitor) - تم الدمج هنا
+    let updateSignal = null;
+    
+    // إذا كان الـ AI أرسل تحديثاً ذرياً، نستخرجه وننظف الرد
+    if (parsedResponse.atomic_update) {
+        updateSignal = parsedResponse.atomic_update;
+        // لا نحتاج لتعديل parsedResponse.reply لأنه أصلاً مفصول في الـ JSON
+    }
 
     // ---------------------------------------------------------
     // 10. Action Layer & Agenda Updates
@@ -824,7 +840,10 @@ if (gatekeeperResult.reward) {
             await trackStudyTime(userId, currentContext.lessonId, 60)
                 .catch(err => logger.error('Tracking failed:', err));
         }
-
+ // 🔥 تحديث النظام الذري (تم التصحيح: نستخدم updateSignal المستخرج)
+        if (updateSignal && currentContext.lessonId) {
+            await updateAtomicProgress(userId, currentContext.lessonId, updateSignal);
+        }
         // 2. Save Chat Session (حفظ الشات - الكود القديم)
         await saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory)
             .catch(e => logger.error('SaveChat Error:', e));
