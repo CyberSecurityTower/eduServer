@@ -94,4 +94,58 @@ async function getAtomicContext(userId, lessonId) {
   }
 }
 
-module.exports = { getAtomicContext };
+
+/**
+ * دالة لتحديث تقدم الطالب وحساب المعدل الجديد
+ */
+async function updateAtomicProgress(userId, lessonId, updateSignal) {
+  if (!updateSignal || !updateSignal.element_id) return;
+
+  try {
+    console.log(`⚛️ Atomic Update: User ${userId} -> Element ${updateSignal.element_id} = ${updateSignal.new_score}%`);
+
+    // 1. جلب الهيكل + التقدم الحالي
+    const [structureRes, progressRes] = await Promise.all([
+      supabase.from('atomic_lesson_structures').select('structure_data').eq('lesson_id', lessonId).single(),
+      supabase.from('atomic_user_mastery').select('*').eq('user_id', userId).eq('lesson_id', lessonId).single()
+    ]);
+
+    if (!structureRes.data) return; // لا يوجد هيكل
+
+    const structure = structureRes.data.structure_data;
+    // إذا لم يكن للطالب سجل، ننشئ كائناً فارغاً
+    let currentScores = progressRes.data?.elements_scores || {};
+
+    // 2. تحديث درجة العنصر المحدد
+    currentScores[updateSignal.element_id] = updateSignal.new_score;
+
+    // 3. إعادة حساب المعدل التراكمي (Weighted Average)
+    let totalWeightedScore = 0;
+    let totalWeight = 0;
+
+    structure.elements.forEach(el => {
+      const score = currentScores[el.id] || 0;
+      const weight = el.weight || 1;
+      totalWeightedScore += (score * weight);
+      totalWeight += weight;
+    });
+
+    const newGlobalMastery = totalWeight > 0 ? Math.round(totalWeightedScore / totalWeight) : 0;
+
+    // 4. الحفظ في الداتابيز (Upsert)
+    await supabase.from('atomic_user_mastery').upsert({
+      user_id: userId,
+      lesson_id: lessonId,
+      elements_scores: currentScores,
+      current_mastery: newGlobalMastery,
+      last_updated: new Date().toISOString()
+    }, { onConflict: 'user_id, lesson_id' });
+
+    console.log(`📈 New Global Mastery for ${lessonId}: ${newGlobalMastery}%`);
+
+  } catch (err) {
+    console.error('❌ Atomic Update Failed:', err.message);
+  }
+}
+
+module.exports = { getAtomicContext, updateAtomicProgress };
