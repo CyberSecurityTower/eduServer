@@ -77,6 +77,10 @@ async function getAtomicContext(userId, lessonId) {
     1. Guide the user through the "ATOMIC LESSON PLAN".
     2. Do NOT list percentages to the user.
     3. Do NOT move to the next element until "CURRENT FOCUS" is understood.
+    
+1. If the user explains a concept correctly, YOU MUST MARK IT AS MASTERED.
+2. Do NOT just praise them. You MUST output the JSON signal.
+3. Example: If user explains "Historical Impact", send: { "atomic_update": { "element_id": "geo_historical_impact", "new_score": 90 } }
     `;
 
     return {
