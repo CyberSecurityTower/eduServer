@@ -115,9 +115,37 @@ async function updateAtomicProgress(userId, lessonId, updateSignal) {
     const structure = structureRes.data.structure_data;
     // إذا لم يكن للطالب سجل، ننشئ كائناً فارغاً
     let currentScores = progressRes.data?.elements_scores || {};
+// أ. التحقق من القفزات الكبيرة (اختياري - لزيادة الصرامة)
+    const oldScore = currentScores[updateSignal.element_id] || 0;
+    const scoreDiff = updateSignal.new_score - oldScore;
+    
+    // إذا قفز الطالب أكثر من 60 درجة في رسالة واحدة، نعتبرها مشبوهة ونقللها (Damping)
+    // إلا إذا كان السبب "Quiz Perfect Score"
+    let finalScore = updateSignal.new_score;
+    if (scoreDiff > 60 && updateSignal.reason !== 'quiz_perfect') {
+        console.log(`⚠️ Gatekeeper: Damping huge jump for ${updateSignal.element_id} (${scoreDiff}%)`);
+        finalScore = oldScore + 60; // نسمح بزيادة 60% كحد أقصى في التفاعل الواحد
+        if (finalScore > 100) finalScore = 100;
+    }
 
-    // 2. تحديث درجة العنصر المحدد
-    currentScores[updateSignal.element_id] = updateSignal.new_score;
+    // ب. التحقق من التسلسل (هل أنهى ما قبله؟)
+    // نجلب ترتيب العنصر الحالي
+    const currentElementObj = structure.elements.find(e => e.id === updateSignal.element_id);
+    if (currentElementObj && currentElementObj.order > 1) {
+        // نبحث عن العنصر السابق
+        const prevElement = structure.elements.find(e => e.order === currentElementObj.order - 1);
+        const prevScore = currentScores[prevElement.id] || 0;
+        
+        // إذا كان العنصر السابق ضعيفاً جداً (أقل من 30%)، نمنع إتقان العنصر الحالي تماماً
+        // نسمح له بالتعلم (حتى 50%) لكن لا نمنحه الإتقان الكامل حتى يعود للوراء
+        if (prevScore < 30 && finalScore > 50) {
+             console.log(`🛡️ Gatekeeper: Holding back ${updateSignal.element_id} because previous element is weak.`);
+             finalScore = 50; // سقف مؤقت
+        }
+    }
+
+    // تطبيق الدرجة النهائية
+    currentScores[updateSignal.element_id] = finalScore;
 
     // 3. إعادة حساب المعدل التراكمي (Weighted Average)
     let totalWeightedScore = 0;
