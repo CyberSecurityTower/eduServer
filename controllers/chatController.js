@@ -625,7 +625,7 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
 
 
 // 🔥 شبكة الأمان: إذا لم يرسل الـ AI إشارة، نكتشف العلامة يدوياً
-if (!parsedResponse.lesson_signal) {
+if (!parsedResponse.lesson_signal && message) { 
     // نبحث عن نمط مثل "7/8" أو "7 من 8"
     const scoreMatch = message.match(/(\d+)\s*(?:\/|من)\s*(\d+)/);
     if (scoreMatch) {
