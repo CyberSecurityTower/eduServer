@@ -633,24 +633,37 @@ if (!parsedResponse.lesson_signal && message) { // 👈 (1) تأكدنا أن me
     // 1. التحقق هل الرسالة هي تقرير كويز؟
     // نبحث عن نمط النتيجة مثل: "7/8" أو "7 من 8"
     // Regex يطابق الأرقام الموجودة في hiddenPrompt الذي ترسله من React Native
+    // البحث عن النتيجة في النص
     const scoreMatch = message.match(/Score:\s*(\d+)\s*\/\s*(\d+)/i) || message.match(/(\d+)\s*(?:\/|من)\s*(\d+)/);
 
     if (scoreMatch) {
         const score = parseInt(scoreMatch[1]);
         const total = parseInt(scoreMatch[2]);
-        
-        // حماية من القسمة على صفر
         const percentage = total > 0 ? (score / total) * 100 : 0;
 
         // إذا نجح الطالب (فوق 50%)
         if (percentage >= 50) {
-            console.log(`🔧 Manual Override Triggered: Score ${percentage}% from Hidden Message`);
+            console.log(`🔧 Manual Override: Score ${percentage}% -> FORCING ATOMIC UPDATE`);
             
-            parsedResponse.lesson_signal = {
+            // 1. تفعيل إشارة النجاح التقليدية (للمكافآت والمهام)
+            // نستخدم ||= لكي لا نلغي الإشارة إذا كانت موجودة أصلاً
+            parsedResponse.lesson_signal = parsedResponse.lesson_signal || {
                 type: 'complete',
-                id: currentContext.lessonId || 'chat_quiz', // يستخدم ID الدرس الحالي
+                id: currentContext.lessonId || 'chat_quiz',
                 score: percentage
             };
+
+            // 2. 🔥 التعديل الجديد: إجبار التحديث الذري الشامل (Bulk Update)
+            // هذا سيتجاوز "نظام الكبح" لأننا نستخدم "ALL"
+            if (percentage >= 80) { // فقط إذا كانت النتيجة ممتازة
+                 updateSignal = { 
+                    element_id: 'ALL', 
+                    new_score: 100, 
+                    reason: 'quiz_perfect_manual_override' 
+                };
+                // مسح أي رسالة تحديث جزئي قد يكون الـ AI قد اقترحها خطأً
+                parsedResponse.atomic_update = null; 
+            }
         }
     }
 }
