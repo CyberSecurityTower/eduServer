@@ -3,6 +3,8 @@
 
 const supabase = require('../data/supabase');
 const CONFIG = require('../../config');
+// 🔥 استيراد الحارس الذري لمنح المكافآت
+const { checkAtomicMastery } = require('../engines/gatekeeper');
 
 // 🛑 Kill Switch
 const IS_ENABLED = CONFIG.ATOMIC_SYSTEM?.ENABLED || true;
@@ -77,10 +79,8 @@ async function getAtomicContext(userId, lessonId) {
     1. Guide the user through the "ATOMIC LESSON PLAN".
     2. Do NOT list percentages to the user.
     3. Do NOT move to the next element until "CURRENT FOCUS" is understood.
-    
-1. If the user explains a concept correctly, YOU MUST MARK IT AS MASTERED.
-2. Do NOT just praise them. You MUST output the JSON signal.
-3. Example: If user explains "Historical Impact", send: { "atomic_update": { "element_id": "geo_historical_impact", "new_score": 90 } }
+    4. 🚨 **STRICT UPDATE RULE:** If the user explains a concept correctly, YOU MUST MARK IT AS MASTERED. Do NOT just praise them. You MUST output the JSON signal.
+       Example: { "atomic_update": { "element_id": "geo_historical_impact", "new_score": 90 } }
     `;
 
     return {
@@ -179,6 +179,17 @@ async function updateAtomicProgress(userId, lessonId, updateSignal) {
     }, { onConflict: 'user_id, lesson_id' });
 
     console.log(`📈 New Global Mastery for ${lessonId}: ${newGlobalMastery}%`);
+
+    // 5. 🔥 استدعاء الحارس الذري (Atomic Gatekeeper)
+    // إذا وصل الإتقان 95%، نمنح الكوينز ونغلق الدرس
+    if (newGlobalMastery >= 95) {
+        const rewardResult = await checkAtomicMastery(userId, lessonId, newGlobalMastery);
+        
+        if (rewardResult && rewardResult.reward) {
+            console.log(`🎉 MOLECULE STABILIZED! User ${userId} mastered ${lessonId}`);
+            // هنا لا نحتاج لفعل شيء آخر، الحارس تكفل بإضافة الكوينز وتحديث الحالة
+        }
+    }
 
   } catch (err) {
     console.error('❌ Atomic Update Failed:', err.message);
