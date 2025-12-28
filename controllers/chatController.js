@@ -628,41 +628,61 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
 // 🔥 شبكة الأمان (Manual Override)
 // ============================================================
 // هذا الكود مخصص لالتقاط رسالة الفرونت إند: "[SYSTEM: Quiz Finished] User Score: 7/10"
-if (!parsedResponse.lesson_signal && message) { // 👈 (1) تأكدنا أن message موجودة
-    
-    // 1. التحقق هل الرسالة هي تقرير كويز؟
-    // نبحث عن نمط النتيجة مثل: "7/8" أو "7 من 8"
-    // Regex يطابق الأرقام الموجودة في hiddenPrompt الذي ترسله من React Native
-    // البحث عن النتيجة في النص
-    const scoreMatch = message.match(/Score:\s*(\d+)\s*\/\s*(\d+)/i) || message.match(/(\d+)\s*(?:\/|من)\s*(\d+)/);
+/ ============================================================
+// 🔥 شبكة الأمان الذكية (Smart Atomic Override)
+// ============================================================
+if (message) { 
+    // استخراج النتيجة والعدد الكلي للأسئلة
+    const scoreMatch = message.match(/(\d+)\s*[\/|من]\s*(\d+)/);
 
     if (scoreMatch) {
         const score = parseInt(scoreMatch[1]);
         const total = parseInt(scoreMatch[2]);
         const percentage = total > 0 ? (score / total) * 100 : 0;
 
-        // إذا نجح الطالب (فوق 50%)
-        if (percentage >= 50) {
-            console.log(`🔧 Manual Override: Score ${percentage}% -> FORCING ATOMIC UPDATE`);
+        if (percentage >= 70) { // إذا النتيجة جيدة
             
-            // 1. تفعيل إشارة النجاح التقليدية (للمكافآت والمهام)
-            // نستخدم ||= لكي لا نلغي الإشارة إذا كانت موجودة أصلاً
-            parsedResponse.lesson_signal = parsedResponse.lesson_signal || {
-                type: 'complete',
-                id: currentContext.lessonId || 'chat_quiz',
-                score: percentage
-            };
+            // 💡 هنا يكمن الذكاء: تحديد نطاق التحديث بناءً على حجم الكويز
+            let targetElement = null;
+            let updateReason = 'quiz_passed';
 
-            // 2. 🔥 التعديل الجديد: إجبار التحديث الذري الشامل (Bulk Update)
-            // هذا سيتجاوز "نظام الكبح" لأننا نستخدم "ALL"
-            if (percentage >= 80) { // فقط إذا كانت النتيجة ممتازة
-                 updateSignal = { 
-                    element_id: 'ALL', 
+            if (total >= 4) {
+                // 🏆 كويز طويل (4 أسئلة فما فوق) = نعتبره شاملاً للدرس
+                console.log(`🧠 Smart Logic: Big Quiz (${total} Qs) -> Updating ALL Lesson`);
+                targetElement = 'ALL';
+                updateReason = 'quiz_comprehensive_passed';
+            } else {
+                // 🎯 كويز قصير (1-3 أسئلة) = نحدث "الهدف الحالي" فقط
+                // ملاحظة: atomicData تم جلبه في بداية الدالة
+                if (atomicData && atomicData.nextTarget) {
+                    console.log(`🧠 Smart Logic: Mini Quiz (${total} Qs) -> Updating specific target: ${atomicData.nextTarget.id}`);
+                    targetElement = atomicData.nextTarget.id;
+                    updateReason = 'quiz_topic_passed';
+                } else {
+                    // إذا لم نجد هدفاً محدداً، نتركه للذكاء الاصطناعي (أو نتجاهل التحديث اليدوي)
+                    console.log(`🧠 Smart Logic: Mini Quiz, letting AI decide specific atoms.`);
+                }
+            }
+
+            // تطبيق التحديث إذا حددنا الهدف
+            if (targetElement) {
+                updateSignal = { 
+                    element_id: targetElement, 
                     new_score: 100, 
-                    reason: 'quiz_perfect_manual_override' 
+                    reason: updateReason 
                 };
-                // مسح أي رسالة تحديث جزئي قد يكون الـ AI قد اقترحها خطأً
-                parsedResponse.atomic_update = null; 
+                
+                // مسح تحديث الـ AI الضعيف لضمان تطبيق هذا التحديث القوي
+                parsedResponse.atomic_update = null;
+            }
+
+            // تفعيل إشارة النجاح للمكافآت (فقط إذا كان شاملاً أو تجاوز 80%)
+            if (percentage >= 80) {
+                 parsedResponse.lesson_signal = {
+                    type: 'complete',
+                    id: currentContext.lessonId || 'chat_quiz',
+                    score: percentage
+                };
             }
         }
     }
