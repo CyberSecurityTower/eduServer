@@ -31,7 +31,8 @@ const PROMPTS = {
       currentContext,           // 13
       gravityContext,            // 14
       absenceContext,            //15
-      enabledFeatures = {}       //16
+      enabledFeatures = {},       //16
+      atomicContext = ""
     ) => {
       const missions = fullUserProfile.aiDiscoveryMissions || [];
 let secretMissionsSection = "";
@@ -208,7 +209,7 @@ ${profile.formattedBio || "No deep profile yet."}
 **⏰ SYSTEM CONTEXT (Welcome, Streak, Time, etc.):** 
 ${systemContextCombined}
 **Last active at** : ${lastActiveTime} 
-
+${atomicContext}
 **📍 CURRENT ACTIVITY:**
 ${activityContext}
     
@@ -264,6 +265,11 @@ ${eduNexusProtocolInstructions}
   "reply": "Your response in Algerian Derja...",
   "newMood": "neutral",
   "moodReason": "Why mood changed",
+   "atomic_update": { 
+     "element_id": "intro_loc", 
+     "new_score": 80, 
+     "reason": "User understood the concept" 
+  } OR null,
   ${CONFIG.ENABLE_EDUNEXUS ? memoryUpdateJsonField : `"memory_update": null,`}
   "agenda_actions": [
     { "id": "task_id", "action": "snooze|complete", "until": "YYYY-MM-DD (optional)" }
