@@ -35,24 +35,15 @@ const PROMPTS = {
       atomicContext = ""
     ) => {
       const missions = fullUserProfile.aiDiscoveryMissions || [];
-let secretMissionsSection = "";
+      let secretMissionsSection = "";
 
-if (missions.length > 0) {
-    // نأخذ أهم مهمة (الأدمين أولاً)
-    const topMission = missions[0]; 
-    const sourceLabel = topMission.source === 'admin' ? "🔴 ADMIN ORDER (HIGH PRIORITY)" : "🟡 CURIOSITY (Low Priority)";
-    
-    secretMissionsSection = `
-🕵️‍♂️ **SECRET MISSION (${sourceLabel}):**
-**Objective:** "${topMission.content}"
-**Instruction:** Try to subtly steer the conversation to get this information. 
-- If the context allows, ask about it naturally.
-- If the user is stressed or studying hard, IGNORE the mission for now.
-- Do NOT say "I have a mission to ask you". Be smooth.
-`;
-} else {
-    secretMissionsSection = "🕵️‍♂️ Secret Mission: None. Focus on the user's current topic.";
-}
+      // --- تعديل: اختصار Secret Missions ---
+      if (missions.length > 0) {
+          secretMissionsSection = `🕵️‍♂️ **SECRET MISSION:** Find out: "${missions[0].content}". Be subtle. If stressed, IGNORE.`;
+      } else {
+          secretMissionsSection = "🕵️‍♂️ Secret Mission: None.";
+      }
+
       // --- A. استخراج البيانات الأساسية ---      
       const profile = fullUserProfile || {}; 
       const facts = profile.facts || {};
@@ -81,6 +72,7 @@ if (missions.length > 0) {
       if (currentContext && currentContext.lessonTitle) {
           activityContext = `User has opened the lesson: "${currentContext.lessonTitle}". Assume they are studying it NOW.`;
       }
+
        // 🔥🔥🔥 الإضافة الجديدة: بروتوكول الكويز الصارم 🔥🔥🔥
       const quizProtocol = `
 🧩 **QUIZ GENERATION RULES (STRICT QUANTITY):**
@@ -98,7 +90,7 @@ When generating a widget of type "quiz", you MUST follow these quantity rules ba
 
 ⚠️ **WARNING:** Never generate 4 or 5 questions. Use 3 for parts, 6+ for whole.
 `;
- // 🔥 التعديل الجوهري هنا: صياغة تعليمات النظام الذري
+      // 🔥 التعديل الجوهري هنا: صياغة تعليمات النظام الذري
       let atomicSection = "";
       if (atomicContext) {
           atomicSection = `
@@ -111,6 +103,7 @@ When generating a widget of type "quiz", you MUST follow these quantity rules ba
           3. **Do NOT** forget this JSON field when a milestone is reached.
           `;
       }
+
       // 2. بروتوكول الجدول الزمني
       const scheduleProtocol = `
 🏫 **UNIVERSITY SCHEDULE PROTOCOL:**
@@ -127,33 +120,9 @@ Subject: ${subjectName} (${sessionType}) | Prof: ${currentProf} | Room: ${curren
    - Do NOT ask "Are you in class?". Assume they are home.
 `;
 
-      // 3. بروتوكول "الوحش الأخير" (Final Boss)
-      const finalBossProtocol = `
-🛡️ **FINAL BOSS PROTOCOL (Strict Verification):**
-If the user says "I finished", "I understand", or asks to complete the lesson:
-1. **DO NOT** send 'lesson_signal' immediately.
-2. **INSTEAD**, generate a **"Final Boss Quiz"** widget.
-   - **Count:** 6 to 10 questions.
-   - **Type:** Mix of Multiple Choice (MCQ) and True/False.
-   - **Difficulty:** Hard/Comprehensive.
-   - **Personalization:** Look at the user's **WEAKNESSES**: ${JSON.stringify(weaknesses || [])}.
-   - **Widget Format:** { "type": "quiz", "data": { "title": "Final Exam", "questions": [...] } }
-3. **AFTER** the user answers (in the next message):
-   - If score > 70%: Send 'lesson_signal' (complete) + Celebration.
-   - If score < 70%: Scold them gently (Derja) and explain the wrong answers. Do NOT mark complete.
-`;
-
-      // 4. تعليمات الحارس (Gatekeeper)
-      let gatekeeperInstructions = "";
-      if (targetLessonId) {
-        gatekeeperInstructions = `
-🚨 **SYSTEM OVERRIDE - CRITICAL:**
-I have detected that the user is viewing lesson ID: "${targetLessonId}".
-IF the user answers the quiz correctly OR explicitly says they finished:
-YOU **MUST** ADD THIS FIELD TO YOUR JSON RESPONSE:
-"lesson_signal": { "type": "complete", "id": "${targetLessonId}", "score": 100 }
-`;
-      }
+      // 3. بروتوكول "الوحش الأخير" (Final Boss) - ❌ تم الحذف حسب الطلب
+      
+      // 4. تعليمات الحارس (Gatekeeper) - ❌ تم الحذف حسب الطلب
 
       // 5. المحرك العاطفي
       const mood = currentEmotionalState?.mood || 'neutral';
@@ -178,22 +147,17 @@ If user reports an exam date or confirms a rumor found in "HIVE MIND", trigger m
           memoryUpdateJsonField = `"memory_update": { "action": "UPDATE_EXAM", "subject": "...", "new_date": "..." },`; 
       }
 
-      // 7. بروتوكول الجاذبية
+      // 7. بروتوكول الجاذبية و Anti-Samata - ✅ تم الدمج والاختصار
       let gravitySection = "";
       let antiSamataProtocol = "";
       
       if (gravityContext) {
           const isExam = gravityContext.isExam || false;
-          gravitySection = `🚀 **GRAVITY ENGINE INTEL:** Top Task: "${gravityContext.title}", Score: ${gravityContext.score}, Exam Emergency: ${isExam ? "YES" : "NO"}`;
-          
-          if (isExam) {
-              antiSamataProtocol = `🛡️ **PROTOCOL: EXAM EMERGENCY** - User has an EXAM soon. Be urgent, serious, but brotherly. Stop joking.`;
-          } else {
-              antiSamataProtocol = `🛡️ **PROTOCOL: NO SAMATA** - No immediate exam. Chat naturally. Don't nag about studying unless they ask.`;
-          }
+          gravitySection = `🚀 **GRAVITY:** Task: "${gravityContext.title}" (Score: ${gravityContext.score}). Exam: ${isExam ? "YES" : "NO"}.`;
+          antiSamataProtocol = isExam ? `🛡️ **MODE:** URGENT. Stop joking.` : `🛡️ **MODE:** CHILL. Chat naturally.`;
       } else {
-          gravitySection = "🚀 Gravity Engine: No urgent tasks.";
-          antiSamataProtocol = "🛡️ PROTOCOL: Chill Mode. Chat naturally.";
+          gravitySection = "🚀 Gravity: No urgent tasks.";
+          antiSamataProtocol = "🛡️ Mode: Chill.";
       }
 
       // --- E. تجميع السياقات النصية ---
@@ -205,9 +169,10 @@ If user reports an exam date or confirms a rumor found in "HIVE MIND", trigger m
         ? `🏫 **HIVE MIND (Classroom Intel):**\n${groupContext}\n(Use this to confirm or correct the user.)`
         : "";
       const lastActiveTime = absenceContext || "Unknown"; 
-// 🔥 بناء تعريفات الـ Widgets ديناميكياً 🔥
+
+      // 🔥 بناء تعريفات الـ Widgets ديناميكياً - ✅ تم الاختصار لسطر واحد
       let widgetsInstructions = `
-Supported Widgets Schemas:
+Supported Widgets (One-line JSON):
 1. **Quiz:** { "type": "quiz", "data": { "questions": [{ "text": "...", "options": ["..."], "correctAnswerText": "...", "explanation": "..." }] } }
 2. **Flashcard:** { "type": "flashcard", "data": { "front": "...", "back": "..." } }
 3. **Summary:** { "type": "summary", "data": { "title": "...", "points": ["..."] } }
@@ -216,16 +181,15 @@ Supported Widgets Schemas:
       // إضافة الجدول إذا كان مفعلاً
       if (enabledFeatures.table) {
           widgetsInstructions += `
-4. **Table:** { "type": "table", "data": { "title": "...", "headers": ["Col1", "Col2"], "rows": [["Val1", "Val2"]] } }
-   - Use this for comparisons or structured data.`;
+4. **Table:** { "type": "table", "data": { "title": "...", "headers": ["C1", "C2"], "rows": [["V1", "V2"]] } }`;
       }
 
       // إضافة الشارت إذا كان مفعلاً
       if (enabledFeatures.chart) {
           widgetsInstructions += `
-5. **Chart:** { "type": "chart", "data": { "title": "...", "data": [{ "label": "...", "value": 10, "color": "#Hex" }] } }
-   - Use this for statistics or numerical distributions.`;
+5. **Chart:** { "type": "chart", "data": { "title": "...", "data": [{ "label": "...", "value": 10, "color": "#Hex" }] } }`;
       }
+
       // --- F. بناء البرومبت النهائي ---
       // ✅ تم وضع SYSTEM_INSTRUCTION في البداية
       return `
@@ -234,6 +198,7 @@ ${SYSTEM_INSTRUCTION}
 **👤 USER:** ${userName} (${userGender}) - ${userPath}
 **👤 USER DOSSIER:**
 ${profile.formattedBio || "No deep profile yet."}
+${secretMissionsSection}
 
 **⏰ SYSTEM CONTEXT (Welcome, Streak, Time, etc.):** 
 ${systemContextCombined}
@@ -252,7 +217,6 @@ ${formattedProgress}
 ${scheduleProtocol}
 ${gravitySection}
 ${antiSamataProtocol}
-${finalBossProtocol}
 
 **📚 KNOWLEDGE BASE:**
 ${lessonContext}
@@ -260,9 +224,6 @@ ${hiveMindSection}
 
 **💬 CHAT HISTORY:**
 ${history}
-
-**🔐 GATEKEEPER:**
-${gatekeeperInstructions}
 
 **💬 CURRENT MESSAGE:**
 "${escapeForPrompt(safeSnippet(message, 2000))}"
@@ -310,11 +271,8 @@ ${eduNexusProtocolInstructions}
 You must respond with a valid JSON object.
 If you want to show a UI element, add it to the "widgets" array.
 
-Supported Widgets Schemas:
-1. **Quiz:** { "type": "quiz", "data": { "questions": [{ "text": "Question?", "options": ["A", "B"], "correctAnswerText": "A", "explanation": "Why..." }] } }
-2. **Flashcard:** { "type": "flashcard", "data": { "front": "Term", "back": "Definition" } }
-3. **Summary:** { "type": "summary", "data": { "title": "Key Points", "points": ["Point 1", "Point 2"] } }
 ${widgetsInstructions}
+
 **FINAL JSON STRUCTURE:**
 {
   "reply": "Your conversational response in Algerian Derja...",
@@ -325,8 +283,7 @@ ${widgetsInstructions}
     { "id": "task_id", "action": "snooze|complete", "until": "YYYY-MM-DD" }
   ],
   "widgets": [
-    // Add widgets here ONLY if necessary. Example:
-    // { "type": "flashcard", "data": { "front": "الخوارزمية", "back": "هي مجموعة خطوات..." } }
+    // Add widgets here ONLY if necessary.
   ],
   "lesson_signal": null
 }`;
