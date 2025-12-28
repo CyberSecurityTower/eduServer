@@ -68,7 +68,9 @@ async function getAtomicContext(userId, lessonId) {
     }
 
     const globalMastery = totalWeight > 0 ? Math.round(totalWeightedScore / totalWeight) : 0;
-
+    
+// 1. استخراج قائمة الـ IDs والعناوين لتعليم الـ AI
+const mappingList = sortedElements.map(el => `- "${el.title}" => ID: "${el.id}"`).join('\n');
     const finalPromptContext = `
     ${contextLines.join('\n')}
     
@@ -80,7 +82,14 @@ async function getAtomicContext(userId, lessonId) {
     2. Do NOT list percentages to the user.
     3. Do NOT move to the next element until "CURRENT FOCUS" is understood.
     4. 🚨 **STRICT UPDATE RULE:** If the user explains a concept correctly, YOU MUST MARK IT AS MASTERED. Do NOT just praise them. You MUST output the JSON signal.
-       Example: { "atomic_update": { "element_id": "geo_historical_impact", "new_score": 90 } }
+       Example: { "atomic_update": { "element_id": "geo_historical_impact", "new_score": 90 } }.
+       🚨 **CRITICAL INSTRUCTION FOR AI (ID MAPPING):**
+When updating progress, you MUST use the EXACT ID from this list corresponding to the topic the user discussed:
+${mappingList}
+
+❌ DO NOT invent new IDs like "intro_loc" or use Arabic titles as IDs.
+✅ Example: If user explains "الموقع الجغرافي", send: { "atomic_update": { "element_id": "geo_location_borders", "new_score": 90 } }
+`;
     `;
 
     return {
