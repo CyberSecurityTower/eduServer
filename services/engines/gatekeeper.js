@@ -128,5 +128,48 @@ async function markLessonComplete(userId, lessonIdentifier, score = 100) {
   }
 }
 
+/**
+ * ⚛️ ATOMIC GATEKEEPER
+ * يراقب استقرار الجزيء (الدرس). إذا وصل الاستقرار لـ 95%، يمنح المكافأة.
+ */
+async function checkAtomicMastery(userId, lessonId, currentMastery) {
+    if (currentMastery < 95) return null; // لم يصل للحد المطلوب
+
+    // 1. هل أخذ المكافأة من قبل؟
+    // نفحص جدول المعاملات المالية أو حقل في atomic_user_mastery
+    const { data: existing } = await supabase
+        .from('atomic_user_mastery')
+        .select('status')
+        .eq('user_id', userId)
+        .eq('lesson_id', lessonId)
+        .single();
+
+    if (existing && existing.status === 'mastered') {
+        return { reward: false, message: 'Already Claimed' };
+    }
+
+    // 2. منح المكافأة (لأول مرة)
+    // تحديث الحالة إلى mastered
+    await supabase
+        .from('atomic_user_mastery')
+        .update({ status: 'mastered' })
+        .eq('user_id', userId)
+        .eq('lesson_id', lessonId);
+
+    // إضافة الكوينز
+    const REWARD_AMOUNT = 50;
+    await supabase.rpc('process_coin_transaction', {
+        p_user_id: userId,
+        p_amount: REWARD_AMOUNT,
+        p_reason: 'molecule_stabilized', // سبب علمي 😉
+        p_meta: { lesson_id: lessonId }
+    });
+
+    return { 
+        reward: true, 
+        coins: REWARD_AMOUNT, 
+        type: 'MOLECULE_STABILIZED' 
+    };
+}
 // تصدير الدالة الوحيدة (تم حذف trackStudyTime)
-module.exports = { markLessonComplete };
+module.exports = { markLessonComplete, checkAtomicMastery };
