@@ -631,17 +631,17 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
 // 🔥 شبكة الأمان الذكية (Smart Atomic Override)
 // ============================================================
 if (message) { 
-    // 1. محاولة استخراج ID الدرس من الرسالة إذا كان السياق فارغاً
-    const idMatch = message.match(/LessonID:\s*([a-zA-Z0-9_]+)/);
-    const extractedId = idMatch ? idMatch[1] : null;
+    // 1. 🕵️ استخراج ID الدرس من النص (الأولوية القصوى)
+    // نبحث عن نمط: LessonID: les_hist_1
+    const idMatch = message.match(/LessonID:\s*([a-zA-Z0-9_]+)/i);
     
-    // نعتمد الـ ID المستخرج إذا كان السياق الأصلي مفقوداً
-    if (!currentContext.lessonId && extractedId && extractedId !== 'unknown') {
-        currentContext.lessonId = extractedId;
-        console.log(`🔧 ID Fix: Extracted LessonId from text -> ${currentContext.lessonId}`);
+    // إذا وجدنا ID حقيقي في الرسالة (وليس unknown)، نعتمد عليه فوراً
+    if (idMatch && idMatch[1] && idMatch[1] !== 'unknown') {
+        currentContext.lessonId = idMatch[1];
+        console.log(`🎯 ID FIX: Switched context to extracted ID -> ${currentContext.lessonId}`);
     }
 
-    // 2. استخراج النتيجة
+    // 2. تحليل النتيجة
     const scoreMatch = message.match(/(\d+)\s*[\/|من]\s*(\d+)/);
 
     if (scoreMatch) {
@@ -649,46 +649,38 @@ if (message) {
         const total = parseInt(scoreMatch[2]);
         const percentage = total > 0 ? (score / total) * 100 : 0;
 
-        if (percentage >= 70) { // إذا النتيجة جيدة
-            
-            // 💡 هنا يكمن الذكاء: تحديد نطاق التحديث بناءً على حجم الكويز
+        if (percentage >= 70) { 
             let targetElement = null;
             let updateReason = 'quiz_passed';
 
+            // تحديد نوع التحديث (جزئي أم كلي)
             if (total >= 4) {
-                // 🏆 كويز طويل (4 أسئلة فما فوق) = نعتبره شاملاً للدرس
                 console.log(`🧠 Smart Logic: Big Quiz (${total} Qs) -> Updating ALL Lesson`);
                 targetElement = 'ALL';
                 updateReason = 'quiz_comprehensive_passed';
             } else {
-                // 🎯 كويز قصير (1-3 أسئلة) = نحدث "الهدف الحالي" فقط
-                // ملاحظة: atomicData تم جلبه في بداية الدالة
-                if (atomicData && atomicData.nextTarget) {
-                    console.log(`🧠 Smart Logic: Mini Quiz (${total} Qs) -> Updating specific target: ${atomicData.nextTarget.id}`);
+                 // كويز صغير...
+                 if (atomicData && atomicData.nextTarget) {
                     targetElement = atomicData.nextTarget.id;
-                    updateReason = 'quiz_topic_passed';
-                } else {
-                    // إذا لم نجد هدفاً محدداً، نتركه للذكاء الاصطناعي (أو نتجاهل التحديث اليدوي)
-                    console.log(`🧠 Smart Logic: Mini Quiz, letting AI decide specific atoms.`);
                 }
             }
 
-            // تطبيق التحديث إذا حددنا الهدف
+            // تطبيق التحديث الذري
             if (targetElement) {
                 updateSignal = { 
                     element_id: targetElement, 
                     new_score: 100, 
                     reason: updateReason 
                 };
-                
-                // مسح تحديث الـ AI الضعيف لضمان تطبيق هذا التحديث القوي
-                parsedResponse.atomic_update = null;
+                parsedResponse.atomic_update = null; // إلغاء أي تحديث عشوائي من الـ AI
             }
 
-            // تفعيل إشارة النجاح للمكافآت (فقط إذا كان شاملاً أو تجاوز 80%)
+            // تفعيل إشارة النجاح (هنا يكمن الحل النهائي)
             if (percentage >= 80) {
                  parsedResponse.lesson_signal = {
                     type: 'complete',
+                    // ✅ نستخدم ID المستخرج (currentContext.lessonId)
+                    // وفقط إذا لم يوجد نستخدم chat_quiz
                     id: currentContext.lessonId || 'chat_quiz',
                     score: percentage
                 };
