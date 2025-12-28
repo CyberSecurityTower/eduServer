@@ -4,58 +4,6 @@
 const supabase = require('../data/supabase');
 const logger = require('../../utils/logger');
 
-/**
- * ⏱️ دالة تتبع الوقت التراكمي (للشات أو القراءة)
- * تضيف وقتاً للرصيد الحالي ولا تمس حالة الإكمال
- */
-
-async function trackStudyTime(userId, lessonId, durationSeconds = 60) {
-  try {
-    // 1. جلب السجل الحالي (إن وجد)
-    const { data: existing, error: fetchError } = await supabase
-      .from('user_progress')
-      .select('time_spent_seconds, id')
-      .eq('user_id', userId)
-      .eq('lesson_id', lessonId)
-      .maybeSingle(); // نستخدم maybeSingle لتجنب الخطأ إذا لم يوجد
-
-    if (fetchError) throw fetchError;
-
-    let newTotalTime = durationSeconds;
-
-    if (existing) {
-      // 2. إذا كان موجوداً، نضيف الوقت الجديد للقديم
-      newTotalTime += (existing.time_spent_seconds || 0);
-      
-      // تحديث السجل الموجود
-      await supabase
-        .from('user_progress')
-        .update({ 
-            time_spent_seconds: newTotalTime,
-            last_interaction: new Date().toISOString()
-        })
-        .eq('id', existing.id); // نحدث بالـ ID لضمان الدقة
-        
-    } else {
-      // 3. إذا لم يكن موجوداً، ننشئ سجلاً جديداً (Upsert للأمان)
-      await supabase
-        .from('user_progress')
-        .upsert({
-          user_id: userId,
-          lesson_id: lessonId,
-          time_spent_seconds: newTotalTime,
-          last_interaction: new Date().toISOString(),
-          status: 'in_progress', // حالة افتراضية
-          mastery_score: 0
-        }, { onConflict: 'user_id, lesson_id' }); // 🔥 هذا يمنع خطأ duplicate key
-    }
-
-    return true;
-  } catch (err) {
-    logger.error(`trackStudyTime Error for user ${userId}:`, err.message);
-    return false;
-  }
-}
 
 /**
  * إشارة إكمال الدرس + نظام المكافآت (EduCoin Integration) 🪙
@@ -182,4 +130,4 @@ async function markLessonComplete(userId, lessonIdentifier, score = 100, addedTi
   }
 }
 
-module.exports = { markLessonComplete, trackStudyTime };
+module.exports = { markLessonComplete };
