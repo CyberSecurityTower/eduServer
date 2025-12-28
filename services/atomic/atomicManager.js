@@ -140,7 +140,7 @@ async function updateAtomicProgress(userId, lessonId, updateSignal) {
         console.log(`⚛️ Atomic Update: User ${userId} -> Element ${updateSignal.element_id} = ${updateSignal.new_score}%`);
 
         const oldScore = currentScores[updateSignal.element_id] || 0;
-        const scoreDiff = updateSignal.new_score - oldScore;
+       // const scoreDiff = updateSignal.new_score - oldScore;
         let finalScore = updateSignal.new_score;
 
         // أ. الكبح (Damping) مغلق حاليا لأنه غير فعال ... ممكن نعدله لاحقا او نطوره
@@ -161,7 +161,9 @@ async function updateAtomicProgress(userId, lessonId, updateSignal) {
                  finalScore = 50;
             }
         }*/
-
+ // فقط نتأكد أنها لا تتجاوز 100 ولا تقل عن 0
+        if (finalScore > 100) finalScore = 100;
+        if (finalScore < 0) finalScore = 0;
         currentScores[updateSignal.element_id] = finalScore;
     }
 
