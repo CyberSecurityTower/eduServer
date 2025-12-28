@@ -191,7 +191,6 @@ ${SYSTEM_INSTRUCTION}
 **👤 USER:** ${userName} (${userGender}) - ${userPath}
 **👤 USER DOSSIER:**
 ${profile.formattedBio || "No deep profile yet."}
-${secretMissionsSection}
 
 **⏰ SYSTEM CONTEXT (Welcome, Streak, Time, etc.):** 
 ${systemContextCombined}
