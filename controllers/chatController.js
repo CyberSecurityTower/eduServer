@@ -609,17 +609,18 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
         atomicUpdateSignal = parsedResponse.atomic_update;
         // الـ reply جاهز للعرض، لا داعي لتنظيفه لأن الـ AI وضعه في حقل منفصل
     }
-  // =========================================================
-    // 🆕 المحطة 3: المراقب (The Monitor) - تصحيح منطق التحديث
+ // =========================================================
+    // 🆕 المحطة 3: المراقب (The Monitor) - المنطق المصحح
     // =========================================================
     
     // 1. تعريف إشارة التحديث (نأخذها من الـ AI أولاً)
     let updateSignal = parsedResponse.atomic_update || null; 
     
-    let extractedLessonId = currentContext.lessonId; // نبدأ بالقيمة الحالية
+    // 2. محاولة استخراج ID الدرس بأي طريقة ممكنة
+    let extractedLessonId = currentContext.lessonId || (typeof lessonData !== 'undefined' ? lessonData?.id : null);
 
     if (message) { 
-        // A. محاولة استخراج ID الدرس من النص المخفي (الأولوية القصوى)
+        // A. محاولة استخراج ID الدرس من النص المخفي (الأولوية القصوى - للتصحيح اليدوي)
         const idMatch = message.match(/LessonID:\s*([a-zA-Z0-9_]+)/i);
         
         if (idMatch && idMatch[1] && idMatch[1] !== 'unknown') {
@@ -627,7 +628,7 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
             console.log(`🎯 ID FIX: Extracted LessonId from text -> ${extractedLessonId}`);
         }
 
-        // B. تحليل النتيجة
+        // B. تحليل النتيجة (للكويزات)
         const scoreMatch = message.match(/(\d+)\s*[\/|من]\s*(\d+)/);
 
         if (scoreMatch) {
@@ -651,21 +652,22 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
                     }
                 }
 
-                // تجهيز إشارة التحديث
+                // تجهيز إشارة التحديث (Override للـ AI)
                 if (targetElement) {
                     updateSignal = { 
                         element_id: targetElement, 
                         new_score: 100, 
                         reason: updateReason 
                     };
-                    parsedResponse.atomic_update = null; // إلغاء أي تحديث عشوائي من الـ AI
+                    // إلغاء أي تحديث عشوائي من الـ AI لصالح الكويز الأدق
+                    parsedResponse.atomic_update = null; 
                 }
 
-                // تفعيل إشارة النجاح للمكافآت
+                // تفعيل إشارة النجاح للمكافآت (Money)
                 if (percentage >= 80) {
                      parsedResponse.lesson_signal = {
                         type: 'complete',
-                        id: extractedLessonId || 'chat_quiz', // ✅ استخدام الـ ID المستخرج
+                        id: extractedLessonId || 'chat_quiz', 
                         score: percentage
                     };
                 }
