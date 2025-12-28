@@ -6,7 +6,11 @@
 const CONFIG = {
   PORT: Number(process.env.PORT || 3000),
   ENABLE_EDUNEXUS: false, 
-
+   // 🔥 النظام الجديد (مطفأ افتراضياً للحماية)
+  ATOMIC_SYSTEM: {
+    ENABLED: false, // غير هذا إلى true فقط عندما نكون جاهزين 100%
+    DEBUG_MODE: true // لرؤية تفاصيل الحسابات في الكونسول
+  },
   MODEL: {
     chat: 'gemini-2.5-flash',
     todo: 'gemini-2.5-flash',
