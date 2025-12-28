@@ -500,7 +500,6 @@ if (lastActive) {
       role: userData.role || 'student',
       gender: userGender, // ✅ Correctly populated now
       formattedBio: userBio, 
-      aiDiscoveryMissions: userData.aiDiscoveryMissions || [], 
 
       ...aiProfileData
     };
