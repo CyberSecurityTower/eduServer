@@ -632,7 +632,17 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
 // 🔥 شبكة الأمان الذكية (Smart Atomic Override)
 // ============================================================
 if (message) { 
-    // استخراج النتيجة والعدد الكلي للأسئلة
+    // 1. محاولة استخراج ID الدرس من الرسالة إذا كان السياق فارغاً
+    const idMatch = message.match(/LessonID:\s*([a-zA-Z0-9_]+)/);
+    const extractedId = idMatch ? idMatch[1] : null;
+    
+    // نعتمد الـ ID المستخرج إذا كان السياق الأصلي مفقوداً
+    if (!currentContext.lessonId && extractedId && extractedId !== 'unknown') {
+        currentContext.lessonId = extractedId;
+        console.log(`🔧 ID Fix: Extracted LessonId from text -> ${currentContext.lessonId}`);
+    }
+
+    // 2. استخراج النتيجة
     const scoreMatch = message.match(/(\d+)\s*[\/|من]\s*(\d+)/);
 
     if (scoreMatch) {
