@@ -10,6 +10,7 @@ const logger = require('../../utils/logger');
 const crypto = require('crypto');
 const { runPlannerManager } = require('../ai/managers/plannerManager'); 
 const { getAlgiersTimeContext } = require('../../utils'); // تأكد من المسار
+const { getAtomicProgress } = require('../atomic/atomicManager');
 
 // Dependencies Injection
 let embeddingServiceRef;
@@ -103,68 +104,8 @@ async function getProfile(userId) {
 // 2. Progress & Educational Paths
 // ============================================================================
 
-/**
- * ⚛️ ATOMIC PROGRESS AGGREGATOR
- * يبني صورة التقدم بناءً على الذرات فقط.
- */
 async function getProgress(userId) {
-  try {
-    // 1. الكاش (مهم جداً هنا لأن الحساب قد يكون ثقيلاً)
-    const cached = await cacheGet('progress', userId);
-    if (cached) return cached;
-
-    // 2. جلب كل الذرات التي لمسها المستخدم
-    const { data: atomicData, error } = await supabase
-      .from('atomic_user_mastery')
-      .select('lesson_id, current_mastery, status, last_updated')
-      .eq('user_id', userId);
-
-    if (error) throw error;
-
-    // 3. تحويل القائمة المسطحة إلى هيكلية (Path -> Subject -> Lesson)
-    // ملاحظة: نحتاج لمعرفة هيكل المسار (Curriculum) لترتيب البيانات
-    // سنقوم بجلب "خريطة المنهج" (Educational Path) من الكاش أو الداتابيز
-    
-    // (للاختصار، سنفترض أننا نملك دالة getCachedPathStructure)
-    // لكن هنا سنبني هيكلاً بسيطاً يعتمد على البيانات المتوفرة
-    
-    const progressMap = {}; // lessonId -> { score, status }
-    const completedLessons = [];
-    let totalScore = 0;
-
-    atomicData.forEach(row => {
-        progressMap[row.lesson_id] = {
-            score: row.current_mastery,
-            status: row.current_mastery >= 95 ? 'completed' : 'in_progress',
-            lastAttempt: row.last_updated
-        };
-
-        if (row.current_mastery >= 95) {
-            completedLessons.push(row.lesson_id);
-        }
-        totalScore += row.current_mastery;
-    });
-
-    // 4. بناء الكائن النهائي
-    const val = {
-        stats: {
-            lessons_started: atomicData.length,
-            lessons_mastered: completedLessons.length,
-            global_mastery: atomicData.length > 0 ? Math.round(totalScore / atomicData.length) : 0
-        },
-        // هذا الكائن هو ما سيستخدمه الـ AI والـ Planner
-        atomicMap: progressMap, 
-        // قائمة المهام اليومية (سنتركها فارغة هنا، الـ Planner هو من يملؤها)
-        dailyTasks: { tasks: [] }
-    };
-
-    await cacheSet('progress', userId, val);
-    return val;
-
-  } catch (err) {
-    logger.error('Atomic getProgress Error:', err.message);
-    return { atomicMap: {}, stats: {} };
-  }
+    return await getAtomicProgress(userId);
 }
 
 /**
