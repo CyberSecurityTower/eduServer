@@ -143,8 +143,8 @@ async function updateAtomicProgress(userId, lessonId, updateSignal) {
         const scoreDiff = updateSignal.new_score - oldScore;
         let finalScore = updateSignal.new_score;
 
-        // أ. الكبح (Damping)
-        if (scoreDiff > 60 && updateSignal.reason !== 'quiz_perfect') {
+        // أ. الكبح (Damping) مغلق حاليا لأنه غير فعال ... ممكن نعدله لاحقا او نطوره
+        /*if (scoreDiff > 60 && updateSignal.reason !== 'quiz_perfect') {
             console.log(`⚠️ Gatekeeper: Damping huge jump for ${updateSignal.element_id} (${scoreDiff}%)`);
             finalScore = oldScore + 60;
             if (finalScore > 100) finalScore = 100;
@@ -160,7 +160,7 @@ async function updateAtomicProgress(userId, lessonId, updateSignal) {
                  console.log(`🛡️ Gatekeeper: Holding back ${updateSignal.element_id} because previous element is weak.`);
                  finalScore = 50;
             }
-        }
+        }*/
 
         currentScores[updateSignal.element_id] = finalScore;
     }
