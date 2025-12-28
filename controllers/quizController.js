@@ -7,7 +7,7 @@ const { refreshUserTasks } = require('../services/data/helpers'); // ✅ است�
 const { getAlgiersTimeContext } = require('../utils'); // ✅ استيراد
 const logger = require('../utils/logger');
 const supabase = require('../services/data/supabase'); // نحتاج هذا للتعامل المباشر
-
+const { updateAtomicProgress } = require('../services/atomic/atomicManager');
 async function analyzeQuiz(req, res) {
   try {
     const { userId, lessonId, lessonTitle, quizQuestions, userAnswers, totalScore } = req.body || {};
@@ -30,7 +30,15 @@ async function analyzeQuiz(req, res) {
     let newTotalCoins = 0;
 
     // نكافئ فقط إذا تجاوز 50%
-    if (percentage >= 50) {
+    if (percentage >= 70) {
+        // 🔥 التحديث الذري الشامل (The Atomic Override)
+        // إذا نجح في الكويز، نعتبره أتقن كل الذرات
+        await updateAtomicProgress(userId, lessonId, { 
+            element_id: 'ALL', 
+            new_score: 100,
+            reason: 'quiz_passed'
+        });
+    }
         // معادلة المكافأة: 
         // العلامة الكاملة = 50 كوينز
         // نصف العلامة = 10 كوينز (تشجيعية)
