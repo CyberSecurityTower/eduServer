@@ -130,8 +130,9 @@ async function updateAtomicProgress(userId, lessonId, updateSignal) {
         console.log(`🚀 ATOMIC BULK UPDATE: Setting ALL elements to ${updateSignal.new_score}%`);
         
         structure.elements.forEach(el => {
-            currentScores[el.id] = updateSignal.new_score;
-        });
+currentScores[updateSignal.element_id] = updateSignal.new_score;
+
+      });
 
     } else {
         // ==========================
