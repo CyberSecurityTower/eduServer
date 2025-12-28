@@ -34,15 +34,8 @@ const PROMPTS = {
       enabledFeatures = {},       //16
       atomicContext = ""
     ) => {
-      const missions = fullUserProfile.aiDiscoveryMissions || [];
-      let secretMissionsSection = "";
 
-      // --- تعديل: اختصار Secret Missions ---
-      if (missions.length > 0) {
-          secretMissionsSection = `🕵️‍♂️ **SECRET MISSION:** Find out: "${missions[0].content}". Be subtle. If stressed, IGNORE.`;
-      } else {
-          secretMissionsSection = "🕵️‍♂️ Secret Mission: None.";
-      }
+
 
       // --- A. استخراج البيانات الأساسية ---      
       const profile = fullUserProfile || {}; 
@@ -296,10 +289,9 @@ ${widgetsInstructions}
   managers: {
     traffic: (message) => `Analyze: { "language": "Ar/En/Fr", "title": "Short Title", "intent": "study|chat|admin" }. Msg: "${escapeForPrompt(safeSnippet(message, 200))}"`,
     
-    memoryExtractor: (currentFacts, chatHistory, activeMissions) => `
+    memoryExtractor: (currentFacts, chatHistory) => `
    You are the "Memory Architect".
     **Current Facts:** ${JSON.stringify(currentFacts)}
-    **Active Missions:** ${JSON.stringify(activeMissions)}
     **Chat Stream:** ${chatHistory}
     
     **Task:** Extract PERMANENT user facts.
