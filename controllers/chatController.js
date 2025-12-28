@@ -615,15 +615,18 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
     
     // 1. تعريف إشارة التحديث (نأخذها من الـ AI أولاً)
     // هذا هو التصحيح: نستخدم updateSignal مباشرة لتوحيد المتغيرات
-    let updateSignal = parsedResponse.atomic_update || null; 
+     let updateSignal = parsedResponse.atomic_update || null; 
     
-    // 2. استخراج ID الدرس (تبسيط المنطق لإزالة التعقيدات)
-    // نعتمد أساساً على currentContext الذي أثبتت السجلات أنه يحتوي على ID
-    let extractedLessonId = currentContext.lessonId || null;
+    // 2. استخراج ID الدرس (تصحيح شامل وقوي) 🔥
+    // نحاول جلبه من السياق الحالي، وإذا لم نجد، نحاول جلبه من البيانات الذرية المحملة سابقاً
+    let extractedLessonId = currentContext.lessonId 
+                            || (atomicData && atomicData.rawData && atomicData.rawData.structure ? atomicData.rawData.structure.lesson_id : null)
+                            || null;
 
     if (message) { 
         // A. محاولة استخراج ID الدرس من النص المخفي (الأولوية القصوى)
-        const idMatch = message.match(/LessonID:\s*([a-zA-Z0-9_]+)/i);
+        // ✅ تحديث: أضفنا (\-) لدعم المعرفات التي تحتوي على شَرطة مثل "les-hist-1"
+        const idMatch = message.match(/LessonID:\s*([a-zA-Z0-9_\-]+)/i);
         
         if (idMatch && idMatch[1] && idMatch[1] !== 'unknown') {
             extractedLessonId = idMatch[1]; 
