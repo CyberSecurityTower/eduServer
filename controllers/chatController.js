@@ -790,8 +790,7 @@ if (gatekeeperResult.reward) {
           recommendationText = `\n\n🎉 كملت كلش لليوم! ارتاح يا بطل.`;
       }
       
-      // إضافة النص للرد
-      parsedResponse.reply += recommendationText;
+    
 
       // ✅ إضافة تريجر تحديث المهام (داخل الشرط فقط)
       parsedResponse.widgets = parsedResponse.widgets || [];
