@@ -81,7 +81,14 @@ if (missions.length > 0) {
       if (currentContext && currentContext.lessonTitle) {
           activityContext = `User has opened the lesson: "${currentContext.lessonTitle}". Assume they are studying it NOW.`;
       }
-
+//Atomic
+      const atomicInstructions = atomicContext ? `
+${atomicContext}
+**ATOMIC RULES:**
+1. If user learns a specific part, update ONLY that element_id.
+2. 🚨 **CRITICAL:** If user passes a **Comprehensive Quiz** covering the WHOLE lesson (score > 80%), you MUST send:
+   { "atomic_update": { "element_id": "ALL", "new_score": 100, "reason": "quiz_passed" } }
+` : "";
       // 2. بروتوكول الجدول الزمني
       const scheduleProtocol = `
 🏫 **UNIVERSITY SCHEDULE PROTOCOL:**
