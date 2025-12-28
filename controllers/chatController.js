@@ -617,11 +617,12 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
     // هذا هو التصحيح: نستخدم updateSignal مباشرة لتوحيد المتغيرات
     let updateSignal = parsedResponse.atomic_update || null; 
     
-    // 2. محاولة استخراج ID الدرس بأي طريقة ممكنة (من السياق أو البيانات المحملة)
-    let extractedLessonId = currentContext.lessonId || (typeof lessonData !== 'undefined' ? lessonData?.id : null);
+    // 2. استخراج ID الدرس (تبسيط المنطق لإزالة التعقيدات)
+    // نعتمد أساساً على currentContext الذي أثبتت السجلات أنه يحتوي على ID
+    let extractedLessonId = currentContext.lessonId || null;
 
     if (message) { 
-        // A. محاولة استخراج ID الدرس من النص المخفي (الأولوية القصوى - للتصحيح اليدوي)
+        // A. محاولة استخراج ID الدرس من النص المخفي (الأولوية القصوى)
         const idMatch = message.match(/LessonID:\s*([a-zA-Z0-9_]+)/i);
         
         if (idMatch && idMatch[1] && idMatch[1] !== 'unknown') {
