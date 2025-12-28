@@ -4,9 +4,7 @@
 const supabase = require('../../data/supabase');
 const logger = require('../../../utils/logger');
 const { getHumanTimeDiff } = require('../../../utils');
-// 🔥 استيراد getProgress لجلب البيانات الذرية
-const { getProgress } = require('../../data/helpers'); 
-
+const { getAtomicProgress } = require('../../../services/atomic/atomicManager');
 /**
  * 🪐 CORTEX GRAVITY ENGINE V5.0 (Atomic Planner)
  * الخوارزمية: تحسب "ثقل" كل مادة بناءً على الفجوات الذرية وموعد الامتحان.
@@ -27,7 +25,7 @@ async function runPlannerManager(userId, pathId) {
         // ج. كل الدروس (الهيكل)
         supabase.from('lessons').select('id, title, subject_id, order_index').order('order_index', { ascending: true }),
         // د. 🔥 التقدم الذري (بدلاً من user_progress القديم)
-        getProgress(userId)
+getAtomicProgress(userId)
     ]);
 
     const subjects = subjectsRes.data || [];
