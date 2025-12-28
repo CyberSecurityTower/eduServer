@@ -609,17 +609,21 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
         atomicUpdateSignal = parsedResponse.atomic_update;
         // الـ reply جاهز للعرض، لا داعي لتنظيفه لأن الـ AI وضعه في حقل منفصل
     }
-    // 1. تعريف المتغيرات المهمة
-    let updateSignal = null;
+  // =========================================================
+    // 🆕 المحطة 3: المراقب (The Monitor) - تصحيح منطق التحديث
+    // =========================================================
+    
+    // 1. تعريف إشارة التحديث (نأخذها من الـ AI أولاً)
+    let updateSignal = parsedResponse.atomic_update || null; 
+    
     let extractedLessonId = currentContext.lessonId; // نبدأ بالقيمة الحالية
 
     if (message) { 
         // A. محاولة استخراج ID الدرس من النص المخفي (الأولوية القصوى)
-        // نبحث عن: LessonID: les_hist_1
         const idMatch = message.match(/LessonID:\s*([a-zA-Z0-9_]+)/i);
         
         if (idMatch && idMatch[1] && idMatch[1] !== 'unknown') {
-            extractedLessonId = idMatch[1]; // ✅ تحديث الـ ID
+            extractedLessonId = idMatch[1]; 
             console.log(`🎯 ID FIX: Extracted LessonId from text -> ${extractedLessonId}`);
         }
 
@@ -857,9 +861,10 @@ if (gatekeeperResult.reward) {
           { role: 'model', text: parsedResponse.reply, timestamp: nowISO() }
         ];
 
-        // 1. 🔥 تشغيل التحديث الذري (باستخدام الـ ID المستخرج حصراً)
+         // 1. 🔥 تشغيل التحديث الذري
+        // الآن updateSignal يحتوي إما على تحديث الـ AI أو تحديث الكويز
         if (updateSignal && extractedLessonId) {
-            console.log(`⚡ Triggering Atomic Update for: ${extractedLessonId}`);
+            console.log(`⚡ Triggering Atomic Update for: ${extractedLessonId} -> Element: ${updateSignal.element_id}`);
             await updateAtomicProgress(userId, extractedLessonId, updateSignal);
         } else if (updateSignal && !extractedLessonId) {
             console.error("❌ Atomic Update BLOCKED: Lesson ID is missing!");
