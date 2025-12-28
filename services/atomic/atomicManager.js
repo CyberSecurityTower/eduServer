@@ -163,23 +163,24 @@ async function updateAtomicProgress(userId, lessonId, updateSignal) {
 
     const newGlobalMastery = totalWeight > 0 ? Math.round(totalWeightedScore / totalWeight) : 0;
 
-    // 5. 🔥 الحفظ القسري (UPSERT)
-    // هذا الأمر سينشئ الصف إذا لم يكن موجوداً
-    const { error: upsertError } = await supabase.from('atomic_user_mastery').upsert({
+    // عند نقطة الحفظ (Upsert)، تأكد من أن الحالة (status) تتحدث بشكل منطقي
+  const status = newGlobalMastery >= 95 ? 'completed' : 'started'; // خفض النسبة قليلاً لضمان الاحتساب
+
+  const { error: upsertError } = await supabase.from('atomic_user_mastery').upsert({
       user_id: userId,
       lesson_id: lessonId,
       elements_scores: currentScores,
       current_mastery: newGlobalMastery,
       last_updated: new Date().toISOString(),
-      status: newGlobalMastery >= 100 ? 'completed' : 'started' // ✅ تحديث الحالة أيضاً
+      status: status 
     }, { onConflict: 'user_id, lesson_id' });
 
-    if (upsertError) {
-        console.error(`❌ DB WRITE ERROR:`, upsertError.message);
-    } else {
-        console.log(`✅ DB SUCCESS: Saved progress for ${lessonId} (Mastery: ${newGlobalMastery}%)`);
-    }
-
+  if (upsertError) {
+      console.error(`❌ DB WRITE ERROR:`, upsertError.message);
+  } else {
+      // 🔥 هذه الرسالة هي التي يجب أن تظهر في الـ Logs
+      console.log(`✅ DB SUCCESS: Saved progress for ${lessonId} (Mastery: ${newGlobalMastery}%) - Element Updated: ${updateSignal.element_id}`);
+  }
     // 6. استدعاء الحارس للمكافآت
     if (newGlobalMastery >= 95) {
         await checkAtomicMastery(userId, lessonId, newGlobalMastery);
