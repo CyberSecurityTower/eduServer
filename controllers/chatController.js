@@ -609,85 +609,65 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
         atomicUpdateSignal = parsedResponse.atomic_update;
         // الـ reply جاهز للعرض، لا داعي لتنظيفه لأن الـ AI وضعه في حقل منفصل
     }
-    // 🔥 3. المراقب (The Monitor) - تم الدمج هنا
+    // 1. تعريف المتغيرات المهمة
     let updateSignal = null;
-    
-    // إذا كان الـ AI أرسل تحديثاً ذرياً، نستخرجه وننظف الرد
-    if (parsedResponse.atomic_update) {
-        updateSignal = parsedResponse.atomic_update;
-        // لا نحتاج لتعديل parsedResponse.reply لأنه أصلاً مفصول في الـ JSON
-    }
+    let extractedLessonId = currentContext.lessonId; // نبدأ بالقيمة الحالية
 
-    // ---------------------------------------------------------
-    // 10. Action Layer & Agenda Updates
-    // ---------------------------------------------------------
+    if (message) { 
+        // A. محاولة استخراج ID الدرس من النص المخفي (الأولوية القصوى)
+        // نبحث عن: LessonID: les_hist_1
+        const idMatch = message.match(/LessonID:\s*([a-zA-Z0-9_]+)/i);
+        
+        if (idMatch && idMatch[1] && idMatch[1] !== 'unknown') {
+            extractedLessonId = idMatch[1]; // ✅ تحديث الـ ID
+            console.log(`🎯 ID FIX: Extracted LessonId from text -> ${extractedLessonId}`);
+        }
 
+        // B. تحليل النتيجة
+        const scoreMatch = message.match(/(\d+)\s*[\/|من]\s*(\d+)/);
 
-// ============================================================
-// 🔥 شبكة الأمان (Manual Override)
-// ============================================================
-// هذا الكود مخصص لالتقاط رسالة الفرونت إند: "[SYSTEM: Quiz Finished] User Score: 7/10"
-// ============================================================
-// 🔥 شبكة الأمان الذكية (Smart Atomic Override)
-// ============================================================
-if (message) { 
-    // 1. 🕵️ استخراج ID الدرس من النص (الأولوية القصوى)
-    // نبحث عن نمط: LessonID: les_hist_1
-    const idMatch = message.match(/LessonID:\s*([a-zA-Z0-9_]+)/i);
-    
-    // إذا وجدنا ID حقيقي في الرسالة (وليس unknown)، نعتمد عليه فوراً
-    if (idMatch && idMatch[1] && idMatch[1] !== 'unknown') {
-        currentContext.lessonId = idMatch[1];
-        console.log(`🎯 ID FIX: Switched context to extracted ID -> ${currentContext.lessonId}`);
-    }
+        if (scoreMatch) {
+            const score = parseInt(scoreMatch[1]);
+            const total = parseInt(scoreMatch[2]);
+            const percentage = total > 0 ? (score / total) * 100 : 0;
 
-    // 2. تحليل النتيجة
-    const scoreMatch = message.match(/(\d+)\s*[\/|من]\s*(\d+)/);
+            if (percentage >= 70) { 
+                let targetElement = null;
+                let updateReason = 'quiz_passed';
 
-    if (scoreMatch) {
-        const score = parseInt(scoreMatch[1]);
-        const total = parseInt(scoreMatch[2]);
-        const percentage = total > 0 ? (score / total) * 100 : 0;
-
-        if (percentage >= 70) { 
-            let targetElement = null;
-            let updateReason = 'quiz_passed';
-
-            // تحديد نوع التحديث (جزئي أم كلي)
-            if (total >= 4) {
-                console.log(`🧠 Smart Logic: Big Quiz (${total} Qs) -> Updating ALL Lesson`);
-                targetElement = 'ALL';
-                updateReason = 'quiz_comprehensive_passed';
-            } else {
-                 // كويز صغير...
-                 if (atomicData && atomicData.nextTarget) {
-                    targetElement = atomicData.nextTarget.id;
+                // تحديد نوع التحديث (جزئي أم كلي)
+                if (total >= 4) {
+                    console.log(`🧠 Smart Logic: Big Quiz (${total} Qs) -> Updating ALL Lesson`);
+                    targetElement = 'ALL';
+                    updateReason = 'quiz_comprehensive_passed';
+                } else {
+                     // كويز صغير...
+                     if (atomicData && atomicData.nextTarget) {
+                        targetElement = atomicData.nextTarget.id;
+                    }
                 }
-            }
 
-            // تطبيق التحديث الذري
-            if (targetElement) {
-                updateSignal = { 
-                    element_id: targetElement, 
-                    new_score: 100, 
-                    reason: updateReason 
-                };
-                parsedResponse.atomic_update = null; // إلغاء أي تحديث عشوائي من الـ AI
-            }
+                // تجهيز إشارة التحديث
+                if (targetElement) {
+                    updateSignal = { 
+                        element_id: targetElement, 
+                        new_score: 100, 
+                        reason: updateReason 
+                    };
+                    parsedResponse.atomic_update = null; // إلغاء أي تحديث عشوائي من الـ AI
+                }
 
-            // تفعيل إشارة النجاح (هنا يكمن الحل النهائي)
-            if (percentage >= 80) {
-                 parsedResponse.lesson_signal = {
-                    type: 'complete',
-                    // ✅ نستخدم ID المستخرج (currentContext.lessonId)
-                    // وفقط إذا لم يوجد نستخدم chat_quiz
-                    id: currentContext.lessonId || 'chat_quiz',
-                    score: percentage
-                };
+                // تفعيل إشارة النجاح للمكافآت
+                if (percentage >= 80) {
+                     parsedResponse.lesson_signal = {
+                        type: 'complete',
+                        id: extractedLessonId || 'chat_quiz', // ✅ استخدام الـ ID المستخرج
+                        score: percentage
+                    };
+                }
             }
         }
     }
-}
 // Handle Lesson Completion
 
 if (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'complete') {
@@ -869,34 +849,25 @@ if (gatekeeperResult.reward) {
     });
 
     // Background processing (Fire and Forget)
-    setImmediate(async () => {
+   setImmediate(async () => {
       try {
-        // Prepare the updated history with the latest interaction
         const updatedHistory = [
           ...history,
           { role: 'user', text: message, timestamp: nowISO() },
           { role: 'model', text: parsedResponse.reply, timestamp: nowISO() }
         ];
 
-      
- // 🔥 تحديث النظام الذري (تم التصحيح: نستخدم updateSignal المستخرج)
-        if (updateSignal && currentContext.lessonId) {
-            await updateAtomicProgress(userId, currentContext.lessonId, updateSignal);
+        // 1. 🔥 تشغيل التحديث الذري (باستخدام الـ ID المستخرج حصراً)
+        if (updateSignal && extractedLessonId) {
+            console.log(`⚡ Triggering Atomic Update for: ${extractedLessonId}`);
+            await updateAtomicProgress(userId, extractedLessonId, updateSignal);
+        } else if (updateSignal && !extractedLessonId) {
+            console.error("❌ Atomic Update BLOCKED: Lesson ID is missing!");
         }
-        // 2. Save Chat Session (حفظ الشات - الكود القديم)
+
+        // 2. حفظ الشات
         await saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory)
             .catch(e => logger.error('SaveChat Error:', e));
-
-        // 3. Analyze Session for Events (تحليل الجلسة - الكود الجديد)
-        // هذا سيقوم تلقائياً بفهم الطلب (مثل "ذكرني غدا") وجدولته
-        // لن ينتظر المستخدم الرد، سيتم هذا في الخلفية
-        await analyzeSessionForEvents(userId, updatedHistory)
-            .catch(e => logger.error('SessionAnalyzer Fail:', e));
-
-        // 4. Memory Analysis (تحديث الذاكرة)
-        await analyzeAndSaveMemory(userId, updatedHistory)
-            .catch(e => logger.error('MemoryAnalysis Error:', e));
-
         // 5. Update User Last Active Timestamp
         await supabase.from('users')
             .update({ last_active_at: nowISO() })
