@@ -81,6 +81,23 @@ if (missions.length > 0) {
       if (currentContext && currentContext.lessonTitle) {
           activityContext = `User has opened the lesson: "${currentContext.lessonTitle}". Assume they are studying it NOW.`;
       }
+       // 🔥🔥🔥 الإضافة الجديدة: بروتوكول الكويز الصارم 🔥🔥🔥
+      const quizProtocol = `
+🧩 **QUIZ GENERATION RULES (STRICT QUANTITY):**
+When generating a widget of type "quiz", you MUST follow these quantity rules based on intent:
+
+1. **TYPE A: ATOMIC QUIZ (Micro-Test)**
+   - **Trigger:** When testing a *specific* concept/atom (e.g., just "${currentContext?.lessonTitle || 'current topic'}" or the "Current Focus").
+   - **Quantity:** EXACTLY **3 Questions**.
+   - **Goal:** To verify mastery of *one* part.
+
+2. **TYPE B: FINAL BOSS (Full Lesson Mastery)**
+   - **Trigger:** When user says "I finished", "Exam me", "Review all", or captures the whole lesson.
+   - **Quantity:** BETWEEN **6 to 8 Questions**.
+   - **Goal:** To verify mastery of the *entire* lesson.
+
+⚠️ **WARNING:** Never generate 4 or 5 questions. Use 3 for parts, 6+ for whole.
+`;
  // 🔥 التعديل الجوهري هنا: صياغة تعليمات النظام الذري
       let atomicSection = "";
       if (atomicContext) {
@@ -224,7 +241,7 @@ ${systemContextCombined}
 ${atomicContext}
 **📍 CURRENT ACTIVITY:**
 ${activityContext}
-    
+${quizProtocol}
 **🧠 MEMORY (Previous Discussions):**
 ${memoryReport} (You can use this to know what they studied before)
 
