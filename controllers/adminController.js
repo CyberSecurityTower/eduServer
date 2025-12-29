@@ -93,7 +93,7 @@ async function processSingleAtomicLesson(lessonId, content) {
     const lessonTitle = lessonMeta?.title || 'Unknown Lesson';
 
     // تقليص النص إذا كان طويلاً جداً (لتوفير التوكيز)
-    const safeContent = content.length > 8000 ? content.substring(0, 8000) + "..." : content;
+    const safeContent = content;
 
     const prompt = `
     You are an Expert Curriculum Architect.
