@@ -121,21 +121,21 @@ class KeyManager {
             }
 
             // D. Add keys that are ONLY in DB
+           // D. Add keys that are ONLY in DB
             for (const [keyStr, row] of dbKeyMap.entries()) {
-                if (row.status === 'active') {
-                    this._addKeyToMemory(
-                        row.key_value,
-                        row.nickname,
-                        row.fails_count,
-                        row.usage_count,
-                        row.total_input_tokens,
-                        row.total_output_tokens,
-                        row.today_requests_count,
-                        row.last_reset_at
-                    );
-                }
+                // 👇 التغيير: نحمل المفتاح مهما كانت حالته، ونعطيه فرصة جديدة
+                // نمرر fails=0 لنعتبره نشطاً في الذاكرة
+                this._addKeyToMemory(
+                    row.key_value,
+                    row.nickname,
+                    0, // fails = 0 (Force Reset in Memory)
+                    row.usage_count,
+                    row.total_input_tokens,
+                    row.total_output_tokens,
+                    row.today_requests_count,
+                    row.last_reset_at
+                );
             }
-
             logger.success(`🔑 KeyManager Initialized. Loaded ${this.keys.size} keys (Stats Restored).`);
             this.isInitialized = true;
 
