@@ -31,6 +31,133 @@ function initAdminController(dependencies) {
   logger.info('Admin Controller initialized.');
 }
 
+async function runAtomicGeneratorLogic() {
+  logger.info('⚛️ STARTING ATOMIC GENERATION (TURBO MODE) 🚀...');
+
+  try {
+    // 1. جلب الدروس (Content)
+    const { data: contents } = await supabase.from('lessons_content').select('id, content');
+    // 2. جلب الهياكل الموجودة لتفادي التكرار
+    const { data: existingStructures } = await supabase.from('atomic_lesson_structures').select('lesson_id');
+    const existingSet = new Set(existingStructures?.map(s => s.lesson_id) || []);
+
+    // تصفية الدروس التي تحتاج معالجة
+    const tasks = contents.filter(c => !existingSet.has(c.id));
+
+    if (tasks.length === 0) {
+      return logger.success('✅ All lessons are already atomized! Good job.');
+    }
+
+    // 3. حساب سعة المعالجة (Concurrency)
+    const keysStats = keyManager.getAllKeysStatus();
+    const activeKeysCount = keysStats.filter(k => k.status !== 'dead').length || 1;
+    
+    // المعادلة: نطلق 3 طلبات لكل مفتاح في نفس الوقت (لأن بعض الطلبات ستنتهي أسرع من غيرها)
+    const BATCH_SIZE = activeKeysCount * 3; 
+    
+    logger.info(`🔥 Active Keys: ${activeKeysCount} | Batch Size: ${BATCH_SIZE} | Total Tasks: ${tasks.length}`);
+
+    // 4. حلقة المعالجة المتوازية
+    for (let i = 0; i < tasks.length; i += BATCH_SIZE) {
+        const batch = tasks.slice(i, i + BATCH_SIZE);
+        
+        logger.log(`⚡ Processing batch ${Math.ceil(i/BATCH_SIZE) + 1}... (${batch.length} lessons)`);
+
+        // هنا السحر: نطلق كل طلبات الدفعة في نفس اللحظة
+        const promises = batch.map(task => processSingleAtomicLesson(task.id, task.content));
+        
+        // ننتظر انتهاء الدفعة كاملة قبل الانتقال للتالية (لحماية الذاكرة)
+        await Promise.all(promises);
+        
+        // استراحة محارب صغيرة (1 ثانية) لترتيب الأنفاس
+        await new Promise(r => setTimeout(r, 1000));
+    }
+
+    logger.success('🎉 MISSION ACCOMPLISHED: All lessons atomized!');
+
+  } catch (err) {
+    logger.error('Atomic Generator Logic Error:', err);
+  }
+}
+
+async function processSingleAtomicLesson(lessonId, content) {
+  try {
+    // جلب عنوان الدرس للمساعدة في السياق
+    const { data: lessonMeta } = await supabase.from('lessons').select('title').eq('id', lessonId).single();
+    const lessonTitle = lessonMeta?.title || 'Unknown Lesson';
+
+    // تقليص النص إذا كان طويلاً جداً (لتوفير التوكيز)
+    const safeContent = content.length > 8000 ? content.substring(0, 8000) + "..." : content;
+
+    const prompt = `
+    You are an Expert Curriculum Architect.
+    
+    **Task:** Break down this lesson into "Atomic Elements" (Key Concepts).
+    **Lesson Title:** "${lessonTitle}"
+    **Content:**
+    """${safeContent}"""
+
+    **Rules:**
+    1. Identify **3 to 7** core concepts/steps in this lesson (depending on density).
+    2. **Order** them logically (1, 2, 3...).
+    3. Assign a **Weight** (1 = Introduction, 2 = Core Concept, 3 = Critical/Complex).
+    4. Generate a unique **ID** for each element (English, snake_case, relevant to topic).
+    5. **Title** must be in Arabic (descriptive).
+    
+    **Output JSON Format ONLY:**
+    {
+      "elements": [
+        { "id": "topic_definition", "title": "تعريف المفهوم", "weight": 1, "order": 1 },
+        { "id": "topic_types", "title": "الأنواع والخصائص", "weight": 2, "order": 2 }
+      ]
+    }
+    exapmle : Title of lesson : Algeria. the json structure expected : {
+  "elements": [
+    {
+      "id": "geo_site",
+      "order": 1,
+      "title": "الموقع الفلكي والجغرافي",
+      "weight": 2
+    },
+    {
+      "id": "geo_climate",
+      "order": 2,
+      "title": "المناخ والأقاليم",
+      "weight": 3
+    },
+    {
+      "id": "geo_importance",
+      "order": 3,
+      "title": "الأهمية الاستراتيجية",
+      "weight": 2
+    }
+  ]
+}
+    `;
+
+    // استدعاء الموديل (نستخدم 'analysis' أو 'smart' حسب توفر المفاتيح)
+    const res = await generateWithFailoverRef('analysis', prompt, { label: 'AtomicGen' });
+    const rawText = await extractTextFromResult(res);
+    const json = await ensureJsonOrRepair(rawText, 'analysis');
+
+    if (json && json.elements && Array.isArray(json.elements)) {
+        // حفظ في الداتابايز
+        const { error } = await supabase.from('atomic_lesson_structures').insert({
+            lesson_id: lessonId,
+            structure_data: json, // يحفظ الـ JSON كاملاً
+            created_at: new Date().toISOString()
+        });
+
+        if (error) throw error;
+        logger.success(`⚛️ Generated structure for: ${lessonTitle} (${json.elements.length} atoms)`);
+    } else {
+        logger.error(`❌ Failed to parse JSON for lesson: ${lessonId}`);
+    }
+
+  } catch (err) {
+    logger.error(`Error processing atomic lesson ${lessonId}:`, err.message);
+  }
+}
 async function pushDiscoveryMission(req, res) {
   try {
     const { targetUserId, missionContent, isGlobal } = req.body;
@@ -1024,5 +1151,6 @@ module.exports = {
   getDashboardStatsV2,
   getLiveTraffic,
   triggerStreakRescue,
-  debugCurriculumContext
+  debugCurriculumContext,
+  generateAtomicStructuresBatch 
 };
