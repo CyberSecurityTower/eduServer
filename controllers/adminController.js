@@ -59,10 +59,25 @@ async function runAtomicGeneratorLogic() {
 
     // تصفية الدروس التي تحتاج معالجة
     const tasks = contents.filter(c => !existingSet.has(c.id));
+  
+  logger.info(`🔨 Found ${tasks.length} lessons. Processing sequentially...`);
 
-    if (tasks.length === 0) {
-      return logger.success('✅ All lessons are already atomized! Good job.');
-    }
+  // نأخذ أول 20 درس فقط في هذه الدورة
+  const batch = tasks.slice(0, 20); 
+
+  for (const task of batch) {
+      logger.info(`⏳ Processing: ${task.id}...`);
+      
+      await processSingleAtomicLesson(task.id, task.content);
+      
+      // 🔥 الحل السحري: انتظار 10 ثوانٍ كاملة بين كل درس وآخر
+      // هذا يضمن أن الـ RPM يهدأ وتستعيد المفاتيح عافيتها
+      logger.info('💤 Cooling down for 10 seconds...');
+      await new Promise(r => setTimeout(r, 10000)); 
+  }
+
+  logger.success('✅ Batch processing finished.');
+}
 
     // 3. حساب سعة المعالجة (Concurrency)
     const keysStats = keyManager.getAllKeysStatus();
