@@ -31,6 +31,22 @@ function initAdminController(dependencies) {
   logger.info('Admin Controller initialized.');
 }
 
+/**
+ * ⚛️ مولد الهيكل الذري (Atomic Structure Generator)
+ * يمر على الدروس التي لديها محتوى ولكن ليس لديها هيكل ذري، ويقوم بتوليده عبر الذكاء الاصطناعي.
+ */
+async function generateAtomicStructuresBatch(req, res) {
+  // حماية المسار
+  if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  // رد فوري لتجنب Timeout
+  res.json({ message: '🚀 Atomic Generator started in background...' });
+
+  // تشغيل في الخلفية
+  runAtomicGeneratorLogic().catch(e => logger.error('Atomic Generator Fatal Error:', e));
+}
 async function runAtomicGeneratorLogic() {
   logger.info('⚛️ STARTING ATOMIC GENERATION (TURBO MODE) 🚀...');
 
