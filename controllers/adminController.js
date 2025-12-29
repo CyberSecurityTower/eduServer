@@ -51,63 +51,38 @@ async function runAtomicGeneratorLogic() {
   logger.info('⚛️ STARTING ATOMIC GENERATION (TURBO MODE) 🚀...');
 
   try {
-    // 1. جلب الدروس (Content)
-    const { data: contents } = await supabase.from('lessons_content').select('id, content');
-    // 2. جلب الهياكل الموجودة لتفادي التكرار
-    const { data: existingStructures } = await supabase.from('atomic_lesson_structures').select('lesson_id');
+    // 1. Fetch lessons
+    const { data: contents } = await supabase
+      .from('lessons_content')
+      .select('id, content');
+
+    // 2. Fetch existing structures
+    const { data: existingStructures } = await supabase
+      .from('atomic_lesson_structures')
+      .select('lesson_id');
+
     const existingSet = new Set(existingStructures?.map(s => s.lesson_id) || []);
 
-    // تصفية الدروس التي تحتاج معالجة
+    // 3. Filter lessons
     const tasks = contents.filter(c => !existingSet.has(c.id));
-  
-  logger.info(`🔨 Found ${tasks.length} lessons. Processing sequentially...`);
+    logger.info(`🔨 Found ${tasks.length} lessons. Processing sequentially...`);
 
-  // نأخذ أول 20 درس فقط في هذه الدورة
-  const batch = tasks.slice(0, 20); 
+    // 4. Limit batch size
+    const batch = tasks.slice(0, 20);
 
-  for (const task of batch) {
-      logger.info(`⏳ Processing: ${task.id}...`);
-      
+    for (const task of batch) {
+      logger.info(`⏳ Processing lesson ${task.id}...`);
+
       await processSingleAtomicLesson(task.id, task.content);
-      
-      // 🔥 الحل السحري: انتظار 10 ثوانٍ كاملة بين كل درس وآخر
-      // هذا يضمن أن الـ RPM يهدأ وتستعيد المفاتيح عافيتها
+
       logger.info('💤 Cooling down for 10 seconds...');
-      await new Promise(r => setTimeout(r, 10000)); 
-  }
-
-  logger.success('✅ Batch processing finished.');
-}
-
-    // 3. حساب سعة المعالجة (Concurrency)
-    const keysStats = keyManager.getAllKeysStatus();
-    const activeKeysCount = keysStats.filter(k => k.status !== 'dead').length || 1;
-    
-    // المعادلة: نطلق 3 طلبات لكل مفتاح في نفس الوقت (لأن بعض الطلبات ستنتهي أسرع من غيرها)
-    const BATCH_SIZE = activeKeysCount * 3; 
-    
-    logger.info(`🔥 Active Keys: ${activeKeysCount} | Batch Size: ${BATCH_SIZE} | Total Tasks: ${tasks.length}`);
-
-    // 4. حلقة المعالجة المتوازية
-    for (let i = 0; i < tasks.length; i += BATCH_SIZE) {
-        const batch = tasks.slice(i, i + BATCH_SIZE);
-        
-        logger.log(`⚡ Processing batch ${Math.ceil(i/BATCH_SIZE) + 1}... (${batch.length} lessons)`);
-
-        // هنا السحر: نطلق كل طلبات الدفعة في نفس اللحظة
-        const promises = batch.map(task => processSingleAtomicLesson(task.id, task.content));
-        
-        // ننتظر انتهاء الدفعة كاملة قبل الانتقال للتالية (لحماية الذاكرة)
-        await Promise.all(promises);
-        
-        // استراحة محارب صغيرة (1 ثانية) لترتيب الأنفاس
-        await new Promise(r => setTimeout(r, 1000));
+      await new Promise(r => setTimeout(r, 10000));
     }
 
-    logger.success('🎉 MISSION ACCOMPLISHED: All lessons atomized!');
+    logger.success('✅ Batch processing finished.');
 
   } catch (err) {
-    logger.error('Atomic Generator Logic Error:', err);
+    logger.error('❌ Atomic Generator Logic Error:', err);
   }
 }
 
