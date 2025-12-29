@@ -233,14 +233,23 @@ class KeyManager {
                     });
 
                     resolve(selected);
-                } else {
-                    // 🚨 حالة الطوارئ
+               } else {
+                    // 🚨 حالة الطوارئ (Desperate Mode)
                     const deadKeys = Array.from(this.keys.values()).filter(k => k.status === 'dead');
+                    
                     if (deadKeys.length > 0) {
-                        const zombie = deadKeys[0];
-                        logger.warn(`🧟 Desperate Mode: Trying dead key ${zombie.nickname}...`);
-                        zombie.status = 'busy';
-                        resolve(zombie);
+                        // 👇 التعديل هنا: نختار مفتاحاً عشوائياً من الموتى (وليس الأول دائماً)
+                        const zombie = deadKeys[Math.floor(Math.random() * deadKeys.length)];
+                        
+                        logger.warn(`🧟 Desperate Mode: Reviving zombie key ${zombie.nickname} in 5s...`);
+                        
+                        // 👇 الحل الجذري: تأخير إجباري لمدة 5 ثواني قبل تسليم المفتاح الميت
+                        // هذا يمنع الـ Loop السريع الذي رأيته في اللوجات
+                        setTimeout(() => {
+                            zombie.status = 'busy'; 
+                            resolve(zombie);
+                        }, 5000); 
+
                     } else {
                         logger.warn('⚠️ Queueing request (System saturated)...');
                         this.queue.push(tryAcquire);
