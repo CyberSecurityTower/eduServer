@@ -9,125 +9,83 @@ const logger = require('../../utils/logger');
  * يمنح المكافآت بناءً على الإتقان الذري (Atomic Mastery) فقط.
  * تم حذف تتبع الوقت وجدول user_progress القديم نهائياً.
  */
-async function markLessonComplete(userId, lessonIdentifier, score = 100) {
+
+async function markLessonComplete(userId, lessonId, score, overrideCoins = null) {
   try {
-    console.log(`🔐 Gatekeeper V2: Checking rewards for ${userId} on "${lessonIdentifier}"`);
+    // 1. التحقق من الحالة الحالية للدرس
+    const { data: currentProgress } = await supabase
+      .from('user_progress') // تأكد أن هذا هو اسم جدول التقدم عندك
+      .select('is_rewarded, status, best_score')
+      .eq('user_id', userId)
+      .eq('lesson_id', lessonId)
+      .single();
 
-    let finalLessonId = lessonIdentifier;
-    let isGenericActivity = false;
-
-    // 1. محاولة العثور على الدرس (ID Resolution)
-    // إذا كان المدخل نصاً عربياً (عنوان)، نبحث عن الـ ID
-    const isTitle = /[\u0600-\u06FF\s]/.test(lessonIdentifier) || lessonIdentifier.length > 50;
-
-    if (isTitle) {
-        const cleanTitle = lessonIdentifier.replace(/درس|مادة|شرح/g, '').trim();
-        const { data: lesson } = await supabase
-            .from('lessons')
-            .select('id')
-            .ilike('title', `%${cleanTitle}%`)
-            .limit(1)
-            .maybeSingle();
-
-        if (lesson) {
-            finalLessonId = lesson.id;
-        } else {
-            console.warn(`⚠️ Gatekeeper: Lesson not found. Switching to GENERIC mode.`);
-            isGenericActivity = true;
-            finalLessonId = null;
-        }
+    const isFirstTime = !currentProgress || currentProgress.status !== 'completed';
+    const alreadyRewarded = currentProgress?.is_rewarded || false;
+    
+    // 2. تحديد قيمة المكافأة
+    let coinsToAdd = 0;
+    
+    // إذا لم يأخذ المكافأة من قبل، وحقق النجاح (أو تم تمرير كوينز يدوياً)
+    if (!alreadyRewarded && (isFirstTime || score >= 50)) {
+        coinsToAdd = overrideCoins !== null ? overrideCoins : 50; // 50 كوينز افتراضياً
     }
 
-    // 2. تحليل الحالة الذرية (The Atomic Logic)
-    let coinsEarned = 0;
-    let rewardReason = '';
-    let isFirstTimeMastery = false;
-
-    if (!isGenericActivity && finalLessonId) {
-        // جلب سجل الإتقان الذري
-        const { data: atomicRecord, error } = await supabase
-            .from('atomic_user_mastery')
-            .select('current_mastery, is_rewarded')
-            .eq('user_id', userId)
-            .eq('lesson_id', finalLessonId)
-            .maybeSingle();
-
-        if (atomicRecord) {
-            // الشرط: هل الإتقان تجاوز 80%؟ (يمكنك تعديل النسبة)
-            const isMastered = (atomicRecord.current_mastery >= 80);
-
-            if (isMastered && !atomicRecord.is_rewarded) {
-                // 💰 الجائزة الكبرى: أول مرة يتقن الدرس
-                coinsEarned = 50;
-                rewardReason = 'atomic_mastery_unlocked';
-                isFirstTimeMastery = true;
-            } else if (atomicRecord.is_rewarded && score >= 100) {
-                // 🍬 بونوس: مراجعة مثالية
-                coinsEarned = 5;
-                rewardReason = 'atomic_review_bonus';
-            } else {
-                rewardReason = 'already_mastered_no_bonus';
-            }
-        } else {
-            // لم يبدأ الدرس في النظام الذري بعد
-            rewardReason = 'no_atomic_record';
-        }
-    } else {
-        // نشاط عام (خارج الدروس المحددة)
-        coinsEarned = 10;
-        rewardReason = 'generic_activity';
-    }
-
-    // 3. تنفيذ المعاملة المالية (Transaction)
-    let newTotalCoins = 0;
-
-    if (coinsEarned > 0) {
-        const { data: balance, error } = await supabase.rpc('process_coin_transaction', {
+    // 3. تنفيذ المعاملة المالية (إذا وجد كوينز)
+    let transactionSuccess = false;
+    if (coinsToAdd > 0) {
+        const { error: rpcError } = await supabase.rpc('process_coin_transaction', {
             p_user_id: userId,
-            p_amount: coinsEarned,
-            p_reason: rewardReason,
-            p_meta: { 
-                lesson_id: finalLessonId, 
-                mastery_score: score 
-            }
+            p_amount: coinsToAdd,
+            p_reason: 'lesson_completion',
+            p_meta: { lesson_id: lessonId, score: score }
         });
-        
-        if (!error) {
-            console.log(`✅ Coins Added: +${coinsEarned} (${rewardReason})`);
-            newTotalCoins = balance;
 
-            // 🔥 تحديث السجل الذري لكي لا يأخذ الجائزة الكبرى مرة أخرى
-            if (isFirstTimeMastery && finalLessonId) {
-                await supabase
-                    .from('atomic_user_mastery')
-                    .update({ is_rewarded: true })
-                    .eq('user_id', userId)
-                    .eq('lesson_id', finalLessonId);
-            }
+        if (!rpcError) {
+            transactionSuccess = true;
+            logger.success(`💰 User ${userId} earned ${coinsToAdd} coins for lesson ${lessonId}`);
         } else {
-            console.error("❌ RPC Error:", error.message);
+            logger.error(`❌ Coin Transaction Failed: ${rpcError.message}`);
         }
-    } else {
-        // جلب الرصيد الحالي فقط للعرض
-        const { data: u } = await supabase.from('users').select('coins').eq('id', userId).single();
-        newTotalCoins = u?.coins || 0;
     }
 
-    return { 
-        success: true, 
-        reward: { 
-            coins_added: coinsEarned, 
-            reason: rewardReason
-        },
-        new_total_coins: newTotalCoins
+    // 4. تحديث التقدم في قاعدة البيانات (مع قفل المكافأة) 🔥
+    const updatePayload = {
+        user_id: userId,
+        lesson_id: lessonId,
+        status: 'completed',
+        last_accessed: new Date().toISOString(),
+        score: score, // نسجل آخر سكور
+        // نحتفظ بأفضل سكور
+        best_score: Math.max(score, currentProgress?.best_score || 0)
+    };
+
+    // 🔥🔥🔥 التصحيح هنا: نحدث is_rewarded فقط إذا تمت المعاملة بنجاح 🔥🔥🔥
+    if (transactionSuccess || alreadyRewarded) {
+        updatePayload.is_rewarded = true; 
+    }
+
+    const { error: upsertError } = await supabase
+        .from('user_progress')
+        .upsert(updatePayload, { onConflict: 'user_id, lesson_id' });
+
+    if (upsertError) throw upsertError;
+
+    // 5. إرجاع النتيجة للـ Controller
+    return {
+        success: true,
+        new_status: 'completed',
+        reward: {
+            coins_added: transactionSuccess ? coinsToAdd : 0,
+            already_claimed: alreadyRewarded && coinsToAdd === 0
+        }
     };
 
   } catch (err) {
-    logger.error('Gatekeeper V2 Error:', err.message);
-    return { success: false };
+    logger.error(`Gatekeeper Error for ${lessonId}:`, err.message);
+    return { success: false, error: err.message };
   }
 }
-
 /**
  * ⚛️ ATOMIC GATEKEEPER
  * يراقب استقرار الجزيء (الدرس). إذا وصل الاستقرار لـ 95%، يمنح المكافأة.
