@@ -138,6 +138,7 @@ router.post('/admin/index-lesson', requireAdmin, adminController.indexSpecificLe
 router.post('/admin/run-chrono-analysis', requireAdmin, adminController.runDailyChronoAnalysis);
 router.post('/admin/reveal-password', requireAdmin, adminController.revealUserPassword);
 router.post('/admin/run-streak-rescue', requireAdmin, adminController.triggerStreakRescue);
+router.post('/admin/generate-atomic-structures', requireAdmin, adminController.generateAtomicStructuresBatch);
 
 // ==========================================
 // 5. Wallet & Economy (EduCoin) 🪙
