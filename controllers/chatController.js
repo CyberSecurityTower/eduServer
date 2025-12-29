@@ -884,7 +884,9 @@ if (gatekeeperResult.reward) {
         await supabase.from('users')
             .update({ last_active_at: nowISO() })
             .eq('id', userId);
-
+// 4. Memory Analysis (تحديث الذاكرة)
+        await analyzeAndSaveMemory(userId, updatedHistory)
+            .catch(e => logger.error('MemoryAnalysis Error:', e));
       } catch (bgError) {
         logger.error("Background Processing Fatal Error:", bgError);
       }
