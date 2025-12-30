@@ -897,20 +897,23 @@ if (tasksChanged || (parsedResponse.lesson_signal && parsedResponse.lesson_signa
          // 1. 🔥 تشغيل التحديث الذري
         // الآن updateSignal يحتوي إما على تحديث الـ AI أو تحديث الكويز
         if (updateSignal && extractedLessonId) {
-            console.log(`⚡ Triggering Atomic Update for: ${extractedLessonId} -> Element: ${updateSignal.element_id}`);
             await updateAtomicProgress(userId, extractedLessonId, updateSignal);
-        } else if (updateSignal && !extractedLessonId) {
-            console.error("❌ Atomic Update BLOCKED: Lesson ID is missing!");
         }
 
-        // 2. حفظ الشات
+        // 2. حفظ الشات (كما هو)
         await saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory)
             .catch(e => logger.error('SaveChat Error:', e));
-        // 5. Update User Last Active Timestamp
-        await supabase.from('users')
-            .update({ last_active_at: nowISO() })
-            .eq('id', userId);
-// 4. Memory Analysis (تحديث الذاكرة)
+
+        // 3. ✅✅✅ الإضافة الجديدة: الفهرسة الفورية للرسالة (Total Recall)
+        // نحفظ رسالة المستخدم الحالية في ذاكرة المتجهات لتستدعى لاحقاً
+        // شرط بسيط: أن تكون الرسالة مفيدة (أكثر من 10 حروف) لتجنب حشو الذاكرة بـ "ok", "hello"
+        if (message && message.length > 10) {
+            const { saveMemoryChunk } = require('../services/ai/managers/memoryManager');
+            await saveMemoryChunk(userId, message, "User_Message_History");
+            logger.info(`🧠 Memory Indexed: "${message.substring(0, 20)}..."`);
+        }
+
+        // 4. Memory Analysis (تحليل الحقائق - يبقى كما هو لاستخراج الاسم والعمر)
         await analyzeAndSaveMemory(userId, updatedHistory)
             .catch(e => logger.error('MemoryAnalysis Error:', e));
       } catch (bgError) {
