@@ -694,11 +694,11 @@ async function updateAiAgenda(userId, newAgenda) {
  * تقوم بحذف المهام المعلقة القديمة واستبدالها بخطة الجاذبية الجديدة
  */
 
-async function refreshUserTasks(userId) {
+async function refreshUserTasks(userId, force = false, excludeLessonId = null) {
   try {
-    // 1. جلب البروفايل
     const profile = await getProfile(userId);
     const pathId = profile.selectedPathId || 'UAlger3_L1_ITCF';
+
 
     // 2. تنظيف المهام القديمة جداً (Garbage Collection)
     // نحذف أي مهمة معلقة مر عليها أكثر من 24 ساعة لضمان تجديد الدماء
@@ -717,13 +717,22 @@ async function refreshUserTasks(userId) {
         .eq('user_id', userId)
         .eq('status', 'pending');
 
-    // إذا كان لدى المستخدم مهام كافية (مثلاً 3)، لا داعي لتوليد المزيد إلا إذا طلب
-    if (currentTasks && currentTasks.length >= 3) {
-        return currentTasks; 
+    if (!force) {
+        const { data: currentTasks } = await supabase
+            .from('user_tasks')
+            .select('id') // يكفي الـ ID للعد
+            .eq('user_id', userId)
+            .eq('status', 'pending');
+
+        if (currentTasks && currentTasks.length >= 3) {
+            // في هذه الحالة نعيد المهام الحالية كاملة
+            const { data: fullTasks } = await supabase.from('user_tasks').select('*').eq('user_id', userId).eq('status', 'pending');
+            return fullTasks;
+        }
     }
 
-    // 4. تشغيل محرك الجاذبية الجديد
-    const plan = await runPlannerManager(userId, pathId);
+    // 4. تشغيل محرك الجاذبية (نمرر الدرس المستبعد)
+    const plan = await runPlannerManager(userId, pathId, excludeLessonId); // 👈 تمرير
     const newGeneratedTasks = plan.tasks || [];
 
     if (newGeneratedTasks.length === 0) return [];
