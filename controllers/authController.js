@@ -358,8 +358,7 @@ async function checkEmailExists(req, res) {
   }
 }
 /**
- * المرحلة 1: بدء التسجيل (Initiate Signup)
- * ذكية بما يكفي للتعامل مع الحسابات المعلقة
+ * المرحلة 1: بدء التسجيل (Initiate Signup) - النسخة النهائية (Password Trap Fix)
  */
 async function initiateSignup(req, res) {
   const { email, password, firstName, lastName } = req.body;
@@ -368,47 +367,71 @@ async function initiateSignup(req, res) {
     return res.status(400).json({ error: 'Email and Password are required.' });
   }
 
+  const userMetadata = {
+    first_name: firstName,
+    last_name: lastName,
+    full_name: `${firstName} ${lastName}`
+  };
+
   try {
-    // 1. محاولة إنشاء المستخدم
+    // 1. محاولة إنشاء المستخدم الجديد
     const { data: user, error: createError } = await supabase.auth.admin.createUser({
       email: email,
       password: password,
       email_confirm: false, 
-      user_metadata: {
-        first_name: firstName,
-        last_name: lastName,
-        full_name: `${firstName} ${lastName}`
-      }
+      user_metadata: userMetadata
     });
 
     if (createError) {
-      // 🔥 الحل السحري هنا 🔥
-      // إذا كان الخطأ يقول أن المستخدم موجود مسبقاً
+      // 🛑 إذا كان المستخدم موجوداً مسبقاً
       if (createError.message.includes('already has been registered')) {
          
-         // نحاول إعادة إرسال رمز التفعيل
-         const { error: resendError } = await supabase.auth.resend({
-             type: 'signup',
-             email: email
+         // أ. نحاول الحصول على ID المستخدم "الشبح" (غير المفعل)
+         const { data: zombieUserId, error: rpcError } = await supabase.rpc('get_unverified_user_id', {
+             email_input: email
          });
+
+         // ب. إذا وجدنا ID، فهذا يعني أنه حساب غير مفعل -> يجب تحديث بياناته!
+         if (zombieUserId) {
+             console.log(`🧟 Zombie User Found: ${zombieUserId}. Updating credentials...`);
+             
+             // 1. تحديث كلمة المرور والبيانات الجديدة (هذا يحل فخ الباسورد)
+             const { error: updateError } = await supabase.auth.admin.updateUserById(
+                 zombieUserId, 
+                 { 
+                     password: password, // تعيين كلمة المرور الجديدة
+                     user_metadata: userMetadata // تعيين الاسم الجديد
+                 }
+             );
+
+             if (updateError) {
+                 return res.status(500).json({ error: 'Failed to update existing account.' });
+             }
+
+             // 2. إعادة إرسال رمز التفعيل
+             const { error: resendError } = await supabase.auth.resend({
+                 type: 'signup',
+                 email: email
+             });
+
+             if (resendError) return res.status(400).json({ error: resendError.message });
+
+             return res.status(200).json({ 
+                 success: true, 
+                 message: "Account updated and OTP resent." 
+             });
+         } 
          
-         // إذا فشل الإرسال (مثلاً الحساب مفعل بالفعل)، نرجع خطأ
-         if (resendError) {
-             return res.status(409).json({ error: 'Account already exists and verified. Please login.' });
+         // ج. إذا لم نجد ID، فهذا يعني أن الحساب موجود ومفعل بالفعل
+         else {
+             return res.status(409).json({ error: 'Account already exists. Please login.' });
          }
-         
-         // إذا نجح الإرسال، نعتبرها عملية ناجحة وكأننا أنشأنا الحساب للتو
-         return res.status(200).json({ 
-             success: true, 
-             message: "Account exists but unverified. OTP resent." 
-         });
       }
 
-      // أخطاء أخرى
       return res.status(400).json({ error: createError.message });
     }
 
-    // 2. إذا تم الإنشاء بنجاح (مستخدم جديد تماماً)، نرسل الإيميل
+    // 2. إذا تم الإنشاء بنجاح (مستخدم جديد)، نرسل الإيميل
     await supabase.auth.resend({
       type: 'signup',
       email: email
