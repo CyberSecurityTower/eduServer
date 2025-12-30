@@ -731,6 +731,7 @@ async function refreshUserTasks(userId) {
     // 5. إدخال المهام الجديدة (مع تجنب التكرار)
     // (يمكنك إضافة تحقق هنا لعدم إدخال مهمة موجودة بالفعل)
     
+  
     const tasksToInsert = newGeneratedTasks.map(t => ({
       user_id: userId,
       title: t.title,
@@ -741,8 +742,16 @@ async function refreshUserTasks(userId) {
       created_at: new Date().toISOString()
     }));
 
-    const { data } = await supabase.from('user_tasks').insert(tasksToInsert).select();
+    // 🔥 التعديل هنا: أضفنا ('*') لضمان إرجاع كل البيانات وليس الـ ID فقط
+    const { data } = await supabase
+        .from('user_tasks')
+        .insert(tasksToInsert)
+        .select('*'); 
     
+    // تفريغ الكاش
+    await cacheDel('progress', userId); 
+    
+    logger.success(`✅ Tasks refreshed for ${userId} (Top: ${newGeneratedTasks[0]?.title})`);
     return data || [];
 
   } catch (err) {
