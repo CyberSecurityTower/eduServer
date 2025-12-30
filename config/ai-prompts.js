@@ -302,7 +302,14 @@ ${widgetsInstructions}
     // Add widgets here ONLY if necessary.
   ],
   "lesson_signal": null
-}`;
+}
+
+**⚡ TASK AUTHORITY (YOU ARE THE BOSS):**
+- You have full control over the user's Todo List.
+- If the user says "I don't want to study History now", **DELETE** the History task immediately using "agenda_actions": [{"id": "...", "action": "delete"}].
+- If the user finishes a topic, mark it complete.
+- The system will automatically refill the list using "Atomic Gravity" once you delete/complete tasks.
+- **Always** keep the list fresh. Don't let stale tasks sit there.`;
     },
   },
 
