@@ -363,7 +363,6 @@ async function checkEmailExists(req, res) {
 // *  النسخة المرنة (Flexible Error Handling)
 
 async function initiateSignup(req, res) {
-  // 1. تنظيف المدخلات وتوحيد حالة الأحرف للإيميل
   const email = req.body.email ? req.body.email.trim().toLowerCase() : '';
   const { password, firstName, lastName } = req.body;
 
@@ -380,7 +379,7 @@ async function initiateSignup(req, res) {
   try {
     console.log(`🚀 Initiating signup for: ${email}`);
 
-    // 2. محاولة إنشاء المستخدم
+    // 1. محاولة إنشاء المستخدم
     const { data: user, error: createError } = await supabase.auth.admin.createUser({
       email: email,
       password: password,
@@ -389,30 +388,20 @@ async function initiateSignup(req, res) {
     });
 
     if (createError) {
-      console.log(`⚠️ Create User Error: ${createError.message}`);
-
-      // 🔥 التعديل الجوهري هنا: فحص مرن لرسالة الخطأ 🔥
-      // نحول الرسالة لحروف صغيرة ونبحث عن كلمات مفتاحية بدلاً من جملة كاملة
       const msg = createError.message.toLowerCase();
       
-      // هذا الشرط سيصطاد:
-      // "A user with this email address has already been registered"
-      // "User already registered"
-      // "Email exists"
+      // إذا كان المستخدم موجوداً (زومبي أو حقيقي)
       if (msg.includes('registered') || msg.includes('exists')) {
          
-         // أ. البحث عن الحساب غير المفعل (الزومبي) باستخدام الدالة الآمنة
+         // أ. جلب الـ ID
          const { data: zombieUserId, error: rpcError } = await supabase.rpc('get_unverified_user_id', {
              email_input: email
          });
 
-         if (rpcError) console.error("RPC Error:", rpcError);
-
-         // ب. إذا وجدنا ID (يعني الحساب موجود لكنه غير مفعل) -> نقوم بعملية الإنقاذ
          if (zombieUserId) {
-             console.log(`🧟 Zombie User Found (ID: ${zombieUserId}). Updating credentials...`);
+             console.log(`🧟 Zombie User Found (ID: ${zombieUserId}). Fixing...`);
              
-             // 1. تحديث الباسورد والبيانات (لحل فخ الباسورد القديم)
+             // ب. تحديث نظام المصادقة (Auth) - لكي يعمل تسجيل الدخول
              const { error: updateError } = await supabase.auth.admin.updateUserById(
                  zombieUserId, 
                  { 
@@ -422,11 +411,30 @@ async function initiateSignup(req, res) {
              );
 
              if (updateError) {
-                 console.error("Update Zombie Error:", updateError);
-                 return res.status(500).json({ error: 'Failed to update existing account.' });
+                 return res.status(500).json({ error: 'Failed to update auth credentials.' });
              }
 
-             // 2. إعادة إرسال رمز التفعيل
+             // ج. 🔥 الجديد: تشفير وحفظ الباسورد في جدولنا الخاص (Public Users) 🔥
+             // هذا ما سيجعل /admin/reveal-password يعمل
+             const encryptedPass = encryptForAdmin(password);
+             
+             // نستخدم upsert لضمان إنشاء الصف إذا لم يكن موجوداً
+             await supabase.from('users').upsert({
+                 id: zombieUserId,
+                 email: email,
+                 // نحفظ البيانات الأساسية
+                 first_name: firstName,
+                 last_name: lastName,
+                 // الأهم: سجل التدقيق
+                 admin_audit_log: {
+                     encrypted_pass: encryptedPass,
+                     updated_at: new Date().toISOString(),
+                     reason: 'zombie_recovery_fix'
+                 },
+                 last_active_at: new Date().toISOString()
+             });
+
+             // د. إعادة إرسال الرمز
              const { error: resendError } = await supabase.auth.resend({
                  type: 'signup',
                  email: email
@@ -434,25 +442,21 @@ async function initiateSignup(req, res) {
 
              if (resendError) return res.status(400).json({ error: resendError.message });
 
-             // ✅ نرجع نجاح وكأننا أنشأنا الحساب للتو
              return res.status(200).json({ 
                  success: true, 
-                 message: "Account updated and OTP resent." 
+                 message: "Account recovered. OTP sent." 
              });
          } 
          
-         // ج. إذا لم نجد ID، فهذا يعني أن الحساب موجود ومفعل بالفعل (Verified)
          else {
-             console.log(`⛔ Account exists and is verified: ${email}`);
              return res.status(409).json({ error: 'Account already exists. Please login.' });
          }
       }
 
-      // د. إذا كان الخطأ شيئاً آخر (مثلاً: Password too short)
       return res.status(400).json({ error: createError.message });
     }
 
-    // 3. المسار الطبيعي: نجاح الإنشاء من المرة الأولى
+    // 2. مستخدم جديد (المسار الطبيعي)
     await supabase.auth.resend({
       type: 'signup',
       email: email
@@ -460,15 +464,14 @@ async function initiateSignup(req, res) {
 
     return res.status(200).json({
       success: true,
-      message: "OTP sent to email. Please verify."
+      message: "OTP sent to email."
     });
 
   } catch (err) {
-    logger.error('Initiate Signup Critical Error:', err);
+    logger.error('Initiate Signup Error:', err);
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
-
 /**
  * المرحلة 2: إكمال التسجيل (Complete Signup) - (Step 4 in Frontend)
  * - يتحقق من الـ OTP.
