@@ -215,7 +215,7 @@ ${SYSTEM_INSTRUCTION}
 **👤 USER:** ${userName} (${userGender}) - ${userPath}
 **👤 USER DOSSIER:**
 ${profile.formattedBio || "No deep profile yet."}
-
+${languageEnforcer}
 **⏰ SYSTEM CONTEXT (Welcome, Streak, Time, etc.):** 
 ${systemContextCombined}
 **Last active at** : ${lastActiveTime} 
