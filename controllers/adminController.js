@@ -189,15 +189,6 @@ async function pushDiscoveryMission(req, res) {
 }
 
 // --- Helpers for Strings ---
-function escapeForPrompt(str) {
-  return str ? str.replace(/"/g, '\\"').replace(/\n/g, ' ') : '';
-}
-function safeSnippet(str, length) {
-  return str && str.length > length ? str.substring(0, length) + '...' : str;
-}
-async function extractTextFromResult(result) {
-  return result?.text || result?.content || result || '';
-}
 
 // --- 1. THE NIGHTLY BRAIN ---
 
