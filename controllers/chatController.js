@@ -819,35 +819,46 @@ if (gatekeeperResult.reward) {
       }
     }
 
-    
-// 1. معالجة أوامر الأجندة (حذف/إكمال)
+
+// 1. معالجة أوامر الأجندة
 let tasksChanged = false;
+let ignoredLessonId = null; // 👈 متغير جديد
 
 if (parsedResponse.agenda_actions && Array.isArray(parsedResponse.agenda_actions)) {
   for (const act of parsedResponse.agenda_actions) {
-    // حذف المهمة (User rejected it or AI thinks it's irrelevant)
+    
     if (act.action === 'delete' || act.action === 'remove') {
+       // أ. نجلب تفاصيل المهمة قبل حذفها لنعرف الدرس المرتبط بها
+       const { data: taskToDelete } = await supabase
+           .from('user_tasks')
+           .select('meta')
+           .eq('id', act.id)
+           .single();
+       
+       if (taskToDelete && taskToDelete.meta && taskToDelete.meta.relatedLessonId) {
+           ignoredLessonId = taskToDelete.meta.relatedLessonId; // عرفنا الدرس المكروه!
+       }
+
+       // ب. نحذف المهمة
        await supabase.from('user_tasks').delete().eq('id', act.id).eq('user_id', userId);
        tasksChanged = true;
-       logger.info(`🗑️ AI Deleted Task ${act.id} for User ${userId}`);
+       logger.info(`🗑️ AI Deleted Task ${act.id} (Lesson: ${ignoredLessonId})`);
     } 
-    // إكمال المهمة
+    
     else if (act.action === 'complete') {
        await supabase.from('user_tasks').update({ status: 'completed' }).eq('id', act.id);
        tasksChanged = true;
     }
-    // تم حذف منطق snooze و updateAiAgenda لأنه كان يحتوي على متغيرات غير معرفة وقوس زائد
   }
 }
 
-// 2. إذا تغيرت المهام (حذف أو إكمال)، نستدعي خوارزمية الجذب فوراً لتعويض النقص
+// 2. التحديث الفوري
 if (tasksChanged || (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'complete')) {
-    logger.info("🔄 Tasks changed by AI/User. Triggering Gravity Engine...");
+    logger.info("🔄 Tasks changed. Triggering Gravity Engine with Force Refresh...");
     
-    // إعادة توليد المهام
-    const newTasks = await refreshUserTasks(userId);
+    // نمرر force=true و ignoredLessonId
+    const newTasks = await refreshUserTasks(userId, true, ignoredLessonId);
     
-    // إرسال المهام الجديدة للفرونت أند عبر الـ widgets أو event_trigger
     parsedResponse.widgets = parsedResponse.widgets || [];
     parsedResponse.widgets.push({ 
         type: 'event_trigger', 
