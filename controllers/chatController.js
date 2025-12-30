@@ -836,15 +836,9 @@ if (parsedResponse.agenda_actions && Array.isArray(parsedResponse.agenda_actions
        await supabase.from('user_tasks').update({ status: 'completed' }).eq('id', act.id);
        tasksChanged = true;
     }
-    // تأجيل
-    else if (act.action === 'snooze') {
-            const until = act.until ? new Date(act.until) : new Date(Date.now() + 86400000);
-            currentAgenda[idx].trigger_date = until.toISOString();
-          }
-        }
-      }
-      if (agendaUpdated) await updateAiAgenda(userId, currentAgenda);
-    }
+    // تم حذف منطق snooze و updateAiAgenda لأنه كان يحتوي على متغيرات غير معرفة وقوس زائد
+  }
+}
 
 // 2. إذا تغيرت المهام (حذف أو إكمال)، نستدعي خوارزمية الجذب فوراً لتعويض النقص
 if (tasksChanged || (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'complete')) {
