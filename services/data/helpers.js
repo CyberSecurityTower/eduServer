@@ -693,52 +693,56 @@ async function updateAiAgenda(userId, newAgenda) {
  * 🔥 دالة التحديث الشامل للمهام (God Mode)
  * تقوم بحذف المهام المعلقة القديمة واستبدالها بخطة الجاذبية الجديدة
  */
+
 async function refreshUserTasks(userId) {
   try {
-    logger.info(`🔄 Refreshing tasks for user: ${userId}...`);
-
-    // 1. جلب البروفايل لمعرفة المسار (Path ID)
+    // 1. جلب البروفايل
     const profile = await getProfile(userId);
-    const pathId = profile.selectedPathId || 'UAlger3_L1_ITCF'; // القيمة الافتراضية
+    const pathId = profile.selectedPathId || 'UAlger3_L1_ITCF';
 
-    // 2. حذف المهام القديمة المعلقة
+    // 2. تنظيف المهام القديمة جداً (Garbage Collection)
+    // نحذف أي مهمة معلقة مر عليها أكثر من 24 ساعة لضمان تجديد الدماء
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     await supabase
       .from('user_tasks')
       .delete()
       .eq('user_id', userId)
       .eq('status', 'pending')
-      .neq('type', 'user_created');
+      .lt('created_at', yesterday); // حذف المهام البائتة
 
-    // 3. تشغيل محرك الجاذبية مع المسار الصحيح
-    const plan = await runPlannerManager(userId, pathId); // 👈 تمرير pathId هنا
-    const newTasks = plan.tasks || [];
+    // 3. التحقق من عدد المهام الحالية
+    const { data: currentTasks } = await supabase
+        .from('user_tasks')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('status', 'pending');
 
-    if (newTasks.length === 0) return [];
+    // إذا كان لدى المستخدم مهام كافية (مثلاً 3)، لا داعي لتوليد المزيد إلا إذا طلب
+    if (currentTasks && currentTasks.length >= 3) {
+        return currentTasks; 
+    }
 
-    // 4. إدخال المهام
-    const tasksToInsert = newTasks.map(t => ({
+    // 4. تشغيل محرك الجاذبية الجديد
+    const plan = await runPlannerManager(userId, pathId);
+    const newGeneratedTasks = plan.tasks || [];
+
+    if (newGeneratedTasks.length === 0) return [];
+
+    // 5. إدخال المهام الجديدة (مع تجنب التكرار)
+    // (يمكنك إضافة تحقق هنا لعدم إدخال مهمة موجودة بالفعل)
+    
+    const tasksToInsert = newGeneratedTasks.map(t => ({
       user_id: userId,
       title: t.title,
       type: t.type || 'study',
       priority: 'high',
       status: 'pending',
-      meta: { 
-        relatedLessonId: t.meta.relatedLessonId,
-        relatedSubjectId: t.meta.relatedSubjectId, // تأكدنا من الاسم هنا
-        lessonTitle: t.meta.relatedLessonTitle, 
-        score: t.score,
-        isExamPrep: t.meta.isExamPrep, // 👈 مهم جداً للفرونت أند
-        source: 'gravity_engine'
-      },
+      meta: t.meta,
       created_at: new Date().toISOString()
     }));
 
     const { data } = await supabase.from('user_tasks').insert(tasksToInsert).select();
     
-    // تفريغ الكاش
-    await cacheDel('progress', userId); 
-    
-    logger.success(`✅ Tasks refreshed for ${userId} (Top: ${newTasks[0]?.title})`);
     return data || [];
 
   } catch (err) {
