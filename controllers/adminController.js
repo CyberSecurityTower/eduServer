@@ -21,7 +21,7 @@ const { clearSystemFeatureCache } = require('../services/data/helpers'); // اس
 const liveMonitor = require('../services/monitoring/realtimeStats');
 const { runStreakRescueMission } = require('../services/jobs/streakRescue');
 const { clearCurriculumCache } = require('../services/ai/curriculumContext');
-const { ensureJsonOrRepair } = require('../utils');
+const { ensureJsonOrRepair, escapeForPrompt, safeSnippet, extractTextFromResult } = require('../utils');
 const db = getFirestoreInstance();
 
 let generateWithFailoverRef; 
