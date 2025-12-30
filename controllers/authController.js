@@ -357,11 +357,14 @@ async function checkEmailExists(req, res) {
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
+
 /**
- * المرحلة 1: بدء التسجيل (Initiate Signup) - النسخة النهائية (Password Trap Fix)
+ * المرحلة 1: بدء التسجيل (Initiate Signup) - النسخة المحسنة (Robust)
  */
 async function initiateSignup(req, res) {
-  const { email, password, firstName, lastName } = req.body;
+  // 1. تنظيف المدخلات (مهم جداً)
+  const email = req.body.email ? req.body.email.trim().toLowerCase() : '';
+  const { password, firstName, lastName } = req.body;
 
   if (!email || !password) {
     return res.status(400).json({ error: 'Email and Password are required.' });
@@ -374,7 +377,9 @@ async function initiateSignup(req, res) {
   };
 
   try {
-    // 1. محاولة إنشاء المستخدم الجديد
+    console.log(`🚀 Initiating signup for: ${email}`);
+
+    // 2. محاولة إنشاء المستخدم
     const { data: user, error: createError } = await supabase.auth.admin.createUser({
       email: email,
       password: password,
@@ -383,32 +388,38 @@ async function initiateSignup(req, res) {
     });
 
     if (createError) {
-      // 🛑 إذا كان المستخدم موجوداً مسبقاً
-      if (createError.message.includes('already has been registered')) {
+      console.log(`⚠️ Create User Error: ${createError.message}`);
+
+      // فحص مرن لرسالة الخطأ (يشمل كل الصيغ المحتملة)
+      const msg = createError.message.toLowerCase();
+      if (msg.includes('registered') || msg.includes('exists')) {
          
-         // أ. نحاول الحصول على ID المستخدم "الشبح" (غير المفعل)
+         // أ. البحث عن الحساب غير المفعل (الزومبي)
          const { data: zombieUserId, error: rpcError } = await supabase.rpc('get_unverified_user_id', {
              email_input: email
          });
 
-         // ب. إذا وجدنا ID، فهذا يعني أنه حساب غير مفعل -> يجب تحديث بياناته!
+         if (rpcError) console.error("RPC Error:", rpcError);
+
+         // ب. إذا وجدنا ID، نقوم بالتحديث
          if (zombieUserId) {
-             console.log(`🧟 Zombie User Found: ${zombieUserId}. Updating credentials...`);
+             console.log(`🧟 Zombie User Found (ID: ${zombieUserId}). Updating...`);
              
-             // 1. تحديث كلمة المرور والبيانات الجديدة (هذا يحل فخ الباسورد)
+             // تحديث الباسورد والبيانات
              const { error: updateError } = await supabase.auth.admin.updateUserById(
                  zombieUserId, 
                  { 
-                     password: password, // تعيين كلمة المرور الجديدة
-                     user_metadata: userMetadata // تعيين الاسم الجديد
+                     password: password, 
+                     user_metadata: userMetadata 
                  }
              );
 
              if (updateError) {
+                 console.error("Update Zombie Error:", updateError);
                  return res.status(500).json({ error: 'Failed to update existing account.' });
              }
 
-             // 2. إعادة إرسال رمز التفعيل
+             // إعادة إرسال الرمز
              const { error: resendError } = await supabase.auth.resend({
                  type: 'signup',
                  email: email
@@ -422,16 +433,18 @@ async function initiateSignup(req, res) {
              });
          } 
          
-         // ج. إذا لم نجد ID، فهذا يعني أن الحساب موجود ومفعل بالفعل
+         // ج. إذا لم نجد ID، فالحساب مفعل وموجود حقاً
          else {
+             console.log(`⛔ Account exists and is verified: ${email}`);
              return res.status(409).json({ error: 'Account already exists. Please login.' });
          }
       }
 
+      // خطأ آخر غير التكرار
       return res.status(400).json({ error: createError.message });
     }
 
-    // 2. إذا تم الإنشاء بنجاح (مستخدم جديد)، نرسل الإيميل
+    // 3. نجاح الإنشاء من المرة الأولى
     await supabase.auth.resend({
       type: 'signup',
       email: email
@@ -443,7 +456,7 @@ async function initiateSignup(req, res) {
     });
 
   } catch (err) {
-    logger.error('Initiate Signup Error:', err);
+    logger.error('Initiate Signup Critical Error:', err);
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
