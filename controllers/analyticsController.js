@@ -3,7 +3,7 @@
 'use strict';
 
 const { getFirestoreInstance, admin } = require('../services/data/firestore');
-const { getProgress, sendUserNotification, processSessionAnalytics } = require('../services/data/helpers');
+const { getProgress, sendUserNotification, processSessionAnalytics, getCachedEducationalPathById  } = require('../services/data/helpers');
 const { runInterventionManager } = require('../services/ai/managers/notificationManager');
 const logger = require('../utils/logger');
 const supabase = require('../services/data/supabase');
@@ -11,6 +11,62 @@ const supabase = require('../services/data/supabase');
 
 const procrastinationTimers = new Map();
 
+async function getSubjectsProgress(req, res) {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+  try {
+    // 1. جلب البروفايل لمعرفة المسار
+    const { data: user } = await supabase.from('users').select('selected_path_id').eq('id', userId).single();
+    const pathId = user?.selected_path_id || 'UAlger3_L1_ITCF';
+
+    // 2. جلب هيكل المسار (المواد والدروس) من الكاش/الداتابايز
+    const pathData = await getCachedEducationalPathById(pathId);
+    if (!pathData) return res.json({ subjects: [] });
+
+    // 3. جلب تقدم الطالب الذري (كل الدروس التي لمسها)
+    const { data: atomicProgress } = await supabase
+      .from('atomic_user_mastery')
+      .select('lesson_id, current_mastery')
+      .eq('user_id', userId);
+
+    // تحويل التقدم إلى خريطة لسهولة البحث: { 'lesson_1': 90, 'lesson_2': 50 }
+    const masteryMap = {};
+    if (atomicProgress) {
+        atomicProgress.forEach(row => masteryMap[row.lesson_id] = row.current_mastery);
+    }
+
+    // 4. الحساب التجميعي لكل مادة
+    const subjectsStats = pathData.subjects.map(subject => {
+        const totalLessons = subject.lessons?.length || 0;
+        let sumMastery = 0;
+        let completedLessons = 0;
+
+        subject.lessons?.forEach(lesson => {
+            const score = masteryMap[lesson.id] || 0;
+            sumMastery += score;
+            if (score >= 95) completedLessons++;
+        });
+
+        // المعادلة: مجموع نسب الدروس / عدد الدروس
+        const subjectMastery = totalLessons > 0 ? Math.round(sumMastery / totalLessons) : 0;
+
+        return {
+            id: subject.id,
+            title: subject.title,
+            mastery: subjectMastery, // 👈 هذا الرقم الذي تريده للـ Progress Bar
+            progress: `${completedLessons}/${totalLessons} دروس`,
+            isCompleted: subjectMastery >= 95
+        };
+    });
+
+    res.json({ subjects: subjectsStats });
+
+  } catch (err) {
+    logger.error('Subject Progress Error:', err.message);
+    res.status(500).json({ error: 'Calc Error' });
+  }
+}
 function scheduleTriggerLiveCoach(userId, eventName, eventData) {
   const key = `${userId}:${eventName}`;
   const DELAY_MS = 1000;
@@ -373,6 +429,7 @@ module.exports = {
   heartbeat,
   ingestTelemetryBatch,
   trackNotificationEvent ,
-  trackCampaignEvent
+  trackCampaignEvent,
+  getSubjectsProgress 
    
 };
