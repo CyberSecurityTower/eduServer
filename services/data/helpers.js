@@ -732,6 +732,7 @@ async function refreshUserTasks(userId) {
     // (يمكنك إضافة تحقق هنا لعدم إدخال مهمة موجودة بالفعل)
     
   
+   // 5. إدخال المهام الجديدة
     const tasksToInsert = newGeneratedTasks.map(t => ({
       user_id: userId,
       title: t.title,
@@ -742,24 +743,29 @@ async function refreshUserTasks(userId) {
       created_at: new Date().toISOString()
     }));
 
-    // 🔥 التعديل هنا: أضفنا ('*') لضمان إرجاع كل البيانات وليس الـ ID فقط
-    const { data } = await supabase
+    // 🔥 التعديل هنا: تأكد من وجود النجمة داخل select('*')
+    const { data, error } = await supabase
         .from('user_tasks')
         .insert(tasksToInsert)
-        .select('*'); 
+        .select('*'); // 👈 هذه النجمة هي السر! تعني "أرجع كل الأعمدة"
+
+    if (error) {
+        logger.error('Insert Error:', error.message);
+        return [];
+    }
     
     // تفريغ الكاش
     await cacheDel('progress', userId); 
     
     logger.success(`✅ Tasks refreshed for ${userId} (Top: ${newGeneratedTasks[0]?.title})`);
-    return data || [];
+    
+    return data || []; // الآن data ستحتوي على الكائن كاملاً
 
   } catch (err) {
     logger.error('refreshUserTasks Failed:', err.message);
     return [];
   }
 }
-
 /**
  * 🌉 جسر الذاكرة: يجلب سياق آخر محادثة للمستخدم
  * لربط الجلسات ببعضها إذا كانت قريبة زمنياً
