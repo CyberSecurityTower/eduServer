@@ -96,7 +96,31 @@ When generating a widget of type "quiz", you MUST follow these quantity rules ba
           3. **Do NOT** forget this JSON field when a milestone is reached.
           `;
       }
+// 🌍 كشف لغة المادة (Language Detector)
+      // نفحص هل الـ ID يحتوي على 'eng' أو 'fr' أو اسم المادة
+      const isEnglishSubject = (targetLessonId && targetLessonId.includes('_eng_')) || 
+                               (subjectName && /english|انجليزية/i.test(subjectName));
+      
+      const isFrenchSubject = (targetLessonId && targetLessonId.includes('_fr_')) || 
+                              (subjectName && /french|فرنسية/i.test(subjectName));
 
+      let languageEnforcer = "";
+
+      if (isEnglishSubject) {
+          languageEnforcer = `
+          🚨 **LANGUAGE OVERRIDE (CRITICAL):**
+          - Current Subject is **ENGLISH**.
+          - You MUST reply primarily in **ENGLISH**.
+          - Use Algerian Derja ONLY for small jokes or clarifying difficult terms in brackets ().
+          - ❌ DO NOT write the whole response in Arabic.
+          `;
+      } else if (isFrenchSubject) {
+          languageEnforcer = `
+          🚨 **LANGUAGE OVERRIDE (CRITICAL):**
+          - Current Subject is **FRENCH**.
+          - You MUST reply primarily in **FRENCH**.
+          `;
+      }
       // 2. بروتوكول الجدول الزمني
       const scheduleProtocol = `
 🏫 **UNIVERSITY SCHEDULE PROTOCOL:**
