@@ -699,76 +699,88 @@ async function refreshUserTasks(userId, force = false, excludeLessonId = null) {
     const profile = await getProfile(userId);
     const pathId = profile.selectedPathId || 'UAlger3_L1_ITCF';
 
-
-    // 2. تنظيف المهام القديمة جداً (Garbage Collection)
-    // نحذف أي مهمة معلقة مر عليها أكثر من 24 ساعة لضمان تجديد الدماء
+    // 1. تنظيف المهام القديمة جداً (Garbage Collection)
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     await supabase
       .from('user_tasks')
       .delete()
       .eq('user_id', userId)
       .eq('status', 'pending')
-      .lt('created_at', yesterday); // حذف المهام البائتة
+      .lt('created_at', yesterday);
 
-    // 3. التحقق من عدد المهام الحالية
-    const { data: currentTasks } = await supabase
+    // 2. جلب المهام الحالية المعلقة (لمعرفة ماذا لدينا)
+    const { data: currentPendingTasks } = await supabase
         .from('user_tasks')
-        .select('id')
+        .select('*')
         .eq('user_id', userId)
         .eq('status', 'pending');
 
-    if (!force) {
-        const { data: currentTasks } = await supabase
+    const currentCount = currentPendingTasks ? currentPendingTasks.length : 0;
+
+    // إذا لم يكن هناك "إجبار" (Force) والعدد كافٍ، نكتفي بالموجود
+    if (!force && currentCount >= 3) {
+        return currentPendingTasks; 
+    }
+
+    // 3. تشغيل محرك الجاذبية
+    // نطلب منه اقتراح مهام (سيقترح الأهم بناءً على البيانات)
+    const plan = await runPlannerManager(userId, pathId, excludeLessonId);
+    const rawSuggestions = plan.tasks || [];
+
+    if (rawSuggestions.length === 0) return currentPendingTasks || [];
+
+    // =========================================================
+    // 🔥 الفلترة الذكية (Smart Deduplication) - هذا هو الحل
+    // =========================================================
+    
+    // أ. نجمع معرفات الدروس الموجودة حالياً في قائمة المستخدم
+    const existingLessonIds = new Set(
+        (currentPendingTasks || []).map(t => t.meta?.relatedLessonId).filter(Boolean)
+    );
+
+    // ب. نفلتر الاقتراحات الجديدة: نقبل فقط ما هو غير موجود
+    const validNewTasks = rawSuggestions.filter(t => {
+        const lessonId = t.meta?.relatedLessonId;
+        // الشرط: الدرس غير موجود حالياً + الدرس ليس هو المستبعد (زيادة تأكيد)
+        return lessonId && !existingLessonIds.has(lessonId) && lessonId !== excludeLessonId;
+    });
+
+    // ج. نحدد كم مهمة نحتاج لنصل إلى 3 (أو 5 حسب رغبتك)
+    // إذا كنا في وضع Force (حذف)، نريد تعويض النقص فقط
+    const targetTotal = 3; 
+    const slotsNeeded = Math.max(0, targetTotal - currentCount);
+    
+    // نأخذ فقط العدد المحتاج من المهام الجديدة
+    const tasksToInsertRaw = validNewTasks.slice(0, slotsNeeded);
+
+    // 4. الإدخال في قاعدة البيانات
+    if (tasksToInsertRaw.length > 0) {
+        const tasksPayload = tasksToInsertRaw.map(t => ({
+            user_id: userId,
+            title: t.title,
+            type: t.type || 'study',
+            priority: 'high',
+            status: 'pending',
+            meta: t.meta,
+            created_at: new Date().toISOString()
+        }));
+
+        const { data: insertedTasks } = await supabase
             .from('user_tasks')
-            .select('id') // يكفي الـ ID للعد
-            .eq('user_id', userId)
-            .eq('status', 'pending');
-
-        if (currentTasks && currentTasks.length >= 3) {
-            // في هذه الحالة نعيد المهام الحالية كاملة
-            const { data: fullTasks } = await supabase.from('user_tasks').select('*').eq('user_id', userId).eq('status', 'pending');
-            return fullTasks;
-        }
+            .insert(tasksPayload)
+            .select('*');
+            
+        // ندمج القديم مع الجديد لنرجعه للفرونت أند
+        const finalTasks = [...(currentPendingTasks || []), ...(insertedTasks || [])];
+        
+        await cacheDel('progress', userId);
+        logger.success(`✅ Added ${insertedTasks.length} new tasks. Total: ${finalTasks.length}`);
+        
+        return finalTasks;
     }
 
-    // 4. تشغيل محرك الجاذبية (نمرر الدرس المستبعد)
-    const plan = await runPlannerManager(userId, pathId, excludeLessonId); // 👈 تمرير
-    const newGeneratedTasks = plan.tasks || [];
-
-    if (newGeneratedTasks.length === 0) return [];
-
-    // 5. إدخال المهام الجديدة (مع تجنب التكرار)
-    // (يمكنك إضافة تحقق هنا لعدم إدخال مهمة موجودة بالفعل)
-    
-  
-   // 5. إدخال المهام الجديدة
-    const tasksToInsert = newGeneratedTasks.map(t => ({
-      user_id: userId,
-      title: t.title,
-      type: t.type || 'study',
-      priority: 'high',
-      status: 'pending',
-      meta: t.meta,
-      created_at: new Date().toISOString()
-    }));
-
-    // 🔥 التعديل هنا: تأكد من وجود النجمة داخل select('*')
-    const { data, error } = await supabase
-        .from('user_tasks')
-        .insert(tasksToInsert)
-        .select('*'); // 👈 هذه النجمة هي السر! تعني "أرجع كل الأعمدة"
-
-    if (error) {
-        logger.error('Insert Error:', error.message);
-        return [];
-    }
-    
-    // تفريغ الكاش
-    await cacheDel('progress', userId); 
-    
-    logger.success(`✅ Tasks refreshed for ${userId} (Top: ${newGeneratedTasks[0]?.title})`);
-    
-    return data || []; // الآن data ستحتوي على الكائن كاملاً
+    // إذا لم نضف شيئاً، نرجع الموجود
+    return currentPendingTasks || [];
 
   } catch (err) {
     logger.error('refreshUserTasks Failed:', err.message);
