@@ -40,6 +40,8 @@ router.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date
 // 1. Authentication Routes (المصادقة)
 // ==========================================
 
+// ✅ المسار الجديد للتحقق من الإيميل (Step 1)
+router.post('/auth/check-email', authController.checkEmailExists);
 // تسجيل الدخول والتسجيل
 router.post('/auth/initiate-signup', authController.initiateSignup);
 // ✅ إضافة المسار المفقود لدعم التطبيق القديم (يوجه لنفس دالة initiateSignup)
