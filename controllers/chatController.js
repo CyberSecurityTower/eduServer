@@ -313,7 +313,6 @@ if (currentContext.lessonId) {
       const sortedTasks = userTasksRes.data.sort((a, b) => (b.meta?.score || 0) - (a.meta?.score || 0));
       const topTask = sortedTasks[0];
       const topScore = topTask.meta?.score || 0;
-      
       const isExamEmergency = topScore > 4000 && topTask.meta?.isExamPrep === true;
       const timingInfo = topTask.meta?.examTiming || "Unknown time";
 
@@ -329,10 +328,11 @@ if (currentContext.lessonId) {
         const score = t.meta?.score || 0;
         const examBadge = score > 4000 ? "🚨 EXAM TOMORROW" :
           score > 1000 ? "⚠️ EXAM SOON" : "";
-        return `- ${t.title} ${examBadge} (Priority: ${score})`;
+        
+        // الصيغة الجديدة: [ID: xyz] Title (Priority)
+        return `- [ID: ${t.id}] ${t.title} ${examBadge} (Priority: ${score})`;
       }).join('\n');
     }
-
     // ==========================================
     // 🌟 7. IMPROVEMENTS LOGIC (The Fix: Logic applied AFTER Data is ready)
     // ==========================================
