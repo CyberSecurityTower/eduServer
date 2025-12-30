@@ -358,11 +358,12 @@ async function checkEmailExists(req, res) {
   }
 }
 
-/**
- * المرحلة 1: بدء التسجيل (Initiate Signup) - النسخة المحسنة (Robust)
- */
+
+// * المرحلة 1: بدء التسجيل (Initiate Signup) - النسخة المحسنة (Robust)
+// *  النسخة المرنة (Flexible Error Handling)
+
 async function initiateSignup(req, res) {
-  // 1. تنظيف المدخلات (مهم جداً)
+  // 1. تنظيف المدخلات وتوحيد حالة الأحرف للإيميل
   const email = req.body.email ? req.body.email.trim().toLowerCase() : '';
   const { password, firstName, lastName } = req.body;
 
@@ -390,22 +391,28 @@ async function initiateSignup(req, res) {
     if (createError) {
       console.log(`⚠️ Create User Error: ${createError.message}`);
 
-      // فحص مرن لرسالة الخطأ (يشمل كل الصيغ المحتملة)
+      // 🔥 التعديل الجوهري هنا: فحص مرن لرسالة الخطأ 🔥
+      // نحول الرسالة لحروف صغيرة ونبحث عن كلمات مفتاحية بدلاً من جملة كاملة
       const msg = createError.message.toLowerCase();
+      
+      // هذا الشرط سيصطاد:
+      // "A user with this email address has already been registered"
+      // "User already registered"
+      // "Email exists"
       if (msg.includes('registered') || msg.includes('exists')) {
          
-         // أ. البحث عن الحساب غير المفعل (الزومبي)
+         // أ. البحث عن الحساب غير المفعل (الزومبي) باستخدام الدالة الآمنة
          const { data: zombieUserId, error: rpcError } = await supabase.rpc('get_unverified_user_id', {
              email_input: email
          });
 
          if (rpcError) console.error("RPC Error:", rpcError);
 
-         // ب. إذا وجدنا ID، نقوم بالتحديث
+         // ب. إذا وجدنا ID (يعني الحساب موجود لكنه غير مفعل) -> نقوم بعملية الإنقاذ
          if (zombieUserId) {
-             console.log(`🧟 Zombie User Found (ID: ${zombieUserId}). Updating...`);
+             console.log(`🧟 Zombie User Found (ID: ${zombieUserId}). Updating credentials...`);
              
-             // تحديث الباسورد والبيانات
+             // 1. تحديث الباسورد والبيانات (لحل فخ الباسورد القديم)
              const { error: updateError } = await supabase.auth.admin.updateUserById(
                  zombieUserId, 
                  { 
@@ -419,7 +426,7 @@ async function initiateSignup(req, res) {
                  return res.status(500).json({ error: 'Failed to update existing account.' });
              }
 
-             // إعادة إرسال الرمز
+             // 2. إعادة إرسال رمز التفعيل
              const { error: resendError } = await supabase.auth.resend({
                  type: 'signup',
                  email: email
@@ -427,24 +434,25 @@ async function initiateSignup(req, res) {
 
              if (resendError) return res.status(400).json({ error: resendError.message });
 
+             // ✅ نرجع نجاح وكأننا أنشأنا الحساب للتو
              return res.status(200).json({ 
                  success: true, 
                  message: "Account updated and OTP resent." 
              });
          } 
          
-         // ج. إذا لم نجد ID، فالحساب مفعل وموجود حقاً
+         // ج. إذا لم نجد ID، فهذا يعني أن الحساب موجود ومفعل بالفعل (Verified)
          else {
              console.log(`⛔ Account exists and is verified: ${email}`);
              return res.status(409).json({ error: 'Account already exists. Please login.' });
          }
       }
 
-      // خطأ آخر غير التكرار
+      // د. إذا كان الخطأ شيئاً آخر (مثلاً: Password too short)
       return res.status(400).json({ error: createError.message });
     }
 
-    // 3. نجاح الإنشاء من المرة الأولى
+    // 3. المسار الطبيعي: نجاح الإنشاء من المرة الأولى
     await supabase.auth.resend({
       type: 'signup',
       email: email
@@ -460,6 +468,7 @@ async function initiateSignup(req, res) {
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
+
 /**
  * المرحلة 2: إكمال التسجيل (Complete Signup) - (Step 4 in Frontend)
  * - يتحقق من الـ OTP.
