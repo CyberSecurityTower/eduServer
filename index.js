@@ -30,8 +30,8 @@ const { initReviewManager } = require('./services/ai/managers/reviewManager');
 const { initTodoManager } = require('./services/ai/managers/todoManager');
 const { initTrafficManager } = require('./services/ai/managers/trafficManager');
 
-// ✅ استيراد منقذ الستريك
-const { initStreakRescue, runStreakRescueMission } = require('./services/jobs/streakRescue');
+//    استيراد منقذ الستريك (تم ايقافه مؤقتا)
+//const { initStreakRescue, runStreakRescueMission } = require('./services/jobs/streakRescue');
 
 async function boot() {
   try {
@@ -60,7 +60,7 @@ async function boot() {
     initTrafficManager({ generateWithFailover });
     
     // ✅ تهيئة منقذ الستريك
-    initStreakRescue({ generateWithFailover });
+    //initStreakRescue({ generateWithFailover });
 
     // Initialize Controllers
     const memoryManager = require('./services/ai/managers/memoryManager');
@@ -78,13 +78,13 @@ async function boot() {
     setInterval(() => {
       checkScheduledActions().catch(e => logger.error('Ticker failed:', e));
     }, 60 * 1000);
-
+/*
     // 🔥 Cron: فحص الستريك كل ساعة
     setInterval(() => {
       logger.log('⏰ Hourly Cron: Checking for streaks at risk...');
       runStreakRescueMission().catch(e => logger.error('Streak Cron failed:', e));
     }, 60 * 60 * 1000);
-
+*/
     const server = app.listen(CONFIG.PORT, () => {
       logger.success(`EduAI Brain V2.1 (Production) running on port ${CONFIG.PORT}`);
     });
