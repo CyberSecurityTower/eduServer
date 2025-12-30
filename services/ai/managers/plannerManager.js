@@ -12,7 +12,7 @@ const { getAtomicProgress } = require('../../../services/atomic/atomicManager');
  * 2. تفحص كل "ذرة" (درس) لتقرر: هل تحتاج صيانة (Review) أم بناء (New)؟
  * 3. ترتب المهام حسب الأولوية القصوى (الامتحانات القريبة + الفجوات المعرفية).
  */
-async function runPlannerManager(userId, pathId) {
+async function runPlannerManager(userId, pathId, excludedLessonId = null) {
   try {
     const safePathId = pathId || 'UAlger3_L1_ITCF';
     logger.info(`🪐 Gravity V6.0: Calculating atomic trajectory for User=${userId}...`);
@@ -78,10 +78,14 @@ async function runPlannerManager(userId, pathId) {
     // ============================================================
     let candidates = [];
 
-    allLessons.forEach(lesson => {
+   allLessons.forEach(lesson => {
         // 1. تجاهل المواد الميتة
         if (deadSubjectIds.has(lesson.subject_id)) return;
 
+        // 🔥 التعديل الجديد: تجاهل الدرس المحذوف يدوياً
+        if (excludedLessonId && lesson.id === excludedLessonId) {
+            return; 
+        }
         const atom = atomicMap[lesson.id];
         const subject = subjects.find(s => s.id === lesson.subject_id);
         const coef = subject ? (subject.coefficient || 1) : 1;
