@@ -295,61 +295,79 @@ async function getAtomicProgress(userId) {
 /**
  * 🧠 Cortex-X Engine: Advanced FSRS Logic
  * يحسب المعاملات العصبية بناءً على الأداء والوقت والصعوبة.
- * (أقوى من الوجود! 😉)
  */
 function calculateNeuroParams(oldData, newScore) {
-    // 1. الثوابت (FSRS Weights Standard)
+    // 1. الثوابت
     const W = [0.4, 0.6, 2.4, 5.8, 4.93, 0.94, 0.86, 0.01, 1.49, 0.14, 0.94, 2.18, 0.05, 0.34, 1.26, 0.29, 2.61]; 
     
-    // 2. استخراج الحالة السابقة
-    let s = oldData?.stability || 0; 
-    let d = oldData?.difficulty || 5; 
-    let r = oldData?.reps || 0;
+    // 2. استخراج الحالة السابقة مع قيم افتراضية آمنة
+    let s = Number(oldData?.stability) || 0; 
+    let d = Number(oldData?.difficulty) || 5; 
+    let r = Number(oldData?.reps) || 0;
     
-    // 3. تقييم الأداء (Rating) من 1 إلى 4
+    // 3. تقييم الأداء
     let rating = 1;
-    if (newScore >= 95) rating = 4;      // Easy
-    else if (newScore >= 80) rating = 3; // Good
-    else if (newScore >= 60) rating = 2; // Hard
-    else rating = 1;                     // Fail
+    if (newScore >= 95) rating = 4;
+    else if (newScore >= 80) rating = 3;
+    else if (newScore >= 60) rating = 2;
+    else rating = 1;
 
-    // 4. حساب الفاصل الزمني الفعلي
+    // 4. حساب الوقت المنقضي
     const now = new Date();
-    const lastReview = oldData?.last_review ? new Date(oldData.last_review) : now;
+    // حماية ضد التواريخ الفاسدة في البيانات القديمة
+    let lastReview = now;
+    if (oldData?.last_review && !isNaN(new Date(oldData.last_review).getTime())) {
+        lastReview = new Date(oldData.last_review);
+    }
+    
     const daysElapsed = Math.max(0, (now - lastReview) / (1000 * 60 * 60 * 24));
 
     // ====================================================
-    // 🚀 المحرك الرياضي (The Math Magic)
+    // 🚀 المحرك الرياضي
     // ====================================================
 
     if (r === 0) {
-        // 🔥 اللقاء الأول
+        // اللقاء الأول
         d = 5 - (rating - 3); 
         s = (rating === 1) ? 0.5 : (rating === 2 ? 1 : (rating === 3 ? 3 : 7)); 
     } else {
-        // 🔄 المراجعات اللاحقة
-        
-        // أ. تحديث الصعوبة
+        // المراجعات اللاحقة
         let nextD = d - 0.8 + (0.08 * (4 - rating) * 0.05) + (rating === 1 ? 2 : 0);
         d = Math.min(10, Math.max(1, nextD)); 
 
         if (rating > 1) {
-            // ✅ نجاح: زيادة الاستقرار (مع مكافأة التأخير)
-            const nextS = s * (1 + Math.exp(W[8]) * (11 - d) * Math.pow(s, -W[9]) * (Math.exp((1 - rating) * W[10]) - 1) + (daysElapsed / s) * 0.5); 
+            // حماية من القسمة على صفر أو الأسس السالبة مع الصفر
+            // إذا كان الاستقرار القديم صفراً (خطأ بيانات)، نرفعه لـ 0.1
+            const safeS = Math.max(0.1, s);
+            
+            const nextS = safeS * (1 + Math.exp(W[8]) * (11 - d) * Math.pow(safeS, -W[9]) * (Math.exp((1 - rating) * W[10]) - 1) + (daysElapsed / safeS) * 0.5); 
             s = Math.min(365, nextS); 
         } else {
-            // ❌ فشل: انهيار الاستقرار (النسيان)
-            const nextS = 0.5 * Math.pow(d, -0.5) * Math.pow(s, 0.1); 
+            const safeS = Math.max(0.1, s);
+            const nextS = 0.5 * Math.pow(d, -0.5) * Math.pow(safeS, 0.1); 
             s = Math.max(0.5, nextS);
         }
     }
 
-    // 5. تحديد موعد المراجعة القادم (مع تشويش بسيط لمنع التكدس)
+    // 5. حساب التاريخ القادم (مع شبكة أمان)
     const nextDate = new Date();
-    const fuzz = (Math.random() * 0.1) - 0.05; // +/- 5%
-    const finalDays = Math.max(0.5, s * (1 + fuzz));
+    const fuzz = (Math.random() * 0.1) - 0.05;
+    // التأكد أن s رقم صالح وليس Infinity أو NaN
+    if (!isFinite(s) || isNaN(s)) s = 1; 
     
+    const finalDays = Math.max(0.5, s * (1 + fuzz));
     nextDate.setDate(nextDate.getDate() + finalDays);
+
+    // 🛡️ الحماية النهائية: إذا كان التاريخ فاسداً، نضع موعداً افتراضياً (غداً)
+    let finalNextReviewISO;
+    if (isNaN(nextDate.getTime())) {
+        const fallbackDate = new Date();
+        fallbackDate.setDate(fallbackDate.getDate() + 1);
+        finalNextReviewISO = fallbackDate.toISOString();
+        console.warn("⚠️ Neuro-Math Warning: Invalid date generated, using fallback.");
+    } else {
+        finalNextReviewISO = nextDate.toISOString();
+    }
 
     return {
         score: newScore,
@@ -357,8 +375,7 @@ function calculateNeuroParams(oldData, newScore) {
         difficulty: parseFloat(d.toFixed(2)),
         reps: r + 1,
         last_review: now.toISOString(),
-        next_review: nextDate.toISOString()
+        next_review: finalNextReviewISO
     };
 }
-
 module.exports = { getAtomicContext, updateAtomicProgress, getAtomicProgress };
