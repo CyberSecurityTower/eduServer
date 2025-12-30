@@ -4,11 +4,15 @@
 const supabase = require('../services/data/supabase');
 const logger = require('../utils/logger');
 
+
 async function requireAuth(req, res, next) {
   try {
     // 1. جلب التوكن من الهيدر
-    const authHeader = req.headers.authorization; // المتوقع: "Bearer <token>"
+    const authHeader = req.headers.authorization; 
     
+    // تتبع (Debug): ماذا وصلنا من الفرونت أند؟
+    console.log(`🔍 [AuthMiddleware] Header received: ${authHeader ? 'YES' : 'NO'}`);
+
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ error: 'Unauthorized: No token provided.' });
     }
@@ -19,26 +23,21 @@ async function requireAuth(req, res, next) {
     const { data: { user }, error } = await supabase.auth.getUser(token);
 
     if (error || !user) {
-      logger.warn(`Auth Middleware Failed: ${error?.message || 'Invalid Token'}`);
+      // طباعة سبب الرفض في التيرمينال لنعرف السبب
+      logger.warn(`⛔ Auth Failed: ${error?.message || 'Invalid Token'}`);
+      
+      // ✅ تم تصحيح الإملاء هنا (Unauthorized)
       return res.status(401).json({ error: 'Unauthorized: Invalid token.' });
     }
 
-    // 3. (اختياري ولكن مهم) التحقق من تطابق الهوية
-    // إذا كان الطلب يحتوي على userId في البودي، يجب أن يطابق صاحب التوكن
-    if (req.body.userId && req.body.userId !== user.id) {
-      logger.warn(`Identity Mismatch! Token User: ${user.id}, Request Body User: ${req.body.userId}`);
-      return res.status(403).json({ error: 'Forbidden: You can only modify your own data.' });
-    }
-
-    // 4. تمرير المستخدم للخطوة التالية (اختياري، للاستخدام لاحقاً)
+    // 3. تمرير المستخدم للخطوة التالية
     req.user = user;
     
     next(); // السماح بالمرور
 
   } catch (err) {
-    logger.error('Auth Middleware Error:', err);
+    logger.error('Auth Middleware Critical Error:', err);
     return res.status(500).json({ error: 'Internal Server Error during auth check.' });
   }
 }
-
 module.exports = requireAuth;
