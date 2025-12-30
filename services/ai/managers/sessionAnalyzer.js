@@ -25,11 +25,10 @@ async function analyzeSessionForEvents(userId, history = []) {
   try {
     if (!generateWithFailoverRef) return;
 
-    // تجهيز سياق الشات (آخر 3 رسائل كافية للتحليل السريع)
+    // تجهيز سياق الشات
     const recentChat = history.slice(-3).map(m => `${m.role}: ${m.text}`).join('\n');
     const now = new Date();
     const algiersTime = now.toLocaleString('en-US', { timeZone: 'Africa/Algiers' });
-
     // =========================================================
     // 1. تحليل الأحداث الزمنية (Smart Scheduler Integration)
     // =========================================================
@@ -80,40 +79,6 @@ async function analyzeSessionForEvents(userId, history = []) {
             // إذا كان null، المجدول سيستخدم خوارزمية Chrono-Sniper
             manualTime: targetTime 
         });
-    }
-
-    // =========================================================
-    // 2. محرك الفضول (Curiosity Engine)
-    // =========================================================
-    // نستخدم سياقاً أطول قليلاً (4 رسائل) لفهم السياق العام
-    const curiosityChat = history.slice(-4).map(m => `${m.role}: ${m.text}`).join('\n');
-
-    const curiosityPrompt = `
-    Analyze this chat snippet. Does the user mention something interesting regarding their personal life, studies, or dreams but the info is incomplete?
-    
-    Examples:
-    - "I hate that teacher" (Why? Which subject?)
-    - "I failed the exam" (Which exam? What grade?)
-    - "I have a big dream" (What is it?)
-    - "I am tired today" (Why?)
-
-    If yes, create a "Discovery Mission" for the AI to ask about it later naturally.
-    If NO, return null.
-
-    Output JSON ONLY: { "new_mission": "Ask user why..." } or { "new_mission": null }
-    
-    Chat:
-    ${curiosityChat}
-    `;
-
-    const curiosityRes = await generateWithFailoverRef('analysis', curiosityPrompt, { label: 'CuriosityCheck', timeoutMs: 8000 });
-    const curiosityRaw = await extractTextFromResult(curiosityRes);
-    const curiosityResult = await ensureJsonOrRepair(curiosityRaw, 'analysis');
-
-    if (curiosityResult && curiosityResult.new_mission) {
-        // إضافة المهمة لقائمة مهام الاستكشاف الخاصة بالمستخدم
-        await addDiscoveryMission(userId, curiosityResult.new_mission, 'auto', 'low');
-        logger.info(`🕵️‍♂️ Curiosity Engine: Added mission for ${userId}: "${curiosityResult.new_mission}"`);
     }
 
   } catch (err) {
