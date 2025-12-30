@@ -3,35 +3,35 @@
 
 const supabase = require('../../data/supabase');
 const logger = require('../../../utils/logger');
-const { getHumanTimeDiff } = require('../../../utils');
 const { getAtomicProgress } = require('../../../services/atomic/atomicManager');
+
 /**
- * 🪐 CORTEX GRAVITY ENGINE V5.0 (Atomic Planner)
- * الخوارزمية: تحسب "ثقل" كل مادة بناءً على الفجوات الذرية وموعد الامتحان.
+ * 🪐 CORTEX GRAVITY ENGINE V6.0 (Atomic & Temporal)
+ * الخوارزمية:
+ * 1. تستبعد المواد التي انتهى امتحانها (Dead Subjects).
+ * 2. تفحص كل "ذرة" (درس) لتقرر: هل تحتاج صيانة (Review) أم بناء (New)؟
+ * 3. ترتب المهام حسب الأولوية القصوى (الامتحانات القريبة + الفجوات المعرفية).
  */
 async function runPlannerManager(userId, pathId) {
   try {
     const safePathId = pathId || 'UAlger3_L1_ITCF';
-    logger.info(`🪐 Gravity V5.0 (Atomic): Calculating trajectory for User=${userId}...`);
+    logger.info(`🪐 Gravity V6.0: Calculating atomic trajectory for User=${userId}...`);
+
+    const now = new Date();
 
     // ============================================================
-    // 1. جلب البيانات (المواد، الامتحانات، التقدم الذري)
+    // 1. جلب البيانات (المواد، الامتحانات، الدروس، التقدم)
     // ============================================================
     const [subjectsRes, examsRes, lessonsRes, progressData] = await Promise.all([
-        // أ. المواد
         supabase.from('subjects').select('id, title, coefficient').eq('path_id', safePathId),
-        // ب. الامتحانات القادمة
-        supabase.from('exams').select('subject_id, exam_date').gte('exam_date', new Date().toISOString()),
-        // ج. كل الدروس (الهيكل)
+        supabase.from('exams').select('subject_id, exam_date').eq('path_id', safePathId), // جلب كل الامتحانات (الماضية والقادمة)
         supabase.from('lessons').select('id, title, subject_id, order_index').order('order_index', { ascending: true }),
-        // د. 🔥 التقدم الذري (بدلاً من user_progress القديم)
-getAtomicProgress(userId)
+        getAtomicProgress(userId)
     ]);
 
     const subjects = subjectsRes.data || [];
-    const exams = examsRes.data || [];
+    const allExams = examsRes.data || [];
     const allLessons = lessonsRes.data || [];
-    // 🔥 خريطة الذرات: { lessonId: { score: 80, status: 'in_progress', ... } }
     const atomicMap = progressData.atomicMap || {}; 
 
     if (subjects.length === 0 || allLessons.length === 0) {
@@ -39,177 +39,133 @@ getAtomicProgress(userId)
     }
 
     // ============================================================
-    // 2. تحليل وضع كل مادة (Atomic Subject Profiling)
+    // 2. فلترة المواد المنتهية (Dead Subject Elimination)
     // ============================================================
-    const subjectProfiles = subjects.map(sub => {
-        // 1. الدروس التابعة للمادة
-        const subLessons = allLessons.filter(l => l.subject_id === sub.id);
-        const totalLessons = subLessons.length;
+    // المادة تعتبر "ميتة" إذا كان لديها امتحان، وهذا الامتحان في الماضي
+    const deadSubjectIds = new Set();
+    const subjectUrgencyMap = {}; // لتخزين أيام المتبقية للامتحان
+
+    subjects.forEach(sub => {
+        // نأخذ آخر امتحان لهذه المادة (في حال وجود استدراك)
+        const subExams = allExams.filter(e => e.subject_id === sub.id);
         
-        // 2. حساب الدروس المنجزة والمتبقية بناءً على الذرات
-        // الدرس يعتبر منجزاً فقط إذا كان الـ score >= 95
-        const completedCount = subLessons.filter(l => {
-            const atom = atomicMap[l.id];
-            return atom && atom.score >= 95;
-        }).length;
+        if (subExams.length > 0) {
+            // ترتيب الامتحانات حسب التاريخ
+            subExams.sort((a, b) => new Date(b.exam_date) - new Date(a.exam_date));
+            const lastExamDate = new Date(subExams[0].exam_date);
+            
+            // حساب الفرق بالأيام
+            const diffTime = lastExamDate - now;
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-        // الدروس المتبقية: إما لم تبدأ، أو بدأت ولم تكتمل
-        const remainingLessons = subLessons.filter(l => {
-            const atom = atomicMap[l.id];
-            // متبقي إذا لم يوجد في الخريطة OR موجود وسكوره أقل من 95
-            return !atom || atom.score < 95;
-        });
-
-        // 3. موعد الامتحان
-         const examEntry = exams.find(e => e.subject_id === sub.id);
-        let daysToExam = 999; 
-        
-        if (examEntry) {
-            const diffTime = new Date(examEntry.exam_date) - new Date();
-            daysToExam = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
-            if (daysToExam < 0) daysToExam = 999;
-        }
-
-        // 4. حساب معدل الحرق (Burn Rate)
-        const burnRate = remainingLessons.length / (daysToExam === 999 ? 30 : Math.max(1, daysToExam));
-
-        return {
-            ...sub,
-            totalLessons,
-            completedCount,
-            remainingLessons, 
-            daysToExam,
-            burnRate,
-            isExamSoon: daysToExam <= 7
-        };
-    });
-
-    // ============================================================
-    // 3. حساب نقاط الجاذبية (Gravity Scoring)
-    // ============================================================
-    let prioritizedSubjects = subjectProfiles.map(sub => {
-        let score = 0;
-
-        // أ. عامل الإلحاح (Urgency)
-        if (sub.daysToExam <= 3) score += 5000;
-        else if (sub.daysToExam <= 7) score += 2000;
-        else if (sub.daysToExam <= 14) score += 500;
-
-        // ب. عامل الكتلة الذرية (Atomic Mass)
-        // الدروس التي بدأها الطالب ولم يكملها تزيد الثقل (لأننا نريد إغلاق الحلقات المفتوحة)
-        let unfinishedBonus = 0;
-        sub.remainingLessons.forEach(l => {
-            const atom = atomicMap[l.id];
-            if (atom && atom.score > 0 && atom.score < 95) {
-                unfinishedBonus += 50; // درس مفتوح = جاذبية أعلى
+            if (diffDays < 0) {
+                // الامتحان فات! المادة ماتت.
+                deadSubjectIds.add(sub.id);
+            } else {
+                // الامتحان قادم، نسجل درجة الاستعجال
+                subjectUrgencyMap[sub.id] = diffDays;
             }
-        });
-
-        score += (sub.remainingLessons.length * 50) + unfinishedBonus;
-
-        // ج. عامل المعامل
-        score += (sub.coefficient || 1) * 100;
-
-        // د. عامل الحرق
-        if (sub.burnRate > 1.5) score += 1000;
-
-        return { ...sub, gravityScore: score };
-    });
-
-    // ترتيب المواد حسب الجاذبية
-    prioritizedSubjects.sort((a, b) => b.gravityScore - a.gravityScore);
-
-    // ============================================================
-    // 4. استراتيجية التوزيع (The Atomic Allocator)
-    // ============================================================
-    const topSubject = prioritizedSubjects[0];
-    let finalTasks = [];
-
-    // دالة مساعدة لإنشاء كائن المهمة بشكل ذكي
-    const createSmartTask = (lesson, baseScore, typePrefix = "") => {
-        const atom = atomicMap[lesson.id];
-        const currentScore = atom ? atom.score : 0;
-        
-        let title = "";
-        let reason = "";
-        
-        if (currentScore === 0) {
-            title = `${typePrefix}اكتشاف: ${lesson.title}`;
-            reason = "new_molecule";
         } else {
-            title = `${typePrefix}إتمام: ${lesson.title} (${currentScore}%)`;
-            reason = "stabilize_molecule";
-            baseScore += 500; // زيادة الأولوية لإنهاء ما بدأه
+            // مادة ليس لها امتحان مجدول بعد -> تعتبر حية ولكن بأولوية عادية (999 يوم)
+            subjectUrgencyMap[sub.id] = 999;
         }
+    });
 
-        return {
-            id: lesson.id,
-            title: title,
-            type: 'study',
-            meta: { 
-                score: baseScore, 
-                subjectId: lesson.subject_id,
-                relatedLessonId: lesson.id,
-                relatedLessonTitle: lesson.title,
-                currentMastery: currentScore,
-                reason: reason
+    logger.info(`💀 Dead Subjects excluded: ${deadSubjectIds.size}`);
+
+    // ============================================================
+    // 3. تحليل الذرات وتوليد المرشحين (Candidate Generation)
+    // ============================================================
+    let candidates = [];
+
+    allLessons.forEach(lesson => {
+        // 1. تجاهل المواد الميتة
+        if (deadSubjectIds.has(lesson.subject_id)) return;
+
+        const atom = atomicMap[lesson.id];
+        const subject = subjects.find(s => s.id === lesson.subject_id);
+        const coef = subject ? (subject.coefficient || 1) : 1;
+        const daysToExam = subjectUrgencyMap[lesson.subject_id] || 999;
+
+        // حساب "الجاذبية الأساسية" للمادة (Base Gravity)
+        // كلما اقترب الامتحان وزاد المعامل، زادت الجاذبية
+        let gravity = (coef * 100) + (10000 / (daysToExam + 1));
+
+        let taskType = 'study';
+        let titlePrefix = "";
+        let reason = "";
+
+        // --- المنطق الذري (Atomic Logic) ---
+
+        if (atom && atom.status === 'completed') {
+            // A. حالة المراجعة (Spaced Repetition)
+            // نراجع الدرس إذا كان السكور منخفضاً (نسيان) أو مر وقت طويل (يمكن تطويره لاحقاً بتاريخ المراجعة)
+            if (atom.score < 80) {
+                gravity += 500; // أولوية عالية لترميم المعلومات
+                taskType = 'review';
+                titlePrefix = "ترميم: ";
+                reason = "memory_decay";
+            } else {
+                // درس متقن وحديثاً -> لا نفعله الآن
+                return; 
             }
-        };
-    };
+        } else if (atom && atom.status === 'in_progress') {
+            // B. حالة الاستكمال (In Progress)
+            gravity += 300; // إنهاء ما بدأته أولى من الجديد
+            titlePrefix = "إتمام: ";
+            reason = "finish_started";
+        } else {
+            // C. درس جديد (New Molecule)
+            // الجاذبية تبقى كما هي (تعتمد على أهمية المادة)
+            titlePrefix = "درس جديد: ";
+            reason = "new_content";
+        }
 
-    // 🚨 سيناريو الطوارئ (Focus Mode)
-    if (topSubject.daysToExam <= 3 || topSubject.burnRate > 2.0) {
-        logger.warn(`🚨 Gravity: FOCUS MODE ACTIVATED for ${topSubject.title}`);
-        
-        const tasksToTake = topSubject.remainingLessons.slice(0, 3);
-        
-        finalTasks = tasksToTake.map(l => {
-            const task = createSmartTask(l, 9000, "🔥 طوارئ: ");
-            task.meta.isExamPrep = true;
-            task.meta.examTiming = `في ${topSubject.daysToExam} أيام`;
-            return task;
+        // إضافة المهمة لقائمة المرشحين
+        candidates.push({
+            id: lesson.id,
+            title: `${titlePrefix}${lesson.title}`,
+            type: taskType,
+            priority: gravity,
+            meta: {
+                relatedLessonId: lesson.id,
+                relatedSubjectId: lesson.subject_id,
+                relatedLessonTitle: lesson.title,
+                score: Math.round(gravity),
+                reason: reason,
+                isExamPrep: daysToExam <= 7 // علامة للطوارئ
+            }
         });
+    });
 
-        if (finalTasks.length === 0) {
-            finalTasks.push({
-                title: `مراجعة شاملة لـ ${topSubject.title}`,
-                type: 'review',
-                meta: { score: 9000, subjectId: topSubject.id, isExamPrep: true }
-            });
-        }
-    } 
-    // ⚖️ سيناريو التوازن (Mix Mode)
-    else {
-        logger.info(`⚖️ Gravity: MIX MODE (Top: ${topSubject.title})`);
-        
-        // المهمة 1: درس من المادة الأهم
-        if (topSubject.remainingLessons.length > 0) {
-            finalTasks.push(createSmartTask(topSubject.remainingLessons[0], topSubject.gravityScore));
-        }
+    // ============================================================
+    // 4. الاختيار الذكي (Smart Selection)
+    // ============================================================
+    
+    // ترتيب المرشحين حسب الجاذبية (من الأعلى للأسفل)
+    candidates.sort((a, b) => b.priority - a.priority);
 
-        // المهمة 2: درس من المادة الثانية
-        const secondSubject = prioritizedSubjects[1];
-        if (secondSubject && secondSubject.remainingLessons.length > 0) {
-            finalTasks.push(createSmartTask(secondSubject.remainingLessons[0], secondSubject.gravityScore));
-        }
-
-        // المهمة 3: مراجعة خفيفة (Spaced Repetition)
-        // نختار مادة عشوائية من المواد التي فيها دروس مكتملة
-        const subjectsWithCompleted = prioritizedSubjects.filter(s => s.completedCount > 0);
-        if (subjectsWithCompleted.length > 0) {
-            const reviewSubject = subjectsWithCompleted[Math.floor(Math.random() * subjectsWithCompleted.length)];
-            finalTasks.push({
-                title: `مراجعة سريعة: ${reviewSubject.title}`,
-                type: 'review',
-                meta: { score: 500, subjectId: reviewSubject.id }
-            });
-        }
+    // نريد مزيجاً ذكياً: (مثلاً: 1 مراجعة ضرورية + 2 تقدم في المنهج)
+    let finalTasks = [];
+    
+    // أ. هل هناك مراجعة طارئة؟ (سكور عالي جداً)
+    const urgentReview = candidates.find(t => t.type === 'review');
+    if (urgentReview) {
+        finalTasks.push(urgentReview);
+        // نحذفها من القائمة حتى لا نكررها
+        candidates = candidates.filter(t => t.id !== urgentReview.id);
     }
 
-    return { tasks: finalTasks, source: 'Gravity_V5.0_Atomic' };
+    // ب. نملأ الباقي بأعلى المهام جاذبية (سواء جديد أو إتمام)
+    // نأخذ مهمتين إضافيتين (ليصبح المجموع 3)
+    const slotsLeft = 3 - finalTasks.length;
+    finalTasks = [...finalTasks, ...candidates.slice(0, slotsLeft)];
+
+    return { tasks: finalTasks, source: 'Gravity_V6.0_Atomic' };
 
   } catch (err) {
-    logger.error('Gravity V5 Critical Error:', err);
+    logger.error('Gravity V6 Critical Error:', err);
+    // Fallback آمن
     return { tasks: [] };
   }
 }
