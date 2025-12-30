@@ -328,10 +328,40 @@ async function resendSignupOtp(req, res) {
 }
 
 /**
- * المرحلة 1: بدء التسجيل (Initiate Signup)
- * - ينشئ حساب Auth فقط (غير مفعل).
+ * ✅ دالة جديدة: التحقق من وجود الإيميل (Step 1)
+ * تستدعي الـ RPC الذي أنشأته في قاعدة البيانات
+ */
+async function checkEmailExists(req, res) {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required.' });
+  }
+
+  try {
+    // استدعاء الدالة الآمنة في قاعدة البيانات
+    const { data, error } = await supabase.rpc('check_email_exists', {
+      email_input: email
+    });
+
+    if (error) {
+      logger.error('Check Email RPC Error:', error.message);
+      return res.status(500).json({ error: 'Failed to check email.' });
+    }
+
+    // data سيكون true إذا كان موجوداً، و false إذا لم يكن
+    return res.status(200).json({ exists: data });
+
+  } catch (err) {
+    logger.error('Check Email Internal Error:', err.message);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+}
+
+/**
+ * المرحلة 1: بدء التسجيل (Initiate Signup) - (Step 3 in Frontend)
+ * - ينشئ حساب Auth فقط.
  * - يرسل كود OTP.
- * - لا يكتب أي شيء في جدول users العام.
  */
 async function initiateSignup(req, res) {
   const { email, password, firstName, lastName } = req.body;
@@ -341,7 +371,7 @@ async function initiateSignup(req, res) {
   }
 
   try {
-    // إنشاء المستخدم بدون تفعيل تلقائي
+    // إنشاء المستخدم في Auth System فقط
     const { data: user, error: createError } = await supabase.auth.admin.createUser({
       email: email,
       password: password,
@@ -354,24 +384,14 @@ async function initiateSignup(req, res) {
     });
 
     if (createError) {
-      // إذا كان الحساب موجوداً، نعيد إرسال الرمز
+      // إذا كان الحساب موجوداً (حالة نادرة لأننا فحصنا في الخطوة 1، لكن للأمان)
       if (createError.message.includes('already has been registered')) {
-         const { error: resendError } = await supabase.auth.resend({
-             type: 'signup',
-             email: email
-         });
-         
-         if (resendError) return res.status(400).json({ error: 'Account exists. Please login.' });
-         
-         return res.status(200).json({ 
-             success: true, 
-             message: "Account exists. OTP resent." 
-         });
+         return res.status(409).json({ error: 'Account already exists. Please login.' });
       }
       return res.status(400).json({ error: createError.message });
     }
 
-    // إرسال الإيميل يدوياً
+    // إرسال الإيميل
     await supabase.auth.resend({
       type: 'signup',
       email: email
@@ -383,27 +403,34 @@ async function initiateSignup(req, res) {
     });
 
   } catch (err) {
-    console.error('Initiate Signup Error:', err);
+    logger.error('Initiate Signup Error:', err);
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
+
 /**
- * المرحلة 2: إكمال التسجيل (Complete Signup)
+ * المرحلة 2: إكمال التسجيل (Complete Signup) - (Step 4 in Frontend)
  * - يتحقق من الـ OTP.
- * - ينشئ السجل الكامل في جدول users.
- * - يرجع Session.
+ * - ينشئ السجل في جدول users مع المسار الدراسي (selectedPathId).
  */
 async function completeSignup(req, res) {
   const { 
     email, 
-    otp, // الكود من المستخدم
-    password, // نحتاجه لتشفيره في audit_log
+    otp, 
+    password, 
     firstName, lastName, gender, dateOfBirth, 
-    selectedPathId, groupId, client_telemetry 
+    selectedPathId, // 👈 هذا هو المتغير المهم الجديد
+    groupId, 
+    client_telemetry 
   } = req.body;
 
   if (!email || !otp) {
     return res.status(400).json({ error: 'Email and OTP are required.' });
+  }
+
+  // التحقق من أن المسار الدراسي تم تمريره
+  if (!selectedPathId) {
+    return res.status(400).json({ error: 'Selected Path ID is required to complete profile.' });
   }
 
   try {
@@ -423,13 +450,12 @@ async function completeSignup(req, res) {
 
     if (!userId) return res.status(500).json({ error: 'Verification failed unexpectedly.' });
 
-    // 2. الآن ننشئ البروفايل في جدول users (لأول مرة)
-    // نحدد الحالة بناءً على البيانات المدخلة
-    let profileStatus = 'pending_setup';
-    if (selectedPathId && groupId) profileStatus = 'completed';
-
+    // 2. إنشاء البروفايل في جدول users
     const encryptedPassword = password ? encryptForAdmin(password) : null;
     const appVersion = client_telemetry?.appVersion || '1.0.0';
+
+    // الحالة تصبح completed لأننا أخذنا المسار الدراسي
+    const profileStatus = 'completed';
 
     const { error: profileError } = await supabase
       .from('users')
@@ -441,7 +467,7 @@ async function completeSignup(req, res) {
         gender: gender || null,
         date_of_birth: dateOfBirth || null,
         
-        selected_path_id: selectedPathId || null,
+        selected_path_id: selectedPathId, // ✅ حفظ المسار الدراسي
         group_id: groupId || null,
         profile_status: profileStatus,
         
@@ -449,7 +475,7 @@ async function completeSignup(req, res) {
         app_version: appVersion,
         
         admin_audit_log: {
-            encrypted_pass: encryptedPassword, // حفظنا الباسورد المشفر الآن
+            encrypted_pass: encryptedPassword,
             checked_by_admin: false,
             created_at: new Date().toISOString()
         },
@@ -459,10 +485,7 @@ async function completeSignup(req, res) {
       }, { onConflict: 'id' });
 
     if (profileError) {
-      console.error(`Profile Creation Failed for ${userId}:`, profileError);
-      // في حالة نادرة جداً: Auth نجح لكن DB فشل.
-      // المستخدم سيتمكن من الدخول لكن بياناته ناقصة.
-      // يمكننا إرجاع خطأ، أو تجاهله لأن upsert سيصلحه في المرة القادمة.
+      logger.error(`Profile Creation Failed for ${userId}:`, profileError);
       return res.status(500).json({ error: 'Failed to create user profile.' });
     }
 
@@ -474,7 +497,7 @@ async function completeSignup(req, res) {
         event_type: 'signup_completed'
     });
 
-    // 4. إرجاع الجلسة للدخول المباشر
+    // 4. إرجاع الجلسة
     return res.status(200).json({
       success: true,
       message: 'Account created and verified successfully!',
@@ -483,6 +506,7 @@ async function completeSignup(req, res) {
           id: userId,
           email,
           firstName,
+          selectedPathId, // نرجع المسار للتأكيد
           status: profileStatus
       }
     });
@@ -492,7 +516,9 @@ async function completeSignup(req, res) {
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
+
 module.exports = {
+  checkEmailExists,
   initiateSignup,
   updatePassword, // (تغيير الباسورد من داخل التطبيق)
   forgotPassword, // (نسيت كلمة المرور - الخطوة 1)
