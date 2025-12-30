@@ -357,11 +357,9 @@ async function checkEmailExists(req, res) {
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
-
 /**
- * المرحلة 1: بدء التسجيل (Initiate Signup) - (Step 3 in Frontend)
- * - ينشئ حساب Auth فقط.
- * - يرسل كود OTP.
+ * المرحلة 1: بدء التسجيل (Initiate Signup)
+ * ذكية بما يكفي للتعامل مع الحسابات المعلقة
  */
 async function initiateSignup(req, res) {
   const { email, password, firstName, lastName } = req.body;
@@ -371,7 +369,7 @@ async function initiateSignup(req, res) {
   }
 
   try {
-    // إنشاء المستخدم في Auth System فقط
+    // 1. محاولة إنشاء المستخدم
     const { data: user, error: createError } = await supabase.auth.admin.createUser({
       email: email,
       password: password,
@@ -384,14 +382,33 @@ async function initiateSignup(req, res) {
     });
 
     if (createError) {
-      // إذا كان الحساب موجوداً (حالة نادرة لأننا فحصنا في الخطوة 1، لكن للأمان)
+      // 🔥 الحل السحري هنا 🔥
+      // إذا كان الخطأ يقول أن المستخدم موجود مسبقاً
       if (createError.message.includes('already has been registered')) {
-         return res.status(409).json({ error: 'Account already exists. Please login.' });
+         
+         // نحاول إعادة إرسال رمز التفعيل
+         const { error: resendError } = await supabase.auth.resend({
+             type: 'signup',
+             email: email
+         });
+         
+         // إذا فشل الإرسال (مثلاً الحساب مفعل بالفعل)، نرجع خطأ
+         if (resendError) {
+             return res.status(409).json({ error: 'Account already exists and verified. Please login.' });
+         }
+         
+         // إذا نجح الإرسال، نعتبرها عملية ناجحة وكأننا أنشأنا الحساب للتو
+         return res.status(200).json({ 
+             success: true, 
+             message: "Account exists but unverified. OTP resent." 
+         });
       }
+
+      // أخطاء أخرى
       return res.status(400).json({ error: createError.message });
     }
 
-    // إرسال الإيميل
+    // 2. إذا تم الإنشاء بنجاح (مستخدم جديد تماماً)، نرسل الإيميل
     await supabase.auth.resend({
       type: 'signup',
       email: email
@@ -407,7 +424,6 @@ async function initiateSignup(req, res) {
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
-
 /**
  * المرحلة 2: إكمال التسجيل (Complete Signup) - (Step 4 in Frontend)
  * - يتحقق من الـ OTP.
