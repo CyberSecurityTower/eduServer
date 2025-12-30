@@ -819,18 +819,25 @@ if (gatekeeperResult.reward) {
       }
     }
 
-    // Agenda Actions
-    if (parsedResponse.agenda_actions && Array.isArray(parsedResponse.agenda_actions)) {
-      let currentAgenda = [...allAgenda];
-      let agendaUpdated = false;
-      for (const act of parsedResponse.agenda_actions) {
-        const idx = currentAgenda.findIndex(t => t.id === act.id);
-        if (idx !== -1) {
-          agendaUpdated = true;
-          if (act.action === 'complete') {
-            currentAgenda[idx].status = 'completed';
-            currentAgenda[idx].completed_at = nowISO();
-          } else if (act.action === 'snooze') {
+    
+// 1. معالجة أوامر الأجندة (حذف/إكمال)
+let tasksChanged = false;
+
+if (parsedResponse.agenda_actions && Array.isArray(parsedResponse.agenda_actions)) {
+  for (const act of parsedResponse.agenda_actions) {
+    // حذف المهمة (User rejected it or AI thinks it's irrelevant)
+    if (act.action === 'delete' || act.action === 'remove') {
+       await supabase.from('user_tasks').delete().eq('id', act.id).eq('user_id', userId);
+       tasksChanged = true;
+       logger.info(`🗑️ AI Deleted Task ${act.id} for User ${userId}`);
+    } 
+    // إكمال المهمة
+    else if (act.action === 'complete') {
+       await supabase.from('user_tasks').update({ status: 'completed' }).eq('id', act.id);
+       tasksChanged = true;
+    }
+    // تأجيل
+    else if (act.action === 'snooze') {
             const until = act.until ? new Date(act.until) : new Date(Date.now() + 86400000);
             currentAgenda[idx].trigger_date = until.toISOString();
           }
@@ -839,6 +846,20 @@ if (gatekeeperResult.reward) {
       if (agendaUpdated) await updateAiAgenda(userId, currentAgenda);
     }
 
+// 2. إذا تغيرت المهام (حذف أو إكمال)، نستدعي خوارزمية الجذب فوراً لتعويض النقص
+if (tasksChanged || (parsedResponse.lesson_signal && parsedResponse.lesson_signal.type === 'complete')) {
+    logger.info("🔄 Tasks changed by AI/User. Triggering Gravity Engine...");
+    
+    // إعادة توليد المهام
+    const newTasks = await refreshUserTasks(userId);
+    
+    // إرسال المهام الجديدة للفرونت أند عبر الـ widgets أو event_trigger
+    parsedResponse.widgets = parsedResponse.widgets || [];
+    parsedResponse.widgets.push({ 
+        type: 'event_trigger', 
+        data: { event: 'tasks_updated', tasks: newTasks } 
+    });
+}
     // Mood Update
     if (parsedResponse.newMood) {
       supabase.from('ai_memory_profiles').update({
