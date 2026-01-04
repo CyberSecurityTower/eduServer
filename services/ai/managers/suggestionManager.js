@@ -18,7 +18,7 @@ const STATIC_SUGGESTIONS_POOL = [
     "شرح لي العنصر الأول" ,
     "إشرح لي كأني طفل",
     "قم بتبسيط المفاهيم الرئيسية",
-    "إصنع بطاقات فلاشكارد للدرس"
+    "إصنع بطاقات مراجعة للدرس"
 ];
 
 function initSuggestionManager(dependencies) {
