@@ -3,7 +3,7 @@
 
 const { escapeForPrompt, safeSnippet } = require('../utils');
 const CONFIG = require('./index'); 
-const SYSTEM_INSTRUCTION = require('./system-instruction'); // ✅ استدعاء ملف الهوية الجديد
+const SYSTEM_INSTRUCTION = require('./system-instruction'); // ✅ Import new identity file
 
 const PROMPTS = {
   // ===========================================================================
@@ -13,7 +13,7 @@ const PROMPTS = {
     generateTitle: (message, language) => `Generate a very short title (2-4 words) in ${language}. Msg: "${escapeForPrompt(safeSnippet(message, 100))}"`,
 
     /**
-     * البرومبت الرئيسي للمحادثة التفاعلية
+     * Main Interactive Chat Prompt
      */
     interactiveChat: (
       message,                  // 1
@@ -29,44 +29,42 @@ const PROMPTS = {
       activeAgenda,             // 11
       groupContext,             // 12
       currentContext,           // 13
-      gravityContext,            // 14
-      absenceContext,            //15
-      enabledFeatures = {},       //16
+      gravityContext,           // 14
+      absenceContext,           // 15
+      enabledFeatures = {},     // 16
       atomicContext = ""
     ) => {
 
-
-
-      // --- A. استخراج البيانات الأساسية ---      
+      // --- A. Extract Basic Data ---      
       const profile = fullUserProfile || {}; 
       const facts = profile.facts || {};
       
-      // الاسم والجنس
+      // Name and Gender
       const rawName = profile.firstName || facts.userName || 'Student';
       const userName = rawName.charAt(0).toUpperCase() + rawName.slice(1);
       const userGender = profile.gender || facts.userGender || 'male';
       const userPath = profile.selectedPathId || 'University Student';
 
-      // --- B. استخراج بيانات الجدول الزمني (Schedule) ---
+      // --- B. Extract Schedule Data ---
       const schedule = currentContext?.schedule || {};
       const sessionState = schedule.state || 'unknown'; 
       const currentProf = schedule.prof || 'Unknown Professor';
       const currentRoom = schedule.room || 'Unknown Room';
-      const subjectName = schedule.subject || 'المادة';
+      const subjectName = schedule.subject || 'Subject';
       const sessionType = schedule.type || 'Cours';
 
-      // --- C. استخراج بيانات الدرس الحالي (Gatekeeper) ---
+      // --- C. Extract Current Lesson Data (Gatekeeper) ---
       const targetLessonId = currentContext?.lessonId || null;
 
-      // --- D. بناء البروتوكولات الديناميكية ---
+      // --- D. Build Dynamic Protocols ---
       
-      // 1. سياق النشاط
+      // 1. Activity Context
       let activityContext = "User is currently browsing the app home.";
       if (currentContext && currentContext.lessonTitle) {
           activityContext = `User has opened the lesson: "${currentContext.lessonTitle}". Assume they are studying it NOW.`;
       }
 
-       // 🔥🔥🔥 الإضافة الجديدة: بروتوكول الكويز الصارم 🔥🔥🔥
+       // 🔥🔥🔥 New Addition: Strict Quiz Protocol 🔥🔥🔥
       const quizProtocol = `
 🧩 **QUIZ GENERATION RULES (STRICT QUANTITY):**
 When generating a widget of type "quiz", you MUST follow these quantity rules based on intent:
@@ -83,7 +81,8 @@ When generating a widget of type "quiz", you MUST follow these quantity rules ba
 
 ⚠️ **WARNING:** Never generate 4 or 5 questions. Use 3 for parts, 6+ for whole.
 `;
-      // 🔥 التعديل الجوهري هنا: صياغة تعليمات النظام الذري
+      
+      // 🔥 Core Modification: Atomic System Instructions
       let atomicSection = "";
       if (atomicContext) {
           atomicSection = `
@@ -96,8 +95,9 @@ When generating a widget of type "quiz", you MUST follow these quantity rules ba
           3. **Do NOT** forget this JSON field when a milestone is reached.
           `;
       }
-// 🌍 كشف لغة المادة (Language Detector)
-      // نفحص هل الـ ID يحتوي على 'eng' أو 'fr' أو اسم المادة
+
+      // 🌍 Subject Language Detector
+      // Check if ID contains 'eng', 'fr' or subject name matches
       const isEnglishSubject = (targetLessonId && targetLessonId.includes('_eng_')) || 
                                (subjectName && /english|انجليزية/i.test(subjectName));
       
@@ -121,7 +121,8 @@ When generating a widget of type "quiz", you MUST follow these quantity rules ba
           - You MUST reply primarily in **FRENCH**.
           `;
       }
-      // 2. بروتوكول الجدول الزمني
+
+      // 2. Schedule Protocol
       const scheduleProtocol = `
 🏫 **UNIVERSITY SCHEDULE PROTOCOL:**
 Current State: **${sessionState.toUpperCase()}**
@@ -137,11 +138,10 @@ Subject: ${subjectName} (${sessionType}) | Prof: ${currentProf} | Room: ${curren
    - Do NOT ask "Are you in class?". Assume they are home.
 `;
 
-      // 3. بروتوكول "الوحش الأخير" (Final Boss) - ❌ تم الحذف حسب الطلب
-      
-      // 4. تعليمات الحارس (Gatekeeper) - ❌ تم الحذف حسب الطلب
+      // 3. Final Boss Protocol - ❌ Removed per request
+      // 4. Gatekeeper Instructions - ❌ Removed per request
 
-      // 5. المحرك العاطفي
+      // 5. Emotional Engine
       const mood = currentEmotionalState?.mood || 'neutral';
       const emotionalInstructions = `
 **🎭 EMOTIONAL ENGINE (CRITICAL):**
@@ -153,7 +153,7 @@ Current Mood: "${mood}" (Reason: ${currentEmotionalState?.reason || 'None'}).
 4. **SADNESS:** If user fails -> Mood: "sad".
 `;
 
-      // 6. بروتوكول EduNexus
+      // 6. EduNexus Protocol
       let eduNexusProtocolInstructions = "";
       let memoryUpdateJsonField = `"memory_update": null,`;
       if (CONFIG.ENABLE_EDUNEXUS) {
@@ -164,7 +164,7 @@ If user reports an exam date or confirms a rumor found in "HIVE MIND", trigger m
           memoryUpdateJsonField = `"memory_update": { "action": "UPDATE_EXAM", "subject": "...", "new_date": "..." },`; 
       }
 
-      // 7. بروتوكول الجاذبية و Anti-Samata - ✅ تم الدمج والاختصار
+      // 7. Gravity Protocol & Anti-Samata - ✅ Merged and Shortened
       let gravitySection = "";
       let antiSamataProtocol = "";
       
@@ -177,7 +177,7 @@ If user reports an exam date or confirms a rumor found in "HIVE MIND", trigger m
           antiSamataProtocol = "🛡️ Mode: Chill.";
       }
 
-      // --- E. تجميع السياقات النصية ---
+      // --- E. Assemble Text Contexts ---
       const lessonContext = curriculumReport 
         ? `📚 **LESSON CONTEXT (RAG):** ${safeSnippet(curriculumReport, 800)}` 
         : "📚 No specific lesson context found.";
@@ -187,7 +187,7 @@ If user reports an exam date or confirms a rumor found in "HIVE MIND", trigger m
         : "";
       const lastActiveTime = absenceContext || "Unknown"; 
 
-      // 🔥 بناء تعريفات الـ Widgets ديناميكياً - ✅ تم الاختصار لسطر واحد
+      // 🔥 Build Widget Definitions Dynamically - ✅ Shortened to one line
       let widgetsInstructions = `
 Supported Widgets (One-line JSON):
 1. **Quiz:** { "type": "quiz", "data": { "questions": [{ "text": "...", "options": ["..."], "correctAnswerText": "...", "explanation": "..." }] } }
@@ -195,20 +195,20 @@ Supported Widgets (One-line JSON):
 3. **Summary:** { "type": "summary", "data": { "title": "...", "points": ["..."] } }
 `;
 
-      // إضافة الجدول إذا كان مفعلاً
+      // Add Table if enabled
       if (enabledFeatures.table) {
           widgetsInstructions += `
 4. **Table:** { "type": "table", "data": { "title": "...", "headers": ["C1", "C2"], "rows": [["V1", "V2"]] } }`;
       }
 
-      // إضافة الشارت إذا كان مفعلاً
+      // Add Chart if enabled
       if (enabledFeatures.chart) {
           widgetsInstructions += `
 5. **Chart:** { "type": "chart", "data": { "title": "...", "data": [{ "label": "...", "value": 10, "color": "#Hex" }] } }`;
       }
 
-      // --- F. بناء البرومبت النهائي ---
-      // ✅ تم وضع SYSTEM_INSTRUCTION في البداية
+      // --- F. Build Final Prompt ---
+      // ✅ SYSTEM_INSTRUCTION placed at the beginning
       return `
 ${SYSTEM_INSTRUCTION} 
 
@@ -343,8 +343,7 @@ ${widgetsInstructions}
       You are a Study Planner. Generate ${backlogCount || 3} tasks based on weaknesses: ${JSON.stringify(weaknesses)}.
       Output JSON: { "tasks": [{ "title": "...", "type": "review", "priority": "high" }] }
     `,
- }, 
-
+  }, // ✅ Syntax Correction: Closed the managers object
 
   // ===========================================================================
   // 3. Notification Prompts
@@ -357,7 +356,7 @@ ${widgetsInstructions}
     interventionUnplanned: (lesson, lang) => `Encourage student for starting "${lesson}" spontaneously in ${lang}.`,
     proactive: (type, context, user) => `Write a short notification. Type: ${type}. Context: ${context}. User: ${user}.`,
 
-     streakRescue: (context) => `
+    streakRescue: (context) => `
       You are EduAI, a close, slightly jealous, but caring study partner.
       **Target:** The user (${context.name}) is about to lose their ${context.streak}-day streak!
       **Current Time:** ${context.timeNow}. The day ends at midnight.
@@ -376,6 +375,7 @@ ${widgetsInstructions}
       - Be emotional but motivating.
       - Output ONLY the text.
     `
-  };
+  } 
+}; // ✅ Syntax Correction: Closed the main PROMPTS object
 
 module.exports = PROMPTS;
