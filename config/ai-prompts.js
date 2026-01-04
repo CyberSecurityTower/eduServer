@@ -343,7 +343,7 @@ ${widgetsInstructions}
       You are a Study Planner. Generate ${backlogCount || 3} tasks based on weaknesses: ${JSON.stringify(weaknesses)}.
       Output JSON: { "tasks": [{ "title": "...", "type": "review", "priority": "high" }] }
     `,
-
+ }, 
 
 
   // ===========================================================================
