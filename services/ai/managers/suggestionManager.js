@@ -1,4 +1,3 @@
---- START OF FILE suggestionManager.js ---
 
 // services/ai/managers/suggestionManager.js
 'use strict';
