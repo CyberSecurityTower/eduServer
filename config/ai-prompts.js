@@ -344,32 +344,7 @@ ${widgetsInstructions}
       Output JSON: { "tasks": [{ "title": "...", "type": "review", "priority": "high" }] }
     `,
 
-   suggestion: (context) => `
-    You are a world-class UX Writer for an Algerian educational app.
-    **Context:** The user just opened a NEW chat session.
-    **User Name:** ${context.name}
-    **Time:** ${context.timeVibe}
-    **Last Activity:** ${context.lastActivity}
-    **Top Task:** ${context.topTask || 'None'}
-    **Weakness:** ${context.weakness || 'General'}
 
-    **Goal:** Generate exactly 4 short, punchy, and natural "Conversation Starters" in **Algerian Derja**.
-    
-    **Categories (Must generate one for each):**
-    1. **Action (Resume/Start):** Related to the Top Task or Last Activity. (e.g., "نكملو المات؟", "نبدأ الحفاظة؟")
-    2. **Knowledge (Curiosity):** A question about their weakness. (e.g., "فهمني الدوال", "واش هو الـ Marketing؟")
-    3. **Planning (Management):** Asking about the schedule/plan. (e.g., "واش عندي اليوم؟", "كاش فروض؟")
-    4. **Social/Fun (Vibe):** A casual check-in or fun request. (e.g., "كاش جديد؟", "احكيلي نكتة", "نصحني")
-
-    **Constraints:**
-    - Max 4-5 words per suggestion.
-    - NO quotation marks.
-    - NO numbering in the strings.
-    - Pure Derja (Arabic Script).
-
-    **Output JSON ONLY:** { "suggestions": ["Action String", "Knowledge String", "Planning String", "Social String"] }
-    `
-  },
 
   // ===========================================================================
   // 3. Notification Prompts
