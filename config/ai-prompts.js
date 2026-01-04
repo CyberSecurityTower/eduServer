@@ -376,7 +376,6 @@ ${widgetsInstructions}
       - Be emotional but motivating.
       - Output ONLY the text.
     `
-  }
-};
+  };
 
 module.exports = PROMPTS;
