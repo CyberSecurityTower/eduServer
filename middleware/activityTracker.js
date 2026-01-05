@@ -1,15 +1,18 @@
+
 // middleware/activityTracker.js
 'use strict';
 
 const supabase = require('../services/data/supabase');
 const liveMonitor = require('../services/monitoring/realtimeStats');
 
-// كاش بسيط لتجنب قصف الداتابايز بالتحديثات في كل ثانية
+// كاش لتجنب تحديث "آخر ظهور" في كل ثانية
 const lastUpdateMap = new Map();
 
 async function activityTracker(req, res, next) {
-  // تجاهل مسارات النظام
-  if (req.path.startsWith('/health') || req.path.startsWith('/favicon')) return next();
+  // تجاهل المسارات التي لا تستهلك موارد (مثل الصور، الصحة)
+  if (req.method === 'OPTIONS' || req.path.startsWith('/health') || req.path.startsWith('/favicon')) {
+    return next();
+  }
 
   let userId = null;
 
@@ -25,27 +28,28 @@ async function activityTracker(req, res, next) {
       } catch (e) {}
   }
 
-  // 2. تحديث الداتابايز (العمود الفقري للنظام الجديد)
   if (userId) {
+      // A. تحديث "آخر ظهور" (كل 30 ثانية لتخفيف الضغط)
       const now = Date.now();
       const lastUpdate = lastUpdateMap.get(userId) || 0;
-
-      // نحدث الداتابايز فقط إذا مرت 30 ثانية على آخر تحديث لهذا المستخدم
       if (now - lastUpdate > 30 * 1000) {
           lastUpdateMap.set(userId, now);
-          
-          // Fire & Forget Update
-          supabase.from('users')
-              .update({ last_active_at: new Date().toISOString() })
-              .eq('id', userId)
-              .then(({ error }) => {
-                  if (error) console.error('Error updating last_active_at:', error.message);
-              });
+          // Fire & Forget: تحديث آخر ظهور
+          supabase.from('users').update({ last_active_at: new Date().toISOString() }).eq('id', userId).then();
       }
       
-      // إذا كان طلب ذكاء اصطناعي، نسجله في العداد اللحظي
-      if (req.path.includes('chat') || req.path.includes('quiz')) {
-          liveMonitor.trackAiGeneration(0); // نحسبها كطلب، التوكيز يحسب لاحقاً
+      // B. 💰 زيادة عداد الطلبات (العداد المالي)
+      // نحسب الطلبات المهمة فقط (Chat, Quiz, Plans, Analysis)
+      const isCostlyRoute = req.path.includes('chat') || req.path.includes('quiz') || req.path.includes('generate') || req.path.includes('analyze');
+      
+      if (isCostlyRoute) {
+          // Fire & Forget: استدعاء دالة الـ RPC لزيادة العداد +1
+          supabase.rpc('increment_request_count', { user_id: userId }).then(({ error }) => {
+              if (error) console.error('Error incrementing reqs:', error.message);
+          });
+          
+          // تتبع في الرصد اللحظي
+          liveMonitor.trackAiGeneration(0);
       }
   }
 
