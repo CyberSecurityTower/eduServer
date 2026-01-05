@@ -68,12 +68,17 @@ async function getProfile(userId) {
 
     const userData = userRes.data || {};
     
+    // ✅✅✅ التصحيح: تعريف memoryData من نتيجة الاستعلام
+    const memoryData = memoryRes.data || {}; 
+    // --------------------------------------------------
+
     // 1. تحديد الباقة
     const userTierKey = userData.tier || 'free';
     const tierConfig = TIERS[userTierKey] || TIERS['free'];
 
     // 2. حساب المتبقي
     const remainingRequests = Math.max(0, tierConfig.daily_limit - (userData.daily_req_count || 0));
+    
     // حساب العمر
     let age = 'Unknown';
     if (userData.date_of_birth) {
@@ -86,7 +91,7 @@ async function getProfile(userId) {
     // دمج البيانات
     const finalProfile = {
       userId: userId,
-      profileSummary: memoryData.profile_summary,
+      profileSummary: memoryData.profile_summary, // الآن سيعمل هذا السطر
       aiAgenda: memoryData.ai_agenda,
       emotionalState: memoryData.emotional_state,
       facts: {
@@ -97,15 +102,15 @@ async function getProfile(userId) {
         role: userData.role
       },
        subscription: {
-        plan: userTierKey,           // free, pioneer, pro, admin
-        label: tierConfig.label,     // EduStart, EduPioneer...
-        badge: tierConfig.badge,     // 🛡️ Pioneer
+        plan: userTierKey,           
+        label: tierConfig.label,     
+        badge: tierConfig.badge,     
         dailyLimit: tierConfig.daily_limit,
         usedToday: userData.daily_req_count || 0,
         remainingToday: remainingRequests,
         canRequest: remainingRequests > 0
       },
-      selectedPathId: userData.selected_path_id // ✅ إضافة مهمة للتوجيه
+      selectedPathId: userData.selected_path_id 
     };
 
     // تحديث الكاش
