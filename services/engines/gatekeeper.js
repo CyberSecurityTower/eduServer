@@ -3,6 +3,47 @@
 
 const supabase = require('../data/supabase');
 const logger = require('../../utils/logger');
+const TIERS = require('../../config/tiers');
+const { getProfile } = require('../data/helpers');
+//tries plan check
+
+async function checkFeatureAccess(userId, featureName) {
+    try {
+        // نستخدم getProfile لأنها مخزنة في الكاش (سريعة جداً)
+        const profile = await getProfile(userId);
+        const sub = profile.subscription;
+        
+        // 1. فحص الحد اليومي (Usage Limit)
+        // نستثني الأدمين من فحص العداد
+        if (sub.plan !== 'admin' && sub.remainingToday <= 0) {
+            return { 
+                granted: false, 
+                reason: 'limit_exceeded',
+                message: 'انتهت محاولاتك المجانية لليوم. عد غداً أو قم بالترقية لـ EduPrime.',
+                upgrade_cta: true
+            };
+        }
+
+        // 2. فحص صلاحية الميزة (Feature Gating)
+        const tierConfig = TIERS[sub.plan];
+        const isAllowed = tierConfig.features.includes('*') || tierConfig.features.includes(featureName);
+
+        if (!isAllowed) {
+            return { 
+                granted: false, 
+                reason: 'feature_locked',
+                message: `ميزة "${featureName}" متاحة فقط في باقة ${TIERS['pro'].label}.`,
+                upgrade_cta: true
+            };
+        }
+
+        return { granted: true };
+
+    } catch (err) {
+        logger.error('Gatekeeper Error:', err);
+        return { granted: false, message: 'خطأ في التحقق من الاشتراك.' };
+    }
+}
 
 /**
  * 🪙 Gatekeeper V2: Atomic Reward System
@@ -130,4 +171,4 @@ async function checkAtomicMastery(userId, lessonId, currentMastery) {
     };
 }
 // تصدير الدالة الوحيدة (تم حذف trackStudyTime)
-module.exports = { markLessonComplete, checkAtomicMastery };
+module.exports = { markLessonComplete, checkAtomicMastery, checkFeatureAccess };
