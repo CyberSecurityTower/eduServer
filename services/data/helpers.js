@@ -9,8 +9,9 @@ const { safeSnippet, extractTextFromResult, ensureJsonOrRepair } = require('../.
 const logger = require('../../utils/logger');
 const crypto = require('crypto');
 const { runPlannerManager } = require('../ai/managers/plannerManager'); 
-const { getAlgiersTimeContext } = require('../../utils'); // تأكد من المسار
+const { getAlgiersTimeContext } = require('../../utils'); 
 const { getAtomicProgress } = require('../atomic/atomicManager');
+const TIERS = require('../../config/tiers');
 
 // Dependencies Injection
 let embeddingServiceRef;
@@ -50,21 +51,29 @@ async function getUserDisplayName(userId) {
   }
 }
 
+
 async function getProfile(userId) {
   try {
-    // 1. الكاش أولاً
     const cached = await cacheGet('profile', userId);
     if (cached) return cached;
 
-    // 2. Native Supabase Query (Parallel)
+    // جلب البيانات بما فيها الـ tier والعدادات
     const [memoryRes, userRes] = await Promise.all([
       supabase.from('ai_memory_profiles').select('*').eq('user_id', userId).maybeSingle(),
-      supabase.from('users').select('date_of_birth, first_name, gender, role, selected_path_id').eq('id', userId).single()
+      supabase.from('users')
+        .select('date_of_birth, first_name, gender, role, selected_path_id, tier, daily_req_count')
+        .eq('id', userId)
+        .single()
     ]);
 
-    const memoryData = memoryRes.data || { facts: {}, profile_summary: '' };
     const userData = userRes.data || {};
+    
+    // 1. تحديد الباقة
+    const userTierKey = userData.tier || 'free';
+    const tierConfig = TIERS[userTierKey] || TIERS['free'];
 
+    // 2. حساب المتبقي
+    const remainingRequests = Math.max(0, tierConfig.daily_limit - (userData.daily_req_count || 0));
     // حساب العمر
     let age = 'Unknown';
     if (userData.date_of_birth) {
@@ -86,6 +95,15 @@ async function getProfile(userId) {
         firstName: userData.first_name,
         gender: userData.gender,
         role: userData.role
+      },
+       subscription: {
+        plan: userTierKey,           // free, pioneer, pro, admin
+        label: tierConfig.label,     // EduStart, EduPioneer...
+        badge: tierConfig.badge,     // 🛡️ Pioneer
+        dailyLimit: tierConfig.daily_limit,
+        usedToday: userData.daily_req_count || 0,
+        remainingToday: remainingRequests,
+        canRequest: remainingRequests > 0
       },
       selectedPathId: userData.selected_path_id // ✅ إضافة مهمة للتوجيه
     };
