@@ -4,11 +4,11 @@
 const supabase = require('../data/supabase');
 const logger = require('../../utils/logger');
 const TIERS = require('../../config/tiers');
-const { getProfile } = require('../data/helpers');
 //tries plan check
 
 async function checkFeatureAccess(userId, featureName) {
     try {
+        const { getProfile } = require('../data/helpers'); 
         // نستخدم getProfile لأنها مخزنة في الكاش (سريعة جداً)
         const profile = await getProfile(userId);
         const sub = profile.subscription;
