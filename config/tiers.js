@@ -3,34 +3,34 @@
 'use strict';
 
 const TIERS = {
-  // 1. الباقة المجانية (EduStart)
+  // 1. الباقة المجانية (تم تعديلها لتكون مفتوحة حالياً)
   free: {
-    label: 'EduStart',
-    badge: null,
-    daily_limit: 5, // 5 طلبات ذكية فقط يومياً
-    features: ['chat_basic', 'quiz_simple'],
-    description: 'ابدأ رحلتك التعليمية'
+    label: 'EduStart (Beta)', // سميناها Beta ليعرفوا أنها فترة مؤقتة
+    badge: '🌟 Beta',
+    daily_limit: 1000, // رقم كبير جداً (عملياً غير محدود)
+    features: ['*'],   // النجمة تعني الوصول لكل الميزات
+    description: 'فترة تجريبية مفتوحة للجميع'
   },
 
-  // 2. باقة الرواد (EduPioneer) - لزملائك حالياً
+  // 2. باقة الرواد (ستبقى للمستقبل)
   pioneer: {
     label: 'EduPioneer',
     badge: '🛡️ Pioneer',
-    daily_limit: 500, // حد مريح جداً
-    features: ['*'], // الوصول لكل شيء
+    daily_limit: 2000,
+    features: ['*'],
     description: 'نسخة حصرية للنخبة الأولى'
   },
 
-  // 3. الباقة المدفوعة (EduPrime)
+  // 3. الباقة المدفوعة (للمستقبل)
   pro: {
     label: 'EduPrime',
     badge: '⚡ Prime',
-    daily_limit: 150, 
-    features: ['chat_advanced', 'quiz_complex', 'ghost_teacher', 'pdf_chemist', 'exam_predictions', 'no_ads'],
+    daily_limit: 500, 
+    features: ['*'], // حالياً مفتوحة أيضاً
     description: 'للطالب الذي يريد التفوق'
   },
 
-  // 4. باقة المهندس (EduArchitect) - أنت
+  // 4. الأدمين
   admin: {
     label: 'EduArchitect',
     badge: '🏗️ Architect',
