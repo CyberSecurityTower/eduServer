@@ -1,5 +1,4 @@
 
---- START OF FILE searchController.js ---
 // controllers/searchController.js
 'use strict';
 
