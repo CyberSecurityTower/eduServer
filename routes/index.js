@@ -13,6 +13,8 @@ const adminController = require('../controllers/adminController');
 const announcementController = require('../controllers/announcementController');
 const { runStreakRescueMission } = require('../services/jobs/streakRescue');
 const streakController = require('../controllers/streakController'); 
+const searchController = require('../controllers/searchController');
+
 /*
 // ⏰ تشغيل منقذ الستريك كل ساعة (60 دقيقة)
 setInterval(() => {
@@ -156,4 +158,9 @@ router.get('/streak/status', requireAuth, streakController.getStreakStatus);
 // Cron Job
 router.post('/run-nightly-analysis', adminController.runNightlyAnalysis);
 
+// ==========================================
+// 7. Quick look (البحث السريع) 🔍
+// ==========================================
+// يتطلب مصادقة (requireAuth)
+router.post('/search/quick', requireAuth, searchController.quickSearch);
 module.exports = router;
