@@ -120,9 +120,7 @@ async function chatInteractive(req, res) {
   // ✅ 1. Receive data from frontend
   let { userId, message, history, sessionId, currentContext, files, webSearch } = req.body;
 
-// نستدعي المدير الجديد
-const { payload: attachments, note: fileNote } = await mediaManager.processUserAttachments(userId, files);
-  // Safety check
+ // Safety check
   if (!sessionId) sessionId = crypto.randomUUID();
   if (!Array.isArray(history)) history = [];
 
@@ -153,22 +151,22 @@ const { payload: attachments, note: fileNote } = await mediaManager.processUserA
       }
     }
 
-  try {
     // =========================================================
     // 🧩 التجهيز (Services Layer) - نظيف جداً
     // =========================================================
-    
-    // أ. معالجة الميديا (صور/صوت/ملفات)
-    const { payload: filePayload, note: fileNote } = await mediaManager.processUserAttachment(userId, file);
+     const inputFiles = files || (req.body.file ? [req.body.file] : []);
 
-    // ب. معالجة الروابط (إذا لم يكن هناك ملف)
-    // إذا كان هناك ملف، غالباً لا نحتاج لقراءة الروابط في نفس الوقت (لتخفيف الحمل)
-    if (!filePayload) {
+    // أ. معالجة المرفقات (صور/صوت/ملفات)
+    const { payload: attachments, note: fileNote } = await mediaManager.processUserAttachments(userId, inputFiles);
+
+    // ب. معالجة الروابط (URL Context)
+    if ((!attachments || attachments.length === 0) && message) {
         message = await scraper.enrichMessageWithContext(message);
     }
 
     // ج. دمج الملاحظات في الرسالة
-    const finalMessage = message + fileNote;
+    const finalMessage = message + (fileNote || "");
+
     // =========================================================
     // 3. FETCH USER DATA (The Fix: Do this BEFORE logic checks)
     // =========================================================
@@ -597,7 +595,6 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
 
     const finalPrompt = PROMPTS.chat.interactiveChat(
       finalMessage,
-      safeMessage,
       memoryReport || '',
       curriculumReport || '',
       safeHistoryStr,
@@ -627,13 +624,7 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
     let parsedResponse = await ensureJsonOrRepair(rawText, 'analysis');
 
     if (!parsedResponse?.reply) parsedResponse = { reply: rawText || "Error.", widgets: [] };
-    // 🆕 المحطة 3: المراقب (The Monitor)
-    // استخراج إشارة التحديث الذري من رد الـ AI
-    let atomicUpdateSignal = null;
-    if (parsedResponse.atomic_update) {
-        atomicUpdateSignal = parsedResponse.atomic_update;
-        // الـ reply جاهز للعرض، لا داعي لتنظيفه لأن الـ AI وضعه في حقل منفصل
-    }
+   
 // =========================================================
     // 🆕 المحطة 3: المراقب (The Monitor) - المنطق المصحح
     // =========================================================
