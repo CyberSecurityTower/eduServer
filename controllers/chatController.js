@@ -102,15 +102,8 @@ async function handleGeneralQuestion(req, res) {
 }
 
 async function generateChatSuggestions(req, res) {
-  try {
-    const { userId } = req.body;
-    if (!userId) return res.status(400).json({ error: 'userId is required.' });
-    const suggestions = await runSuggestionManager(userId);
-    res.status(200).json({ suggestions });
-  } catch (error) {
-    logger.error('Error generating suggestions:', error);
-    res.status(200).json({ suggestions: ["لخص لي الدرس", "أعطني كويز", "ما هي خطتي اليوم؟"] });
-  }
+  // 🛑 إرجاع قائمة فارغة أو ثابتة فوراً دون أي معالجة
+  return res.status(200).json({ suggestions: [] });
 }
 
 // ==========================================
