@@ -8,7 +8,7 @@ const keyManager = require('./keyManager');
 const { callHuggingFace } = require('./huggingFaceAdapter');
 
 // موديلات جوجل
-const GOOGLE_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash-lite'];
+const GOOGLE_MODELS = ['gemini-2.5-flash', 'gemini-2.5-pro'];
 
 async function initializeModelPools() {
   await keyManager.init();
