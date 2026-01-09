@@ -1,3 +1,5 @@
+--- START OF FILE services/ai/index.js ---
+
 // services/ai/index.js
 'use strict';
 
@@ -6,7 +8,7 @@ const logger = require('../../utils/logger');
 const { withTimeout, sleep } = require('../../utils'); 
 const keyManager = require('./keyManager');
 const liveMonitor = require('../monitoring/realtimeStats');
-const proxyManager = require('./proxyManager'); // ✅ استيراد مدير البروكسي
+const proxyManager = require('./proxyManager');
 
 // ✅ استيراد مكتبات البروكسي (يجب تثبيتها: npm i https-proxy-agent node-fetch)
 const fetch = require('node-fetch');
@@ -21,18 +23,28 @@ const MODEL_CASCADE = [
 async function initializeModelPools() {
   await keyManager.init();
   const proxyCount = proxyManager.getProxyCount();
-  logger.success(`🤖 AI Engine Ready: ${keyManager.getKeyCount()} Keys | ${proxyCount} Proxies.`);
+  const mode = proxyCount > 0 ? `Active (${proxyCount} IPs)` : 'Direct (Server IP)';
+  logger.success(`🤖 AI Engine Ready: ${keyManager.getKeyCount()} Keys | Proxy Mode: ${mode}`);
 }
 
 /**
- * دالة مساعدة لإنشاء دالة fetch مخصصة تستخدم البروكسي
+ * ✅ الدالة الذكية (Smart Fetch):
+ * - إذا مررنا لها proxyUrl: تنشئ اتصالاً عبر البروكسي.
+ * - إذا كان proxyUrl = null: تنشئ اتصالاً مباشراً (IP السيرفر).
  */
-function createProxyFetch(proxyUrl) {
+function createSmartFetch(proxyUrl) {
     return (url, init) => {
         const options = { ...init };
+        
         if (proxyUrl) {
+            // ✅ استخدام البروكسي
             options.agent = new HttpsProxyAgent(proxyUrl);
+            options.timeout = 15000; // مهلة 15 ثانية للبروكسي
+        } else {
+            // ✅ اتصال مباشر (بدون Agent)
+            // لا نفعل شيئاً، سيستخدم node-fetch الإعدادات الافتراضية
         }
+        
         return fetch(url, options);
     };
 }
@@ -40,7 +52,8 @@ function createProxyFetch(proxyUrl) {
 async function _callModelInstance(unused_instance, prompt, timeoutMs, label, systemInstruction, history, attachments = [], enableSearch = false) {
   
   const totalKeys = keyManager.getKeyCount() || 5; 
-  const MAX_ATTEMPTS = totalKeys * 2; 
+  // نزيد عدد المحاولات لضمان تجربة عدة بروكسيات وعدة مفاتيح
+  const MAX_ATTEMPTS = Math.max(totalKeys * 2, 6); 
   let lastError = null;
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
@@ -48,34 +61,28 @@ async function _callModelInstance(unused_instance, prompt, timeoutMs, label, sys
     try {
       keyObj = await keyManager.acquireKey();
       
-      // ✅ 1. جلب بروكسي جديد لهذه المحاولة
+      // 1. جلب البروكسي (أو null للاتصال المباشر)
       const currentProxy = proxyManager.getProxy();
-      
-      if (currentProxy && attempt > 0) {
-          logger.log(`🔄 [Failover] Rotating IP using proxy: ...${currentProxy.slice(-5)}`);
+      const connectionType = currentProxy ? 'Proxy' : 'Direct';
+
+      // طباعة توضيحية عند الفشل وإعادة المحاولة
+      if (attempt > 0) {
+          logger.log(`🔄 [Failover] Retry ${attempt}/${MAX_ATTEMPTS} using: ${connectionType} IP...`);
       }
 
-      // ✅ 2. إنشاء عميل جديد تماماً لهذه المحاولة مع حقن الـ fetch المخصص
-      // هذا يضمن أن الطلب يخرج من IP البروكسي وليس IP السيرفر
-      const customFetch = createProxyFetch(currentProxy);
-      
-      // ملاحظة: GoogleGenerativeAI لا تدعم حقن fetch في الـ Constructor مباشرة في كل الإصدارات
-      // الحل الأضمن في Node.js هو استبدال global.fetch مؤقتاً أو استخدام مكتبة تدعم ذلك.
-      // لكن، في الإصدارات الحديثة، يمكننا تجاوز ذلك عبر عمل Patch بسيط للكلاس إذا لزم الأمر،
-      // أو استخدام الخدعة التالية: استبدال global.fetch داخل النطاق (Scope) هذا فقط إذا كنا نستخدم Node 18+
-      
-      // الحل الأكثر استقراراً مع مكتبة Google الحالية هو إنشاء العميل وتمرير options إذا كانت مدعومة،
-      // أو استخدام global fetch patch (الأكثر ضماناً للعمل مع البروكسي).
+      // 2. تجهيز دالة Fetch المناسبة لهذا الطلب
+      const customFetch = createSmartFetch(currentProxy);
       
       const genAI = new GoogleGenerativeAI(keyObj.key);
       
-      // ⚠️ Monkey-patching to force proxy usage (Google SDK uses global fetch in Node)
-      // نحفظ الـ fetch الأصلي
+      // 3. ⚠️ Monkey-patching: إجبار مكتبة Google على استخدام الـ fetch الخاص بنا
+      // نحفظ الـ fetch الأصلي للنظام
       const originalFetch = global.fetch;
-      // نستبدله بالخاص بنا
+      // نستبدله بـ customFetch لهذه العملية فقط
       global.fetch = customFetch;
 
       try {
+          // --- بداية منطق استدعاء الموديل ---
           for (const modelName of MODEL_CASCADE) {
             try {
               const tools = [];
@@ -117,6 +124,7 @@ async function _callModelInstance(unused_instance, prompt, timeoutMs, label, sys
               const response = await result.response;
               const successText = response.text();
 
+              // تسجيل الاستهلاك
               const usageMetadata = response.usageMetadata ?? result?.usageMetadata;
               if (usageMetadata) {
                 keyManager.recordUsage(keyObj.key, usageMetadata, null, modelName);
@@ -124,49 +132,52 @@ async function _callModelInstance(unused_instance, prompt, timeoutMs, label, sys
                
               liveMonitor.trackAiGeneration((usageMetadata?.promptTokenCount || 0) + (usageMetadata?.candidatesTokenCount || 0));
 
+              // تحرير المفتاح بنجاح
               keyManager.releaseKey(keyObj.key, true);
-              return successText;
+              return successText; 
 
             } catch (modelErr) {
-               // إذا فشل الموديل، نجرب الموديل التالي (Flash -> Pro)
-               const isQuota = String(modelErr).includes('429') || String(modelErr).includes('Quota');
-               if (isQuota) throw modelErr; // ارمي الخطأ ليتم تغيير المفتاح والبروكسي
+               const errStr = String(modelErr);
                
-               logger.warn(`⚠️ Model ${modelName} hiccup on key ${keyObj.nickname}. Trying next...`);
+               // هل الخطأ يستحق تبديل الموديل فقط (مثل Model Overloaded) أم تبديل الاتصال بالكامل؟
+               // الأخطاء التالية تعني أن IP أو المفتاح محروق، لذا نرمي الخطأ للخارج لتبديل كل شيء
+               if (errStr.includes('429') || errStr.includes('Quota') || errStr.includes('fetch failed') || errStr.includes('network') || errStr.includes('EHOSTUNREACH')) {
+                   throw modelErr;
+               }
+               
+               logger.warn(`⚠️ Model ${modelName} hiccup. Trying backup model...`);
             }
           }
+          // --- نهاية منطق الموديل ---
       } finally {
-          // ✅ استعادة الـ fetch الأصلي دائماً (حتى لو حدث خطأ)
+          // ✅ استعادة الـ fetch الأصلي دائماً (حتى لو حدث خطأ) لكي لا نؤثر على باقي التطبيق
           global.fetch = originalFetch;
       }
 
-      throw new Error('All models failed on this key');
+      throw new Error('All models failed on this key/proxy configuration');
 
-    } catch (keyErr) {
-        lastError = keyErr;
-        const isRateLimit = String(keyErr).includes('429') || String(keyErr).includes('Quota') || String(keyErr).includes('403') || String(keyErr).includes('EHOSTUNREACH');
+    } catch (err) {
+        lastError = err;
+        const errStr = String(err);
         
-        // إذا كان الخطأ من البروكسي، نبلغ عنه
-        if (String(keyErr).includes('proxy') || String(keyErr).includes('ECONNRESET')) {
-            logger.warn(`⚠️ Proxy connection failed.`);
+        // تصنيف الخطأ لاتخاذ القرار المناسب
+        const isProxyError = errStr.includes('ECONNRESET') || errStr.includes('ETIMEDOUT') || errStr.includes('fetch failed');
+        const isRateLimit = errStr.includes('429') || errStr.includes('Quota');
+
+        if (isProxyError && currentProxy) {
+            // إذا كان الخطأ من البروكسي، نحرر المفتاح كـ "خطأ شبكة" ليتم استخدامه لاحقاً
+            if (keyObj) keyManager.releaseKey(keyObj.key, false, 'network');
+        } else if (keyObj) {
+            // إذا كان خطأ كوتا أو غيره، نحسبه فشل على المفتاح
+            keyManager.releaseKey(keyObj.key, false, isRateLimit ? '429' : 'error');
         }
 
-        if (keyObj) {
-            // لا نعتبر المفتاح ميتاً فوراً إذا كان الخطأ بسبب الشبكة/البروكسي
-            const errorType = isRateLimit ? '429' : 'network';
-            keyManager.releaseKey(keyObj.key, false, errorType);
-        }
-
-        if (isRateLimit || String(keyErr).includes('network')) { 
-            await sleep(200); // انتظار بسيط قبل المحاولة ببروكسي ومفتاح جديد
-            continue; 
-        } else { 
-            break; 
-        }
+        // انتظار قصير قبل المحاولة التالية ببروكسي ومفتاح جديد
+        await sleep(200);
     }
   }
   
-  throw lastError ?? new Error('Service Busy: All keys/proxies exhausted.');
+  throw lastError ?? new Error('Service Unavailable: All attempts failed.');
 }
 
 module.exports = {
