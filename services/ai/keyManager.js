@@ -1,4 +1,3 @@
-
 // services/ai/keyManager.js
 'use strict';
 
@@ -14,17 +13,126 @@ class KeyManager {
         this.MAX_FAILS = 4;
         this.isInitialized = false;
         
-        // متغير لتتبع آخر يوم تم فيه التصفير
-        this.lastResetDay = new Date().getDate(); 
+        // 🔥 الذاكرة الجماعية للفشل (Global Cooldown Memory)
+        // تخزن متى ينتهي عقاب المفتاح. إذا كان الوقت الحالي < الوقت المخزن، المفتاح محظور
+        this.globalCooldowns = new Map(); 
 
-        // 🔥 تشغيل فاحص تلقائي كل دقيقة (لإعادة التعيين الساعة 8 صباحاً)
+        this.lastResetDay = new Date().getDate(); 
         setInterval(() => this._dailyResetCheck(), 60 * 1000);
     }
 
-    async reloadKeys() {
-        this.isInitialized = false;
-        this.keys.clear();
-        await this.init();
+    async init() {
+        if (this.isInitialized) return;
+        logger.info('🔑 KeyManager: Loading Genius Mode (Google + HF)...');
+
+        // 1. تحميل مفاتيح Google
+        if (process.env.GOOGLE_API_KEY) this._addKey(process.env.GOOGLE_API_KEY, 'Google_Master', 'google');
+        for (let i = 1; i <= 20; i++) {
+            const k = process.env[`GOOGLE_API_KEY_${i}`];
+            if (k) this._addKey(k, `Google_${i}`, 'google');
+        }
+
+        // 2. تحميل مفاتيح Hugging Face (الثلاثة)
+        for (let i = 1; i <= 5; i++) {
+            const k = process.env[`HUGGINGFACE_API_KEY_${i}`];
+            if (k) this._addKey(k, `HF_Key_${i}`, 'huggingface');
+        }
+
+        logger.success(`🧠 KeyManager Ready: ${this.keys.size} keys loaded.`);
+        this.isInitialized = true;
+    }
+
+    _addKey(keyStr, nickname, provider) {
+        if (this.keys.has(keyStr)) return;
+
+        this.keys.set(keyStr, {
+            key: keyStr,
+            nickname,
+            provider, // 'google' or 'huggingface'
+            client: provider === 'google' ? new GoogleGenerativeAI(keyStr) : null,
+            status: 'idle',
+            fails: 0,
+            usage: 0,
+            cooldownUntil: 0 // 🕒 وقت فك الحظر (timestamp)
+        });
+    }
+
+    /**
+     * ✅ الدالة الذكية: تعطي مفتاحاً صالحاً فقط وتتجاهل المحروقين عالمياً
+     */
+    async acquireKey(providerFilter = 'google') {
+        return new Promise((resolve) => {
+            const tryAcquire = () => {
+                const now = Date.now();
+
+                // 1. تنظيف تلقائي: تحرير المفاتيح التي انتهى وقت عقابها
+                this.keys.forEach(k => {
+                    if (k.cooldownUntil > 0 && now > k.cooldownUntil) {
+                        k.status = 'idle';
+                        k.cooldownUntil = 0;
+                        // logger.log(`♻️ Key ${k.nickname} is back from penalty box!`);
+                    }
+                });
+
+                // 2. الفلترة الذكية
+                const candidates = Array.from(this.keys.values()).filter(k => {
+                    return k.provider === providerFilter && // المزود المطلوب
+                           k.status === 'idle' &&           // غير مشغول حالياً
+                           k.cooldownUntil <= now;          // غير معاقب عالمياً
+                });
+
+                if (candidates.length > 0) {
+                    const selected = shuffled(candidates)[0];
+                    selected.status = 'busy';
+                    selected.lastUsed = now;
+                    selected.usage++;
+                    resolve(selected);
+                } else {
+                    // إذا لم نجد مفتاحاً صالحاً، نرجع null (ليدير Orchestrator الأمر)
+                    resolve(null); 
+                }
+            };
+            tryAcquire();
+        });
+    }
+
+    /**
+     * ✅ تحرير المفتاح مع معاقبته إذا فشل
+     */
+    releaseKey(keyStr, wasSuccess, errorType = null) {
+        const keyObj = this.keys.get(keyStr);
+        if (!keyObj) return;
+
+        if (wasSuccess) {
+            keyObj.status = 'idle';
+            keyObj.fails = 0;
+            keyObj.cooldownUntil = 0;
+        } else {
+            keyObj.fails++;
+            
+            // 🔥 نظام العقوبات الذكي
+            let penaltyDuration = 0;
+
+            if (errorType === '429' || errorType === 'quota') {
+                // عقوبة قاسية: دقيقة كاملة (لأن جوجل يطلب ذلك)
+                penaltyDuration = 60 * 1000; 
+                logger.warn(`❄️ FREEZING ${keyObj.nickname} for 60s (Quota/Rate Limit).`);
+            } else if (errorType === '503_loading') {
+                // عقوبة بسيطة: 10 ثواني (HF Model Loading)
+                penaltyDuration = 10 * 1000;
+            } else {
+                // خطأ غير معروف: 5 ثواني
+                penaltyDuration = 5 * 1000;
+            }
+
+            keyObj.cooldownUntil = Date.now() + penaltyDuration;
+            keyObj.status = 'cooldown'; // نغير الحالة لكي لا يختاره acquireKey
+
+            if (keyObj.fails >= this.MAX_FAILS * 2) {
+                keyObj.status = 'dead';
+                logger.error(`💀 Key ${keyObj.nickname} is DEAD.`);
+            }
+        }
     }
 
     // ✅ الدالة الجديدة: فحص الوقت وتصفير العدادات
@@ -375,7 +483,6 @@ class KeyManager {
     getKeyCount() {
         return this.keys.size;
     }
-} // <--- إغلاق الكلاس هنا
-
+} 
 const instance = new KeyManager();
 module.exports = instance;
