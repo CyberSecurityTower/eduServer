@@ -9,6 +9,7 @@ const { withTimeout, sleep } = require('../../utils');
 const keyManager = require('./keyManager');
 const liveMonitor = require('../monitoring/realtimeStats');
 const proxyManager = require('./proxyManager');
+const { SocksProxyAgent } = require('socks-proxy-agent'); // ✅ إضافة جديدة
 
 // ✅ استيراد مكتبات البروكسي (يجب تثبيتها: npm i https-proxy-agent node-fetch)
 const fetch = require('node-fetch');
@@ -28,22 +29,24 @@ async function initializeModelPools() {
 }
 
 /**
- * ✅ الدالة الذكية (Smart Fetch):
- * - إذا مررنا لها proxyUrl: تنشئ اتصالاً عبر البروكسي.
- * - إذا كان proxyUrl = null: تنشئ اتصالاً مباشراً (IP السيرفر).
+ * ✅ الدالة الذكية المحدثة: تدعم SOCKS و HTTP
  */
 function createSmartFetch(proxyUrl) {
     return (url, init) => {
         const options = { ...init };
         
         if (proxyUrl) {
-            // ✅ استخدام البروكسي
-            options.agent = new HttpsProxyAgent(proxyUrl);
-            options.timeout = 15000; // مهلة 15 ثانية للبروكسي
-        } else {
-            // ✅ اتصال مباشر (بدون Agent)
-            // لا نفعل شيئاً، سيستخدم node-fetch الإعدادات الافتراضية
-        }
+            // التحقق من نوع البروكسي
+            if (proxyUrl.startsWith('socks')) {
+                // ✅ استخدام مكتبة SOCKS
+                options.agent = new SocksProxyAgent(proxyUrl);
+            } else {
+                // ✅ استخدام مكتبة HTTP/HTTPS
+                options.agent = new HttpsProxyAgent(proxyUrl);
+            }
+            options.timeout = 15000; // مهلة 15 ثانية
+        } 
+        // إذا كان null، سيتم الاتصال المباشر تلقائياً
         
         return fetch(url, options);
     };
