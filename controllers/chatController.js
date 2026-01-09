@@ -19,7 +19,8 @@ const { runSuggestionManager } = require('../services/ai/managers/suggestionMana
 const { explainLessonContent } = require('../services/engines/ghostTeacher');
 const { getNexusMemory, updateNexusKnowledge } = require('../services/ai/eduNexus');
 const { getSystemFeatureFlag } = require('../services/data/helpers'); 
-
+const mediaManager = require('../services/media/mediaManager'); 
+const scraper = require('../utils/scraper');
 const { generateWithFailover } = require('../services/ai/failover'); 
 const SYSTEM_INSTRUCTION = require('../config/system-instruction');
 const { getCurriculumContext } = require('../services/ai/curriculumContext');
@@ -117,7 +118,7 @@ async function generateChatSuggestions(req, res) {
 // ==========================================
 async function chatInteractive(req, res) {
   // ✅ 1. Receive data from frontend
-  let { userId, message, history = [], sessionId, currentContext = {} } = req.body;
+  let { userId, message, history, sessionId, currentContext, file, webSearch } = req.body;
 
   // Safety check
   if (!sessionId) sessionId = crypto.randomUUID();
@@ -150,6 +151,22 @@ async function chatInteractive(req, res) {
       }
     }
 
+  try {
+    // =========================================================
+    // 🧩 التجهيز (Services Layer) - نظيف جداً
+    // =========================================================
+    
+    // أ. معالجة الميديا (صور/صوت/ملفات)
+    const { payload: filePayload, note: fileNote } = await mediaManager.processUserAttachment(userId, file);
+
+    // ب. معالجة الروابط (إذا لم يكن هناك ملف)
+    // إذا كان هناك ملف، غالباً لا نحتاج لقراءة الروابط في نفس الوقت (لتخفيف الحمل)
+    if (!filePayload) {
+        message = await scraper.enrichMessageWithContext(message);
+    }
+
+    // ج. دمج الملاحظات في الرسالة
+    const finalMessage = message + fileNote;
     // =========================================================
     // 3. FETCH USER DATA (The Fix: Do this BEFORE logic checks)
     // =========================================================
@@ -577,6 +594,7 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
     }).join('\n');
 
     const finalPrompt = PROMPTS.chat.interactiveChat(
+      finalMessage,
       safeMessage,
       memoryReport || '',
       curriculumReport || '',
@@ -597,7 +615,12 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
       atomicContextString 
     );
 
-   const modelResp = await generateWithFailoverRef('chat', finalPrompt, { label: 'MasterChat', timeoutMs: CONFIG.TIMEOUTS.chat });
+ const modelResp = await generateWithFailoverRef('chat', finalPrompt, { 
+        label: 'MasterChat', 
+        timeoutMs: CONFIG.TIMEOUTS.chat,
+        fileData: filePayload,     // 👈 الملف جاهز
+        enableSearch: !!webSearch  // 👈 البحث
+    });
     const rawText = await extractTextFromResult(modelResp);
     let parsedResponse = await ensureJsonOrRepair(rawText, 'analysis');
 
