@@ -9,8 +9,8 @@ async function generateWithFailover(poolName, prompt, opts = {}) {
         opts.label, 
         opts.systemInstruction,
         opts.history,
-        opts.fileData,   
-        opts.enableSearch 
+        opts.attachments, // ✅ تمرير المصفوفة
+        opts.enableSearch // ✅ تمرير خيار البحث
     );
 }
 module.exports = generateWithFailover;
