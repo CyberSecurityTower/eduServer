@@ -1,17 +1,15 @@
-
 // services/ai/index.js
 'use strict';
 
 const CONFIG = require('../../config');
 const logger = require('../../utils/logger');
-const { withTimeout, sleep } = require('../../utils'); // تأكد من وجود sleep في utils
+const { withTimeout, sleep } = require('../../utils'); 
 const keyManager = require('./keyManager');
 const liveMonitor = require('../monitoring/realtimeStats');
 
 const MODEL_CASCADE = [
   'gemini-2.5-flash',
-  'gemini-2.0-flash',
-  'gemini-2.5-flash-lite'
+  'gemini-2.5-pro'
 ];
 
 async function initializeModelPools() {
@@ -19,10 +17,20 @@ async function initializeModelPools() {
   logger.success('🤖 AI Engine: Model Pools & Key Manager Ready.');
 }
 
-
-// 👇 نعدل الدالة لتقبل fileData و enableSearch
-async function _callModelInstance(unused_instance, prompt, timeoutMs, label, systemInstruction, history, fileData = null, enableSearch = false) {
+/**
+ * الوظيفة الأساسية لاستدعاء الموديل
+ * @param {*} unused_instance - (متروك للتوافق)
+ * @param {string} prompt - النص
+ * @param {number} timeoutMs - مهلة الانتظار
+ * @param {string} label - لتتبع السجلات
+ * @param {string} systemInstruction - تعليمات النظام
+ * @param {Array} history - سجل المحادثة
+ * @param {Array} attachments - مصفوفة المرفقات (صور/ملفات) جاهزة
+ * @param {boolean} enableSearch - تفعيل البحث في جوجل
+ */
+async function _callModelInstance(unused_instance, prompt, timeoutMs, label, systemInstruction, history, attachments = [], enableSearch = false) {
   
+  // استراتيجية المحاولات: ضعف عدد المفاتيح
   const totalKeys = keyManager.getKeyCount() || 5; 
   const MAX_ATTEMPTS = totalKeys * 2; 
   let lastError = null;
@@ -58,18 +66,15 @@ async function _callModelInstance(unused_instance, prompt, timeoutMs, label, sys
             generationConfig
           });
 
-          // 2. تحضير الرسالة (نص + صورة)
+          // 2. تحضير الرسالة (نص + مرفقات متعددة)
           let messageParts = [];
 
-          if (fileData && fileData.data) {
-             messageParts.push({
-               inlineData: {
-                 data: fileData.data, // Base64
-                 mimeType: fileData.mime 
-               }
-             });
+          // ✅ التعديل الجوهري: دمج مصفوفة المرفقات (سواء كانت صورة واحدة أو 10)
+          if (attachments && Array.isArray(attachments) && attachments.length > 0) {
+             messageParts.push(...attachments);
           }
 
+          // إضافة النص (Prompt)
           if (prompt) {
              messageParts.push({ text: typeof prompt === 'string' ? prompt : JSON.stringify(prompt) });
           }
@@ -84,37 +89,48 @@ async function _callModelInstance(unused_instance, prompt, timeoutMs, label, sys
           const response = await result.response;
           const successText = response.text();
 
-          // ... (باقي كود التتبع كما هو) ...
-          
+          // 4. تسجيل الاستهلاك
           const usageMetadata = response.usageMetadata ?? result?.usageMetadata;
           if (usageMetadata) {
             keyManager.recordUsage(keyObj.key, usageMetadata, null, modelName);
           }
-           // تعقب الاستهلاك المباشر
-           const totalTokens = (usageMetadata?.promptTokenCount || 0) + (usageMetadata?.candidatesTokenCount || 0);
-           liveMonitor.trackAiGeneration(totalTokens);
+           
+          // تعقب الاستهلاك المباشر (للداشبورد)
+          const totalTokens = (usageMetadata?.promptTokenCount || 0) + (usageMetadata?.candidatesTokenCount || 0);
+          liveMonitor.trackAiGeneration(totalTokens);
 
+          // نجاح! حرر المفتاح
           keyManager.releaseKey(keyObj.key, true);
           return successText;
 
         } catch (modelErr) {
-            // ... (نفس كود معالجة الأخطاء القديم) ...
+            // معالجة أخطاء الكوتا (429)
              if (String(modelErr).includes('429') || String(modelErr).includes('Quota') || String(modelErr).includes('403')) {
              throw modelErr; 
           }
-           logger.warn(`⚠️ Model ${modelName} hiccup. Trying next...`);
+           logger.warn(`⚠️ Model ${modelName} hiccup on key ${keyObj.nickname}. Trying next...`);
         }
       }
       throw new Error('All models failed on this key');
+
     } catch (keyErr) {
-        // ... (نفس كود معالجة الأخطاء القديم) ...
         lastError = keyErr;
-        if (keyObj) keyManager.releaseKey(keyObj.key, false, String(keyErr).includes('429') ? '429' : 'error');
-        if (String(keyErr).includes('429')) { await sleep(100); continue; }
-        else { break; }
+        const isRateLimit = String(keyErr).includes('429') || String(keyErr).includes('Quota') || String(keyErr).includes('403');
+        
+        if (keyObj) {
+            keyManager.releaseKey(keyObj.key, false, isRateLimit ? '429' : 'error');
+        }
+
+        if (isRateLimit) { 
+            await sleep(100); 
+            continue; 
+        } else { 
+            break; 
+        }
     }
   }
-  throw lastError ?? new Error('Service Busy');
+  
+  throw lastError ?? new Error('Service Busy: All keys exhausted.');
 }
 
 module.exports = {
