@@ -71,6 +71,13 @@ async function _callModelInstance(unused_instance, prompt, timeoutMs, label, sys
 
           // ✅ التعديل الجوهري: دمج مصفوفة المرفقات (سواء كانت صورة واحدة أو 10)
           if (attachments && Array.isArray(attachments) && attachments.length > 0) {
+             console.log(`📎 [AI Service] Injecting ${attachments.length} attachments into prompt.`);
+             // التحقق من صحة الهيكل (Google GenAI يتطلب inlineData)
+             attachments.forEach((att, idx) => {
+                 if (!att.inlineData || !att.inlineData.data || !att.inlineData.mimeType) {
+                     console.error(`⚠️ [AI Service] Invalid attachment format at index ${idx}:`, JSON.stringify(att));
+                 }
+             });
              messageParts.push(...attachments);
           }
 
@@ -78,6 +85,14 @@ async function _callModelInstance(unused_instance, prompt, timeoutMs, label, sys
           if (prompt) {
              messageParts.push({ text: typeof prompt === 'string' ? prompt : JSON.stringify(prompt) });
           }
+
+          // 🛑 DEBUG: طباعة ما سيتم إرساله للموديل (بدون طباعة الـ Base64 الطويل)
+          const debugParts = messageParts.map(p => {
+              if (p.inlineData) return { type: 'image', mime: p.inlineData.mimeType, size: p.inlineData.data.length };
+              return { type: 'text', content: p.text ? p.text.substring(0, 50) + '...' : '...' };
+          });
+          console.log('🤖 [AI Service] Final MessageParts to Model:', JSON.stringify(debugParts, null, 2));
+
 
           // 3. الإرسال
           const result = await withTimeout(
