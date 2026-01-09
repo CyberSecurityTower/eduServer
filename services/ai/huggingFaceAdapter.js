@@ -1,9 +1,8 @@
 'use strict';
 const fetch = require('node-fetch');
 
-// 🟢 استخدام موديلات مستقرة ومجانية
 const MODELS = {
-    // سنستخدم Qwen 2.5 بدلاً من DeepSeek لأنه متاح ومستقر ومجاني حالياً
+    // نستخدم Qwen عبر الـ Router الجديد
     'deepseek': 'Qwen/Qwen2.5-72B-Instruct', 
     'qwen': 'Qwen/Qwen2.5-72B-Instruct', 
     'llama': 'meta-llama/Llama-3.3-70B-Instruct'
@@ -25,11 +24,10 @@ async function callHuggingFace(apiKey, prompt, systemInstruction, history, model
     }
     messages.push({ role: 'user', content: prompt });
 
-    // اختيار الموديل
     const modelId = MODELS[modelKey] || MODELS['deepseek'];
     
-    // 🟢 التغيير هنا: استخدام الرابط القياسي (api-inference) بدلاً من router لتجنب أخطاء Not Found
-    const url = `https://api-inference.huggingface.co/models/${modelId}`;
+    // ✅ التصحيح: العودة إلى رابط Router لأنه هو الوحيد المدعوم الآن
+    const url = `https://router.huggingface.co/hf-inference/models/${modelId}`;
 
     console.log(`🔌 HF Request: Model=${modelId} | KeyPrefix=${apiKey ? apiKey.substring(0, 4) : 'NULL'}...`);
 
@@ -40,11 +38,11 @@ async function callHuggingFace(apiKey, prompt, systemInstruction, history, model
                 'Authorization': `Bearer ${apiKey}`,
                 'Content-Type': 'application/json',
                 'x-use-cache': 'false',
-                'x-wait-for-model': 'true' // مهم جداً للانتظار
+                'x-wait-for-model': 'true'
             },
             body: JSON.stringify({
                 messages: messages, 
-                max_tokens: 2048, // تقليل التوكنز قليلاً لضمان السرعة
+                max_tokens: 2048,
                 temperature: 0.6,
                 stream: false
             })
@@ -57,9 +55,7 @@ async function callHuggingFace(apiKey, prompt, systemInstruction, history, model
 
             console.error('❌ HF API ERROR:', JSON.stringify(errJson)); 
 
-            // التعامل مع تحميل الموديل (Model Loading)
-            if (response.status === 503 || (errJson.error && JSON.stringify(errJson).toLowerCase().includes('loading'))) {
-                // هذا الخطأ طبيعي في البداية، يعني أن الموديل يستيقظ
+            if (response.status === 503 || JSON.stringify(errJson).toLowerCase().includes('loading')) {
                 throw new Error(`503_LOADING:${errJson.estimated_time || 10}`);
             }
             
@@ -68,21 +64,13 @@ async function callHuggingFace(apiKey, prompt, systemInstruction, history, model
 
         const result = await response.json();
         
-        // استخراج الرد بمرونة
         let outputText = '';
         if (result.choices && result.choices[0]) {
             outputText = result.choices[0].message.content;
         } else if (Array.isArray(result) && result[0]) {
-            // أحياناً HF يرجع مصفوفة مباشرة
             outputText = result[0].generated_text || result[0].message?.content || '';
         } else if (result.generated_text) {
             outputText = result.generated_text;
-        }
-
-        // تنظيف الرد إذا كان يحتوي على System prompt بالخطأ
-        if (typeof outputText === 'string' && outputText.includes(prompt)) {
-             // بعض الموديلات تعيد السؤال، نحذفه
-             outputText = outputText.replace(prompt, '').trim();
         }
 
         if (!outputText) throw new Error('HF returned empty response');
