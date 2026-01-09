@@ -13,38 +13,84 @@ const GOOGLE_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash-lite'];
 async function initializeModelPools() {
   await keyManager.init();
   const count = keyManager.getKeyCount();
-  logger.success(`🤖 AI Engine: Multi-Layer Genius Mode 🧠 | ${count} Keys Loaded`);
+  logger.success(`🤖 AI Engine: Hybrid Mode Active | Loaded ${count} Keys`);
 }
 
 async function _callModelInstance(unused, prompt, timeoutMs, label, systemInstruction, history, attachments, enableSearch) {
   
-  // 🔁 السيناريو: نكرر العملية مرتين كحد أقصى إذا فشل كل شيء في الدورة الأولى
+  // 🔁 سنحاول دورتين: الدورة الأولى HF ثم Google (حسب طلبك للتجربة)
   const MAX_CYCLES = 2; 
 
   for (let cycle = 1; cycle <= MAX_CYCLES; cycle++) {
-      if (cycle > 1) logger.warn(`🔄 Cycle ${cycle}: Retrying entire AI sequence...`);
+      if (cycle > 1) logger.warn(`🔄 Cycle ${cycle}: Retrying AI sequence...`);
 
       // ========================================================
-      // 1️⃣ مرحلة جوجل (Gemini): محاولتين (2 attempts)
+      // 1️⃣ المرحلة الأولى: Hugging Face (DeepSeek/Qwen) 🔥 [الأولوية الآن]
       // ========================================================
+      // نجرب كل مفاتيح HF المتاحة أولاً
+      let hfKeyObj;
+      // نطلب مفتاح HF صالح
+      while ((hfKeyObj = await keyManager.acquireKey('huggingface'))) {
+          try {
+              logger.info(`🚀 [Try HF] Using Key: ${hfKeyObj.nickname} | Model: DeepSeek-R1...`);
+              
+              // تحذير: HF Inference API لا يدعم تصفح الويب المباشر، هو يولد نصوص فقط
+              // لكننا نمرر له البرومبت كما هو
+              
+              // دمج المرفقات في النص (لأن النسخة المجانية نصية فقط)
+              let finalPrompt = prompt;
+              if (attachments?.length) finalPrompt += "\n[System Note: User attached images/files. Do your best to answer based on text context.]";
+              if (enableSearch) finalPrompt += "\n[System Note: User requested current web info. Use your internal knowledge base as best as you can.]";
+
+              const responseText = await withTimeout(
+                  callHuggingFace(hfKeyObj.key, finalPrompt, systemInstruction, history, 'deepseek'),
+                  (timeoutMs || 40000) + 10000, 
+                  `HF_Call`
+              );
+
+              if (responseText && responseText.length > 5) {
+                  logger.success(`✅ SUCCESS: [HuggingFace] Key: ${hfKeyObj.nickname} | Model: DeepSeek | Length: ${responseText.length}`);
+                  keyManager.releaseKey(hfKeyObj.key, true);
+                  return { text: responseText, sources: [] };
+              }
+              
+              throw new Error('Empty response from HF');
+
+          } catch (err) {
+              const errStr = String(err);
+              let errType = 'error';
+              if (errStr.includes('503') || errStr.includes('LOADING')) errType = '503_loading';
+
+              logger.warn(`❌ FAIL: HF Key ${hfKeyObj.nickname}. Reason: ${errType} | Msg: ${errStr.substring(0, 50)}...`);
+              keyManager.releaseKey(hfKeyObj.key, false, errType);
+
+              // إذا كان "تحميل"، ننتظر قليلاً قبل تجربة المفتاح التالي
+              if (errType === '503_loading') await sleep(3000);
+          }
+      }
+
+      // ========================================================
+      // 2️⃣ المرحلة الثانية: Google Gemini (الاحتياطي الآن)
+      // ========================================================
+      // نحاول مرتين مع جوجل
       for (let gAttempt = 1; gAttempt <= 2; gAttempt++) {
           const keyObj = await keyManager.acquireKey('google');
           
-          if (!keyObj) {
-              // لا توجد مفاتيح جوجل صالحة (كلها محروقة أو مشغولة)
-              // نكسر حلقة جوجل ونذهب لـ HF فوراً
-              // logger.log(`🔸 No Google keys available. Skipping to HF.`);
-              break; 
-          }
+          if (!keyObj) break; // لا توجد مفاتيح جوجل
 
           try {
-              // logger.log(`🔹 [Cycle ${cycle}] Trying Google Key: ${keyObj.nickname}...`);
+              logger.info(`🔹 [Try Google] Using Key: ${keyObj.nickname} | Search: ${enableSearch ? 'ON' : 'OFF'}...`);
               
               const genAI = keyObj.client;
+              
+              // 🌐 تفعيل البحث في الويب (Grounding)
+              // يتم تفعيله فقط إذا طلب المستخدم ذلك (enableSearch = true)
+              const tools = enableSearch ? [{ googleSearch: {} }] : [];
+              
               const model = genAI.getGenerativeModel({ 
                   model: GOOGLE_MODELS[0], 
                   systemInstruction,
-                  tools: enableSearch ? [{ googleSearch: {} }] : [] 
+                  tools: tools 
               });
 
               const chat = model.startChat({ 
@@ -58,79 +104,42 @@ async function _callModelInstance(unused, prompt, timeoutMs, label, systemInstru
 
               const result = await withTimeout(
                   chat.sendMessage(parts),
-                  timeoutMs || 25000,
-                  `Gemini Call`
+                  timeoutMs || 30000,
+                  `Gemini_Call`
               );
               
-              const responseText = (await result.response).text();
+              const response = await result.response;
+              const responseText = response.text();
 
-              // ✅ نجاح باهر
-              logger.success(`✅ SUCCESS: ${keyObj.nickname} (Gemini) delivered the answer!`);
+              // استخراج المصادر إذا وجدت (Web Search Results)
+              let sources = [];
+              if (enableSearch && response.candidates?.[0]?.groundingMetadata?.groundingChunks) {
+                  sources = response.candidates[0].groundingMetadata.groundingChunks
+                      .map(c => c.web ? { title: c.web.title, url: c.web.uri } : null)
+                      .filter(Boolean);
+              }
+
+              logger.success(`✅ SUCCESS: [Google] Key: ${keyObj.nickname} | Search Used: ${sources.length > 0}`);
               keyManager.releaseKey(keyObj.key, true);
-              return { text: responseText, sources: [] };
+              return { text: responseText, sources: sources };
 
           } catch (err) {
               const errStr = String(err);
               let errType = 'error';
               if (errStr.includes('429') || errStr.includes('Quota')) errType = '429';
 
-              logger.warn(`❌ FAIL: ${keyObj.nickname} died. Reason: ${errType}`);
+              logger.warn(`❌ FAIL: Google Key ${keyObj.nickname}. Reason: ${errType}`);
               keyManager.releaseKey(keyObj.key, false, errType);
-              
-              // انتظار بسيط جداً قبل المحاولة الثانية لتهدئة الشبكة
               await sleep(200);
           }
       }
-
-      // ========================================================
-      // 2️⃣ مرحلة Hugging Face: تجربة *كل* المفاتيح المتاحة
-      // ========================================================
-      // في هذه المرحلة، نجرب كل مفاتيح HF واحداً تلو الآخر حتى ينجح أحدها
       
-      // نطلب مفتاحاً تلو الآخر حتى تنفد المفاتيح الصالحة
-      let hfKeyObj;
-      while ((hfKeyObj = await keyManager.acquireKey('huggingface'))) {
-          try {
-              // logger.log(`🚀 [Cycle ${cycle}] Switching to HF Key: ${hfKeyObj.nickname} (Model: DeepSeek/Qwen)...`);
-              
-              // دمج المرفقات في النص لأن HF غالباً نصي فقط
-              let finalPrompt = prompt;
-              if (attachments?.length) finalPrompt += "\n[Note: Attachments provided but ignored in fallback mode.]";
-
-              const responseText = await withTimeout(
-                  callHuggingFace(hfKeyObj.key, finalPrompt, systemInstruction, history, 'deepseek'), // نطلب DeepSeek
-                  (timeoutMs || 30000) + 10000, // نعطيه وقتاً أطول
-                  `HF Call`
-              );
-
-              if (responseText && responseText.length > 5) {
-                  logger.success(`✅ SUCCESS: ${hfKeyObj.nickname} (DeepSeek) saved the day!`);
-                  keyManager.releaseKey(hfKeyObj.key, true);
-                  return { text: responseText, sources: [] };
-              }
-              
-              throw new Error('Empty response from HF');
-
-          } catch (err) {
-              const errStr = String(err);
-              let errType = 'error';
-              if (errStr.includes('503') || errStr.includes('LOADING')) errType = '503_loading';
-
-              logger.warn(`❌ FAIL: ${hfKeyObj.nickname} failed. Reason: ${errType}`);
-              keyManager.releaseKey(hfKeyObj.key, false, errType);
-
-              // إذا كان الخطأ "تحميل"، ننتظر قليلاً قبل تجربة المفتاح التالي
-              if (errType === '503_loading') await sleep(2000);
-          }
-      }
-      
-      // إذا وصلنا هنا، يعني فشلت محاولتين جوجل + كل مفاتيح HF في هذه الدورة
-      // ننتظر قليلاً قبل بدء الدورة الثانية (Cycle 2)
+      // انتظار قبل الدورة التالية
       if (cycle < MAX_CYCLES) await sleep(1000);
   }
 
-  logger.error(`💀 TOTAL SYSTEM FAILURE: All providers exhausted after ${MAX_CYCLES} cycles.`);
-  throw new Error('Server Busy: All AI brains are currently overloaded. Please try again in a minute.');
+  logger.error(`💀 SYSTEM MELTDOWN: All providers (HF & Google) failed.`);
+  throw new Error('Service Busy: AI is overloaded. Please try again.');
 }
 
 module.exports = {
