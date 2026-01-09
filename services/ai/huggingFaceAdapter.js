@@ -2,16 +2,16 @@
 'use strict';
 const fetch = require('node-fetch');
 
+// سنستخدم Qwen حالياً لأنه أسرع وأكثر استقراراً في التجربة من DeepSeek
 const MODELS = {
-    // هذا الموديل قوي جداً (32B) وممتاز في التفكير
     'deepseek': 'deepseek-ai/DeepSeek-R1-Distill-Qwen-32B', 
-    'qwen': 'Qwen/Qwen2.5-72B-Instruct',
+    'qwen': 'Qwen/Qwen2.5-72B-Instruct', 
     'llama': 'meta-llama/Llama-3.3-70B-Instruct'
 };
 
-async function callHuggingFace(apiKey, prompt, systemInstruction, history, modelKey = 'deepseek') {
+async function callHuggingFace(apiKey, prompt, systemInstruction, history, modelKey = 'qwen') { // 👈 غيرنا الافتراضي لـ Qwen للتجربة
     
-    // إعداد الرسائل
+    // 1. تجهيز الرسائل
     let messages = [];
     if (systemInstruction) messages.push({ role: 'system', content: systemInstruction });
     
@@ -25,10 +25,10 @@ async function callHuggingFace(apiKey, prompt, systemInstruction, history, model
     }
     messages.push({ role: 'user', content: prompt });
 
-    const modelId = MODELS[modelKey];
+    const modelId = MODELS[modelKey] || MODELS['qwen'];
     const url = `https://api-inference.huggingface.co/models/${modelId}`;
 
-    // console.log(`🔌 Connecting to HF Model: ${modelId}`); // Un-comment for deep debug
+    console.log(`🔌 HF Request: Model=${modelId} | Key=${apiKey.substring(0, 5)}...`);
 
     try {
         const response = await fetch(url, {
@@ -36,52 +36,46 @@ async function callHuggingFace(apiKey, prompt, systemInstruction, history, model
             headers: {
                 'Authorization': `Bearer ${apiKey}`,
                 'Content-Type': 'application/json',
-                'x-use-cache': 'false' 
+                'x-use-cache': 'false',
+                'x-wait-for-model': 'true' // 🔥 هذا هو السطر السحري! يخبرهم بالانتظار حتى يصحو الموديل
             },
             body: JSON.stringify({
-                messages: messages, // الواجهة الجديدة تدعم messages مباشرة
+                messages: messages, 
                 max_tokens: 2048,
-                temperature: 0.7,
-                stream: false
+                temperature: 0.6
             })
         });
 
-        // التعامل مع الخطأ 503 (الموديل قيد التحميل)
-        if (response.status === 503) {
-            const errData = await response.json();
-            throw new Error(`503_LOADING:${errData.estimated_time || 5}`);
-        }
-
-        if (!response.ok) {
-            const errText = await response.text();
-            // أحياناً يرجع 422 إذا كان الإدخال طويلاً جداً
-            throw new Error(`HF_ERROR_${response.status}: ${errText.substring(0, 100)}`);
-        }
-
         const result = await response.json();
-        
-        // استخراج الرد (يدعم chat completion format)
-        let outputText = '';
-        
-        // فحص الهيكل الراجع من HF
-        if (result.choices && result.choices[0] && result.choices[0].message) {
-            outputText = result.choices[0].message.content;
-        } 
-        else if (Array.isArray(result) && result[0]) {
-             // Fallback for older API format
-             outputText = result[0].generated_text || result[0].message?.content || '';
-        } 
-        else if (result.generated_text) {
-             outputText = result.generated_text;
+
+        // 🛑 التقاط الأخطاء وطباعتها بوضوح
+        if (!response.ok) {
+            console.error('❌ HF RAW ERROR:', JSON.stringify(result)); // لترى الخطأ في اللوج
+            
+            // إذا كان الخطأ 503، يعني الموديل يجهز نفسه
+            if (result.error && result.error.includes('loading')) {
+                throw new Error(`503_LOADING:${result.estimated_time || 5}`);
+            }
+            // أخطاء أخرى (مثل المفتاح غلط، أو الموديل يحتاج موافقة)
+            throw new Error(`HF_API_ERROR: ${JSON.stringify(result)}`);
         }
 
-        // تنظيف الرد من "التفكير" <think> إذا كان DeepSeek
-        // (اختياري: يمكنك تركه إذا أردت رؤية كيف يفكر الموديل)
-        // outputText = outputText.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+        // استخراج النص
+        let outputText = '';
+        if (result.choices && result.choices[0]) {
+            outputText = result.choices[0].message.content;
+        } else if (Array.isArray(result) && result[0]) {
+            outputText = result[0].generated_text || result[0].message?.content || '';
+        } else if (result.generated_text) {
+            outputText = result.generated_text;
+        }
+
+        if (!outputText) throw new Error('HF returned empty response');
 
         return outputText;
 
     } catch (error) {
+        // إعادة رمي الخطأ ليتم التقاطه في index.js
         throw error;
     }
 }
