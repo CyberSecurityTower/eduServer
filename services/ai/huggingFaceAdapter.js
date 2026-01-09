@@ -2,27 +2,19 @@
 'use strict';
 const fetch = require('node-fetch');
 
-// 🧠 قائمة العباقرة (موديلات قوية ومجانية على Inference API)
 const MODELS = {
-    // موديل قوي جداً في التفكير المنطقي والبرمجة
+    // هذا الموديل قوي جداً (32B) وممتاز في التفكير
     'deepseek': 'deepseek-ai/DeepSeek-R1-Distill-Qwen-32B', 
-    // منافس شرس لـ GPT-4
     'qwen': 'Qwen/Qwen2.5-72B-Instruct',
-    // احتياطي كلاسيكي قوي
     'llama': 'meta-llama/Llama-3.3-70B-Instruct'
 };
 
 async function callHuggingFace(apiKey, prompt, systemInstruction, history, modelKey = 'deepseek') {
     
-    // 1. تحويل الهيستوري من Gemini Format إلى OpenAI/HF Format
+    // إعداد الرسائل
     let messages = [];
-
-    // System Prompt
-    if (systemInstruction) {
-        messages.push({ role: 'system', content: systemInstruction });
-    }
-
-    // Chat History
+    if (systemInstruction) messages.push({ role: 'system', content: systemInstruction });
+    
     if (history && Array.isArray(history)) {
         history.forEach(msg => {
             messages.push({
@@ -31,12 +23,12 @@ async function callHuggingFace(apiKey, prompt, systemInstruction, history, model
             });
         });
     }
-
-    // Current Prompt
     messages.push({ role: 'user', content: prompt });
 
-    const modelId = MODELS[modelKey] || MODELS['deepseek'];
+    const modelId = MODELS[modelKey];
     const url = `https://api-inference.huggingface.co/models/${modelId}`;
+
+    // console.log(`🔌 Connecting to HF Model: ${modelId}`); // Un-comment for deep debug
 
     try {
         const response = await fetch(url, {
@@ -44,19 +36,17 @@ async function callHuggingFace(apiKey, prompt, systemInstruction, history, model
             headers: {
                 'Authorization': `Bearer ${apiKey}`,
                 'Content-Type': 'application/json',
-                'x-use-cache': 'false' // نطلب عدم استخدام الكاش للحصول على إجابة جديدة
+                'x-use-cache': 'false' 
             },
             body: JSON.stringify({
-                inputs: messages, // النظام الجديد يدعم messages مباشرة للموديلات الحديثة
-                parameters: {
-                    max_new_tokens: 2048,
-                    temperature: 0.7,
-                    return_full_text: false
-                }
+                messages: messages, // الواجهة الجديدة تدعم messages مباشرة
+                max_tokens: 2048,
+                temperature: 0.7,
+                stream: false
             })
         });
 
-        // التعامل مع حالة "الموديل نائم ويحتاج تحميل"
+        // التعامل مع الخطأ 503 (الموديل قيد التحميل)
         if (response.status === 503) {
             const errData = await response.json();
             throw new Error(`503_LOADING:${errData.estimated_time || 5}`);
@@ -64,19 +54,30 @@ async function callHuggingFace(apiKey, prompt, systemInstruction, history, model
 
         if (!response.ok) {
             const errText = await response.text();
-            throw new Error(`HF_ERROR_${response.status}: ${errText}`);
+            // أحياناً يرجع 422 إذا كان الإدخال طويلاً جداً
+            throw new Error(`HF_ERROR_${response.status}: ${errText.substring(0, 100)}`);
         }
 
         const result = await response.json();
         
-        // استخراج النص (يختلف حسب الموديل، هذا الكود يتعامل مع الأشكال الشائعة)
+        // استخراج الرد (يدعم chat completion format)
         let outputText = '';
-        if (Array.isArray(result) && result[0]) {
+        
+        // فحص الهيكل الراجع من HF
+        if (result.choices && result.choices[0] && result.choices[0].message) {
+            outputText = result.choices[0].message.content;
+        } 
+        else if (Array.isArray(result) && result[0]) {
+             // Fallback for older API format
              outputText = result[0].generated_text || result[0].message?.content || '';
-             // تنظيف: أحياناً يرجع الموديل البرومبت معه، نزيله إذا لزم الأمر
-        } else if (result.generated_text) {
+        } 
+        else if (result.generated_text) {
              outputText = result.generated_text;
         }
+
+        // تنظيف الرد من "التفكير" <think> إذا كان DeepSeek
+        // (اختياري: يمكنك تركه إذا أردت رؤية كيف يفكر الموديل)
+        // outputText = outputText.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
 
         return outputText;
 
