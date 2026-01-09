@@ -959,8 +959,8 @@ if (tasksChanged || (parsedResponse.lesson_signal && parsedResponse.lesson_signa
         // 2. حفظ الشات (كما هو)
         await saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory)
             .catch(e => logger.error('SaveChat Error:', e));
-
-        // 3. ✅✅✅ الإضافة الجديدة: الفهرسة الفورية للرسالة (Total Recall)
+/*
+        // 3.  الإضافة الجديدة: الفهرسة الفورية للرسالة (Total Recall)
         // نحفظ رسالة المستخدم الحالية في ذاكرة المتجهات لتستدعى لاحقاً
         // شرط بسيط: أن تكون الرسالة مفيدة (أكثر من 10 حروف) لتجنب حشو الذاكرة بـ "ok", "hello"
         if (message && message.length > 10) {
@@ -976,7 +976,7 @@ if (tasksChanged || (parsedResponse.lesson_signal && parsedResponse.lesson_signa
         logger.error("Background Processing Fatal Error:", bgError);
       }
     });
-
+*/
   } catch (err) {
     logger.error("ChatInteractive ERR:", err);
     if (!res.headersSent) {
