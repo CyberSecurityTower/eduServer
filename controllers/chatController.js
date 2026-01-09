@@ -151,14 +151,26 @@ let { userId, message, history, sessionId, currentContext, files, file, webSearc
       }
     }
 
+// 1. طباعة ما وصل من الفرونت إند
+console.log('🔵 [Chat Request] Body received.');
+console.log('📂 Files count:', req.body.files ? req.body.files.length : 0);
+if (req.body.files && req.body.files.length > 0) {
+    // طباعة أول 50 حرف فقط من الداتا للتأكد أنها base64 سليمة وليست تالفة
+    console.log('🔍 First file sample:', req.body.files[0].mime, req.body.files[0].data.substring(0, 50) + "...");
+}
     // =========================================================
     // 🧩 التجهيز (Services Layer) - نظيف جداً
     // =========================================================
      const inputFiles = files || (req.body.file ? [req.body.file] : []);
+console.log('⚙️ Processing attachments via mediaManager...');
 
     // أ. معالجة المرفقات (صور/صوت/ملفات)
     const { payload: attachments, note: fileNote } = await mediaManager.processUserAttachments(userId, inputFiles);
-
+// طباعة نتيجة المعالجة
+console.log(`✅ Media processed. Attachments count for AI: ${attachments.length}`);
+if (attachments.length > 0) {
+    console.log('📦 AI Payload Structure (Sample):', JSON.stringify(attachments[0]).substring(0, 100));
+}
     // ب. معالجة الروابط (URL Context)
     if ((!attachments || attachments.length === 0) && message) {
         message = await scraper.enrichMessageWithContext(message);
@@ -616,13 +628,28 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
       atomicContext,
       atomicContextString 
     );
+    console.log('🚀 Sending request to AI service...');
 
- const modelResp = await generateWithFailoverRef('chat', finalPrompt, { 
-        label: 'MasterChat', 
-        timeoutMs: CONFIG.TIMEOUTS.chat,
-    attachments: attachments, 
-        enableSearch: !!webSearch  
-    });
+ // التعديل هنا لتتبع الخطأ بدقة
+    let modelResp;
+    try {
+        modelResp = await generateWithFailoverRef('chat', finalPrompt, { 
+            label: 'MasterChat', 
+            timeoutMs: CONFIG.TIMEOUTS.chat, // أو قم بزيادته يدوياً إلى 60000 للتجربة
+            attachments: attachments, 
+            enableSearch: !!webSearch  
+        });
+        console.log('✅ AI Response received successfully.');
+    } catch (aiError) {
+        console.error('❌ [AI Generation FAILED]:');
+        console.error('Type:', aiError.name);
+        console.error('Message:', aiError.message);
+        if (aiError.response) {
+             // أخطاء جوجل غالباً تكون هنا
+            console.error('Google API Details:', JSON.stringify(aiError.response, null, 2));
+        }
+        throw aiError; // إعادة رمي الخطأ ليتم التقاطه في الـ Catch السفلي
+    }
     const rawText = await extractTextFromResult(modelResp);
     let parsedResponse = await ensureJsonOrRepair(rawText, 'analysis');
 
