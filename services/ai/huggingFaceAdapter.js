@@ -1,54 +1,53 @@
 // services/ai/huggingFaceAdapter.js
 'use strict';
-const fetch = require('node-fetch'); // تأكد أنك تستخدم node-fetch v2 أو v3 المدعوم
+const fetch = require('node-fetch');
 
-// قائمة الموديلات القوية (رتبناها حسب القوة)
+// 🧠 قائمة العباقرة (موديلات قوية ومجانية على Inference API)
 const MODELS = {
-    'deepseek': 'deepseek-ai/DeepSeek-R1-Distill-Qwen-32B', // موديل قوي جداً وذكي
-    'qwen': 'Qwen/Qwen2.5-72B-Instruct',                   // منافس شرس لـ GPT-4
-    'llama': 'meta-llama/Llama-3.3-70B-Instruct'           // الخيار الكلاسيكي القوي
+    // موديل قوي جداً في التفكير المنطقي والبرمجة
+    'deepseek': 'deepseek-ai/DeepSeek-R1-Distill-Qwen-32B', 
+    // منافس شرس لـ GPT-4
+    'qwen': 'Qwen/Qwen2.5-72B-Instruct',
+    // احتياطي كلاسيكي قوي
+    'llama': 'meta-llama/Llama-3.3-70B-Instruct'
 };
 
-async function callHuggingFace(apiKey, prompt, systemInstruction, history) {
-    // 1. تحويل الهيستوري من صيغة Gemini إلى صيغة OpenAI/HF
-    // Gemini: { role: 'user'|'model', text: '...' }
-    // HF: { role: 'user'|'assistant', content: '...' }
+async function callHuggingFace(apiKey, prompt, systemInstruction, history, modelKey = 'deepseek') {
     
+    // 1. تحويل الهيستوري من Gemini Format إلى OpenAI/HF Format
     let messages = [];
 
-    // إضافة System Prompt
+    // System Prompt
     if (systemInstruction) {
         messages.push({ role: 'system', content: systemInstruction });
     }
 
-    // تحويل الهيستوري
+    // Chat History
     if (history && Array.isArray(history)) {
         history.forEach(msg => {
             messages.push({
                 role: msg.role === 'model' ? 'assistant' : 'user',
-                content: msg.text || msg.parts?.[0]?.text || ''
+                content: msg.text || (msg.parts ? msg.parts[0].text : '')
             });
         });
     }
 
-    // إضافة الرسالة الحالية
+    // Current Prompt
     messages.push({ role: 'user', content: prompt });
 
-    // اختيار الموديل (DeepSeek هو الأفضل حالياً للذكاء)
-    const modelUrl = `https://api-inference.huggingface.co/models/${MODELS.deepseek}`;
+    const modelId = MODELS[modelKey] || MODELS['deepseek'];
+    const url = `https://api-inference.huggingface.co/models/${modelId}`;
 
     try {
-        const response = await fetch(modelUrl, {
+        const response = await fetch(url, {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${apiKey}`,
                 'Content-Type': 'application/json',
-                'x-use-cache': 'false' // نطلب عدم استخدام الكاش للحصول على ردود جديدة
+                'x-use-cache': 'false' // نطلب عدم استخدام الكاش للحصول على إجابة جديدة
             },
             body: JSON.stringify({
-                inputs: messages, // بالنسبة لبعض الموديلات نرسل inputs كنص، وللبعض array
-                // ملاحظة: واجهة Inference API الجديدة تدعم Chat Completion
-                // إذا لم تعمل inputs كمصفوفة، نحتاج استخدام endpoint مختلف، لكن DeepSeek يدعمها غالباً
+                inputs: messages, // النظام الجديد يدعم messages مباشرة للموديلات الحديثة
                 parameters: {
                     max_new_tokens: 2048,
                     temperature: 0.7,
@@ -57,10 +56,10 @@ async function callHuggingFace(apiKey, prompt, systemInstruction, history) {
             })
         });
 
-        // التعامل مع حالة تحميل الموديل (503)
+        // التعامل مع حالة "الموديل نائم ويحتاج تحميل"
         if (response.status === 503) {
             const errData = await response.json();
-            throw new Error(`503_LOADING:${errData.estimated_time || 10}`);
+            throw new Error(`503_LOADING:${errData.estimated_time || 5}`);
         }
 
         if (!response.ok) {
@@ -69,16 +68,12 @@ async function callHuggingFace(apiKey, prompt, systemInstruction, history) {
         }
 
         const result = await response.json();
-
-        // تنسيق الرد ليطابق صيغة Gemini (text)
-        // عادة HF يرجع مصفوفة: [{ generated_text: "..." }]
+        
+        // استخراج النص (يختلف حسب الموديل، هذا الكود يتعامل مع الأشكال الشائعة)
         let outputText = '';
         if (Array.isArray(result) && result[0]) {
-             // أحياناً يكون generated_text، وأحياناً يحتاج تنظيف
              outputText = result[0].generated_text || result[0].message?.content || '';
-             
-             // تنظيف الرد إذا أعاد تكرار البرومبت (مشكلة شائعة في HF)
-             // (الكود هنا مبسط، DeepSeek عادة يرجع الرد فقط مع المعاملات الصحيحة)
+             // تنظيف: أحياناً يرجع الموديل البرومبت معه، نزيله إذا لزم الأمر
         } else if (result.generated_text) {
              outputText = result.generated_text;
         }
