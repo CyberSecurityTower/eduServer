@@ -634,13 +634,22 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
 
  // التعديل هنا لتتبع الخطأ بدقة
     let modelResp;
+    let sources = []; // متغير لتخزين المصادر
+
     try {
-        modelResp = await generateWithFailoverRef('chat', finalPrompt, { 
+    const resultObj = await generateWithFailoverRef('chat', finalPrompt, { 
             label: 'MasterChat', 
             timeoutMs: CONFIG.TIMEOUTS.chat, // أو قم بزيادته يدوياً إلى 60000 للتجربة
             attachments: attachments, 
             enableSearch: !!webSearch  
         });
+       // نستخرج النص والمصادر
+    if (typeof resultObj === 'object' && resultObj.text) {
+        modelResp = resultObj.text;
+        sources = resultObj.sources || [];
+    } else {
+        modelResp = resultObj; // حالة توافق مع النظام القديم
+    }
         console.log('✅ AI Response received successfully.');
     } catch (aiError) {
         console.error('❌ [AI Generation FAILED]:');
@@ -929,6 +938,7 @@ if (tasksChanged || (parsedResponse.lesson_signal && parsedResponse.lesson_signa
       widgets: parsedResponse.widgets || [],
       sessionId: sessionId,
       mood: parsedResponse.newMood,
+       sources: sources,
       ...(res.locals?.rewardData || {}) 
 
     });
