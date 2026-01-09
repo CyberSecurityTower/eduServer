@@ -15,7 +15,7 @@ function initTrafficManager(dependencies) {
   generateWithFailoverRef = dependencies.generateWithFailover;
   logger.info('Traffic Manager initialized.');
 }
-
+/*
 async function runTrafficManager(message, lang = 'Arabic') {
   const prompt = `You are an expert intent classification system. Analyze the user's message and return a structured JSON object.
 
@@ -54,7 +54,15 @@ Your JSON Response:`;
     return { intent: 'question', title: message.substring(0, 30), language: lang };
   }
 }
-
+*/
+async function runTrafficManager(message, lang = 'Arabic') {
+  // 🛑 Return static fallback immediately
+  return { 
+      intent: 'question', 
+      title: message.substring(0, 30), // استخدام جزء من الرسالة كعنوان
+      language: lang 
+  };
+}
 module.exports = {
   initTrafficManager,
   runTrafficManager,
