@@ -6,6 +6,12 @@ const logger = require('../../utils/logger');
 const { withTimeout, sleep } = require('../../utils'); 
 const keyManager = require('./keyManager');
 const liveMonitor = require('../monitoring/realtimeStats');
+const proxyManager = require('./proxyManager'); // ✅ استيراد مدير البروكسي
+
+// ✅ استيراد مكتبات البروكسي (يجب تثبيتها: npm i https-proxy-agent node-fetch)
+const fetch = require('node-fetch');
+const { HttpsProxyAgent } = require('https-proxy-agent');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const MODEL_CASCADE = [
   'gemini-2.5-flash',
@@ -14,23 +20,25 @@ const MODEL_CASCADE = [
 
 async function initializeModelPools() {
   await keyManager.init();
-  logger.success('🤖 AI Engine: Model Pools & Key Manager Ready.');
+  const proxyCount = proxyManager.getProxyCount();
+  logger.success(`🤖 AI Engine Ready: ${keyManager.getKeyCount()} Keys | ${proxyCount} Proxies.`);
 }
 
 /**
- * الوظيفة الأساسية لاستدعاء الموديل
- * @param {*} unused_instance - (متروك للتوافق)
- * @param {string} prompt - النص
- * @param {number} timeoutMs - مهلة الانتظار
- * @param {string} label - لتتبع السجلات
- * @param {string} systemInstruction - تعليمات النظام
- * @param {Array} history - سجل المحادثة
- * @param {Array} attachments - مصفوفة المرفقات (صور/ملفات) جاهزة
- * @param {boolean} enableSearch - تفعيل البحث في جوجل
+ * دالة مساعدة لإنشاء دالة fetch مخصصة تستخدم البروكسي
  */
+function createProxyFetch(proxyUrl) {
+    return (url, init) => {
+        const options = { ...init };
+        if (proxyUrl) {
+            options.agent = new HttpsProxyAgent(proxyUrl);
+        }
+        return fetch(url, options);
+    };
+}
+
 async function _callModelInstance(unused_instance, prompt, timeoutMs, label, systemInstruction, history, attachments = [], enableSearch = false) {
   
-  // استراتيجية المحاولات: ضعف عدد المفاتيح
   const totalKeys = keyManager.getKeyCount() || 5; 
   const MAX_ATTEMPTS = totalKeys * 2; 
   let lastError = null;
@@ -40,104 +48,117 @@ async function _callModelInstance(unused_instance, prompt, timeoutMs, label, sys
     try {
       keyObj = await keyManager.acquireKey();
       
-      for (const modelName of MODEL_CASCADE) {
-        try {
-          
-          // 1. إعداد الأدوات (Google Search)
-          const tools = [];
-          if (enableSearch) {
-              tools.push({ googleSearch: {} }); // 🔍 تفعيل البحث
-          }
-
-          const model = keyObj.client.getGenerativeModel({ 
-            model: modelName,
-            systemInstruction: systemInstruction,
-            tools: tools // نمرر الأدوات
-          });
-
-          const generationConfig = { 
-            temperature: 0.4,
-            topP: 0.8,
-            topK: 40
-          };
-
-          const chat = model.startChat({
-            history: history || [],
-            generationConfig
-          });
-
-          // 2. تحضير الرسالة (نص + مرفقات متعددة)
-          let messageParts = [];
-
-          // ✅ التعديل الجوهري: دمج مصفوفة المرفقات (سواء كانت صورة واحدة أو 10)
-          if (attachments && Array.isArray(attachments) && attachments.length > 0) {
-             console.log(`📎 [AI Service] Injecting ${attachments.length} attachments into prompt.`);
-             // التحقق من صحة الهيكل (Google GenAI يتطلب inlineData)
-             attachments.forEach((att, idx) => {
-                 if (!att.inlineData || !att.inlineData.data || !att.inlineData.mimeType) {
-                     console.error(`⚠️ [AI Service] Invalid attachment format at index ${idx}:`, JSON.stringify(att));
-                 }
-             });
-             messageParts.push(...attachments);
-          }
-
-          // إضافة النص (Prompt)
-          if (prompt) {
-             messageParts.push({ text: typeof prompt === 'string' ? prompt : JSON.stringify(prompt) });
-          }
-
-          // 🛑 DEBUG: طباعة ما سيتم إرساله للموديل (بدون طباعة الـ Base64 الطويل)
-          const debugParts = messageParts.map(p => {
-              if (p.inlineData) return { type: 'image', mime: p.inlineData.mimeType, size: p.inlineData.data.length };
-              return { type: 'text', content: p.text ? p.text.substring(0, 50) + '...' : '...' };
-          });
-          console.log('🤖 [AI Service] Final MessageParts to Model:', JSON.stringify(debugParts, null, 2));
-
-
-          // 3. الإرسال
-          const result = await withTimeout(
-            chat.sendMessage(messageParts),
-            timeoutMs,
-            `${label} [${modelName}]`
-          );
-
-          const response = await result.response;
-          const successText = response.text();
-
-          // 4. تسجيل الاستهلاك
-          const usageMetadata = response.usageMetadata ?? result?.usageMetadata;
-          if (usageMetadata) {
-            keyManager.recordUsage(keyObj.key, usageMetadata, null, modelName);
-          }
-           
-          // تعقب الاستهلاك المباشر (للداشبورد)
-          const totalTokens = (usageMetadata?.promptTokenCount || 0) + (usageMetadata?.candidatesTokenCount || 0);
-          liveMonitor.trackAiGeneration(totalTokens);
-
-          // نجاح! حرر المفتاح
-          keyManager.releaseKey(keyObj.key, true);
-          return successText;
-
-        } catch (modelErr) {
-            // معالجة أخطاء الكوتا (429)
-             if (String(modelErr).includes('429') || String(modelErr).includes('Quota') || String(modelErr).includes('403')) {
-             throw modelErr; 
-          }
-           logger.warn(`⚠️ Model ${modelName} hiccup on key ${keyObj.nickname}. Trying next...`);
-        }
+      // ✅ 1. جلب بروكسي جديد لهذه المحاولة
+      const currentProxy = proxyManager.getProxy();
+      
+      if (currentProxy && attempt > 0) {
+          logger.log(`🔄 [Failover] Rotating IP using proxy: ...${currentProxy.slice(-5)}`);
       }
+
+      // ✅ 2. إنشاء عميل جديد تماماً لهذه المحاولة مع حقن الـ fetch المخصص
+      // هذا يضمن أن الطلب يخرج من IP البروكسي وليس IP السيرفر
+      const customFetch = createProxyFetch(currentProxy);
+      
+      // ملاحظة: GoogleGenerativeAI لا تدعم حقن fetch في الـ Constructor مباشرة في كل الإصدارات
+      // الحل الأضمن في Node.js هو استبدال global.fetch مؤقتاً أو استخدام مكتبة تدعم ذلك.
+      // لكن، في الإصدارات الحديثة، يمكننا تجاوز ذلك عبر عمل Patch بسيط للكلاس إذا لزم الأمر،
+      // أو استخدام الخدعة التالية: استبدال global.fetch داخل النطاق (Scope) هذا فقط إذا كنا نستخدم Node 18+
+      
+      // الحل الأكثر استقراراً مع مكتبة Google الحالية هو إنشاء العميل وتمرير options إذا كانت مدعومة،
+      // أو استخدام global fetch patch (الأكثر ضماناً للعمل مع البروكسي).
+      
+      const genAI = new GoogleGenerativeAI(keyObj.key);
+      
+      // ⚠️ Monkey-patching to force proxy usage (Google SDK uses global fetch in Node)
+      // نحفظ الـ fetch الأصلي
+      const originalFetch = global.fetch;
+      // نستبدله بالخاص بنا
+      global.fetch = customFetch;
+
+      try {
+          for (const modelName of MODEL_CASCADE) {
+            try {
+              const tools = [];
+              if (enableSearch) {
+                  tools.push({ googleSearch: {} });
+              }
+
+              const model = genAI.getGenerativeModel({ 
+                model: modelName,
+                systemInstruction: systemInstruction,
+                tools: tools
+              });
+
+              const generationConfig = { 
+                temperature: 0.4,
+                topP: 0.8,
+                topK: 40
+              };
+
+              const chat = model.startChat({
+                history: history || [],
+                generationConfig
+              });
+
+              let messageParts = [];
+              if (attachments && Array.isArray(attachments) && attachments.length > 0) {
+                 messageParts.push(...attachments);
+              }
+              if (prompt) {
+                 messageParts.push({ text: typeof prompt === 'string' ? prompt : JSON.stringify(prompt) });
+              }
+
+              const result = await withTimeout(
+                chat.sendMessage(messageParts),
+                timeoutMs,
+                `${label} [${modelName}]`
+              );
+
+              const response = await result.response;
+              const successText = response.text();
+
+              const usageMetadata = response.usageMetadata ?? result?.usageMetadata;
+              if (usageMetadata) {
+                keyManager.recordUsage(keyObj.key, usageMetadata, null, modelName);
+              }
+               
+              liveMonitor.trackAiGeneration((usageMetadata?.promptTokenCount || 0) + (usageMetadata?.candidatesTokenCount || 0));
+
+              keyManager.releaseKey(keyObj.key, true);
+              return successText;
+
+            } catch (modelErr) {
+               // إذا فشل الموديل، نجرب الموديل التالي (Flash -> Pro)
+               const isQuota = String(modelErr).includes('429') || String(modelErr).includes('Quota');
+               if (isQuota) throw modelErr; // ارمي الخطأ ليتم تغيير المفتاح والبروكسي
+               
+               logger.warn(`⚠️ Model ${modelName} hiccup on key ${keyObj.nickname}. Trying next...`);
+            }
+          }
+      } finally {
+          // ✅ استعادة الـ fetch الأصلي دائماً (حتى لو حدث خطأ)
+          global.fetch = originalFetch;
+      }
+
       throw new Error('All models failed on this key');
 
     } catch (keyErr) {
         lastError = keyErr;
-        const isRateLimit = String(keyErr).includes('429') || String(keyErr).includes('Quota') || String(keyErr).includes('403');
+        const isRateLimit = String(keyErr).includes('429') || String(keyErr).includes('Quota') || String(keyErr).includes('403') || String(keyErr).includes('EHOSTUNREACH');
         
-        if (keyObj) {
-            keyManager.releaseKey(keyObj.key, false, isRateLimit ? '429' : 'error');
+        // إذا كان الخطأ من البروكسي، نبلغ عنه
+        if (String(keyErr).includes('proxy') || String(keyErr).includes('ECONNRESET')) {
+            logger.warn(`⚠️ Proxy connection failed.`);
         }
 
-        if (isRateLimit) { 
-            await sleep(100); 
+        if (keyObj) {
+            // لا نعتبر المفتاح ميتاً فوراً إذا كان الخطأ بسبب الشبكة/البروكسي
+            const errorType = isRateLimit ? '429' : 'network';
+            keyManager.releaseKey(keyObj.key, false, errorType);
+        }
+
+        if (isRateLimit || String(keyErr).includes('network')) { 
+            await sleep(200); // انتظار بسيط قبل المحاولة ببروكسي ومفتاح جديد
             continue; 
         } else { 
             break; 
@@ -145,7 +166,7 @@ async function _callModelInstance(unused_instance, prompt, timeoutMs, label, sys
     }
   }
   
-  throw lastError ?? new Error('Service Busy: All keys exhausted.');
+  throw lastError ?? new Error('Service Busy: All keys/proxies exhausted.');
 }
 
 module.exports = {
