@@ -14,13 +14,17 @@ let generateWithFailoverRef;
 function initSessionAnalyzer(dependencies) {
   generateWithFailoverRef = dependencies.generateWithFailover;
 }
-
+async function analyzeSessionForEvents(userId, history = []) {
+  // 🛑 KILL SWITCH: إيقاف التحليل فوراً
+  return; 
+}
 /**
  * 🧠 المحلل الدلالي للجلسة (Semantic Session Analyzer)
  * يقوم بوظيفتين:
  * 1. اكتشاف طلبات الجدولة والتذكير (Event Extractor).
  * 2. اكتشاف المعلومات الناقصة لفضول الـ AI (Curiosity Engine).
  */
+/*
 async function analyzeSessionForEvents(userId, history = []) {
   try {
     if (!generateWithFailoverRef) return;
@@ -85,5 +89,5 @@ async function analyzeSessionForEvents(userId, history = []) {
     logger.error('SessionAnalyzer Error:', err.message);
   }
 }
-
+*/
 module.exports = { initSessionAnalyzer, analyzeSessionForEvents };
