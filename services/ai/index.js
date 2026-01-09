@@ -105,6 +105,25 @@ async function _callModelInstance(unused_instance, prompt, timeoutMs, label, sys
           const response = await result.response;
           const successText = response.text();
 
+// 1. استخراج بيانات المصادر (Grounding)
+let searchSources = [];
+if (response.candidates && response.candidates[0] && response.candidates[0].groundingMetadata) {
+    const metadata = response.candidates[0].groundingMetadata;
+    if (metadata.groundingChunks) {
+        searchSources = metadata.groundingChunks
+            .map(chunk => {
+                if (chunk.web) {
+                    return {
+                        title: chunk.web.title,
+                        url: chunk.web.uri
+                    };
+                }
+                return null;
+            })
+            .filter(item => item !== null);
+    }
+}
+
           // 5. تسجيل النجاح والاستهلاك
           const usageMetadata = response.usageMetadata ?? result?.usageMetadata;
           if (usageMetadata) {
@@ -115,7 +134,7 @@ async function _callModelInstance(unused_instance, prompt, timeoutMs, label, sys
 
           // تحرير المفتاح بنجاح
           keyManager.releaseKey(keyObj.key, true);
-          return successText; // 🏆 الخروج بنجاح
+return { text: successText, sources: searchSources };
 
         } catch (modelErr) {
            const errStr = String(modelErr);
