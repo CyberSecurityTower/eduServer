@@ -2,14 +2,13 @@
 'use strict';
 const fetch = require('node-fetch');
 
-// سنستخدم Qwen حالياً لأنه أسرع وأكثر استقراراً في التجربة من DeepSeek
 const MODELS = {
     'deepseek': 'deepseek-ai/DeepSeek-R1-Distill-Qwen-32B', 
     'qwen': 'Qwen/Qwen2.5-72B-Instruct', 
     'llama': 'meta-llama/Llama-3.3-70B-Instruct'
 };
 
-async function callHuggingFace(apiKey, prompt, systemInstruction, history, modelKey = 'qwen') { // 👈 غيرنا الافتراضي لـ Qwen للتجربة
+async function callHuggingFace(apiKey, prompt, systemInstruction, history, modelKey = 'deepseek') { // نعود لـ deepseek كافتراضي
     
     // 1. تجهيز الرسائل
     let messages = [];
@@ -25,10 +24,13 @@ async function callHuggingFace(apiKey, prompt, systemInstruction, history, model
     }
     messages.push({ role: 'user', content: prompt });
 
-    const modelId = MODELS[modelKey] || MODELS['qwen'];
-    const url = `https://api-inference.huggingface.co/models/${modelId}`;
+    const modelId = MODELS[modelKey] || MODELS['deepseek'];
+    
+    // 🔥🔥 التصحيح الحاسم هنا: استخدام الرابط الجديد (Router) 🔥🔥
+    const url = `https://router.huggingface.co/hf-inference/models/${modelId}`;
 
-    console.log(`🔌 HF Request: Model=${modelId} | Key=${apiKey.substring(0, 5)}...`);
+    // طباعة للتأكد في اللوج
+    console.log(`🔌 HF Request (Router): Model=${modelId} | Key=${apiKey.substring(0, 5)}...`);
 
     try {
         const response = await fetch(url, {
@@ -37,30 +39,36 @@ async function callHuggingFace(apiKey, prompt, systemInstruction, history, model
                 'Authorization': `Bearer ${apiKey}`,
                 'Content-Type': 'application/json',
                 'x-use-cache': 'false',
-                'x-wait-for-model': 'true' // 🔥 هذا هو السطر السحري! يخبرهم بالانتظار حتى يصحو الموديل
+                'x-wait-for-model': 'true' // إجبار الانتظار للموديلات النائمة
             },
             body: JSON.stringify({
                 messages: messages, 
                 max_tokens: 2048,
-                temperature: 0.6
+                temperature: 0.6,
+                stream: false
             })
         });
 
-        const result = await response.json();
-
-        // 🛑 التقاط الأخطاء وطباعتها بوضوح
+        // التعامل مع الأخطاء
         if (!response.ok) {
-            console.error('❌ HF RAW ERROR:', JSON.stringify(result)); // لترى الخطأ في اللوج
-            
-            // إذا كان الخطأ 503، يعني الموديل يجهز نفسه
-            if (result.error && result.error.includes('loading')) {
-                throw new Error(`503_LOADING:${result.estimated_time || 5}`);
+            const errText = await response.text();
+            let errJson;
+            try { errJson = JSON.parse(errText); } catch (e) { errJson = { error: errText }; }
+
+            console.error('❌ HF ROUTER ERROR:', JSON.stringify(errJson)); 
+
+            // إذا كان الموديل يتحمل (Loading)
+            if (response.status === 503 || (errJson.error && errJson.error.includes('loading'))) {
+                throw new Error(`503_LOADING:${errJson.estimated_time || 5}`);
             }
-            // أخطاء أخرى (مثل المفتاح غلط، أو الموديل يحتاج موافقة)
-            throw new Error(`HF_API_ERROR: ${JSON.stringify(result)}`);
+            
+            // أخطاء أخرى
+            throw new Error(`HF_API_ERROR: ${errJson.error || response.statusText}`);
         }
 
-        // استخراج النص
+        const result = await response.json();
+        
+        // استخراج الرد
         let outputText = '';
         if (result.choices && result.choices[0]) {
             outputText = result.choices[0].message.content;
@@ -75,7 +83,6 @@ async function callHuggingFace(apiKey, prompt, systemInstruction, history, model
         return outputText;
 
     } catch (error) {
-        // إعادة رمي الخطأ ليتم التقاطه في index.js
         throw error;
     }
 }
