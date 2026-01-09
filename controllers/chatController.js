@@ -942,48 +942,48 @@ if (tasksChanged || (parsedResponse.lesson_signal && parsedResponse.lesson_signa
     });
 
     // Background processing (Fire and Forget)
-   setImmediate(async () => {
-      try {
-        const updatedHistory = [
-          ...history,
-          { role: 'user', text: message, timestamp: nowISO() },
-          { role: 'model', text: parsedResponse.reply, timestamp: nowISO() }
-        ];
+try {
+  setImmediate(async () => {
+    try {
+      const updatedHistory = [
+        ...history,
+        { role: 'user', text: message, timestamp: nowISO() },
+        { role: 'model', text: parsedResponse.reply, timestamp: nowISO() }
+      ];
 
-         // 1. 🔥 تشغيل التحديث الذري
-        // الآن updateSignal يحتوي إما على تحديث الـ AI أو تحديث الكويز
-        if (updateSignal && extractedLessonId) {
-            await updateAtomicProgress(userId, extractedLessonId, updateSignal);
-        }
-
-        // 2. حفظ الشات (كما هو)
-        await saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory)
-            .catch(e => logger.error('SaveChat Error:', e));
-/*
-        // 3.  الإضافة الجديدة: الفهرسة الفورية للرسالة (Total Recall)
-        // نحفظ رسالة المستخدم الحالية في ذاكرة المتجهات لتستدعى لاحقاً
-        // شرط بسيط: أن تكون الرسالة مفيدة (أكثر من 10 حروف) لتجنب حشو الذاكرة بـ "ok", "hello"
-        if (message && message.length > 10) {
-            const { saveMemoryChunk } = require('../services/ai/managers/memoryManager');
-            await saveMemoryChunk(userId, message, "User_Message_History");
-            logger.info(`🧠 Memory Indexed: "${message.substring(0, 20)}..."`);
-        }
-
-        // 4. Memory Analysis (تحليل الحقائق - يبقى كما هو لاستخراج الاسم والعمر)
-        await analyzeAndSaveMemory(userId, updatedHistory)
-            .catch(e => logger.error('MemoryAnalysis Error:', e));
-      } catch (bgError) {
-        logger.error("Background Processing Fatal Error:", bgError);
+      // 1. 🔥 تشغيل التحديث الذري
+      if (updateSignal && extractedLessonId) {
+        await updateAtomicProgress(userId, extractedLessonId, updateSignal);
       }
-    });
-*/
-  } catch (err) {
-    logger.error("ChatInteractive ERR:", err);
-    if (!res.headersSent) {
-      return res.status(500).json({ reply: "حدث خطأ في الخادم." });
+
+      // 2. حفظ الشات (كما هو)
+      await saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory)
+        .catch(e => logger.error('SaveChat Error:', e));
+
+      /*
+      // 3.  الإضافة الجديدة: الفهرسة الفورية للرسالة (Total Recall)
+      if (message && message.length > 10) {
+        const { saveMemoryChunk } = require('../services/ai/managers/memoryManager');
+        await saveMemoryChunk(userId, message, "User_Message_History");
+        logger.info(`🧠 Memory Indexed: "${message.substring(0, 20)}..."`);
+      }
+
+      // 4. Memory Analysis
+      await analyzeAndSaveMemory(userId, updatedHistory)
+        .catch(e => logger.error('MemoryAnalysis Error:', e));
+      */
+
+    } catch (bgError) {
+      logger.error("Background Processing Fatal Error:", bgError);
     }
+  });
+} catch (err) {
+  logger.error("ChatInteractive ERR:", err);
+  if (!res.headersSent) {
+    return res.status(500).json({ reply: "حدث خطأ في الخادم." });
   }
 }
+
 
 module.exports = {
   initChatController,
