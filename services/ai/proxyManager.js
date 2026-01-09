@@ -4,33 +4,29 @@
 const logger = require('../../utils/logger');
 
 class ProxyManager {
-    constructor() {
-        // يمكن وضع البروكسيات هنا أو في ملف .env بصيغة مفصولة بفاصلة
-        // Example: http://user:pass@ip:port,http://ip:port,...
+ constructor() {
         const rawProxies = process.env.AI_PROXIES || '';
-        this.proxies = rawProxies.split(',').filter(p => p.trim() !== '');
+        // تنظيف القائمة وحذف الفراغات
+        this.proxies = rawProxies.split(',').map(p => p.trim()).filter(p => p !== '');
         this.currentIndex = 0;
     }
+
 
     /**
      * جلب بروكسي عشوائي أو بالتتابع
      */
-    getProxy() {
-        if (this.proxies.length === 0) return null;
+     getProxy() {
+        if (this.proxies.length === 0) return null; // 👈 هنا يكمن السر: نعود لاستخدام IP الجهاز
 
-        // الطريقة 1: تدوير (Round Robin) - جيد لتوزيع الحمل بالتساوي
         const proxy = this.proxies[this.currentIndex];
         this.currentIndex = (this.currentIndex + 1) % this.proxies.length;
-        
-        // الطريقة 2: عشوائي (Random) - فعل هذا السطر إذا أردت عشوائية تامة
-        // const proxy = this.proxies[Math.floor(Math.random() * this.proxies.length)];
-
-        return proxy.trim();
+        return proxy;
     }
 
     getProxyCount() {
         return this.proxies.length;
     }
+
 
     reportBadProxy(proxyUrl) {
         // يمكن تطوير هذا الجزء لحذف البروكسي السيء مؤقتاً
