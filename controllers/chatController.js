@@ -118,7 +118,8 @@ async function generateChatSuggestions(req, res) {
 // ==========================================
 async function chatInteractive(req, res) {
   // ✅ 1. Receive data from frontend
-  let { userId, message, history, sessionId, currentContext, files, webSearch } = req.body;
+let { userId, message, history, sessionId, currentContext, files, file, webSearch } = req.body;
+const inputFiles = files || (file ? [file] : []);
 
  // Safety check
   if (!sessionId) sessionId = crypto.randomUUID();
@@ -240,15 +241,18 @@ async function chatInteractive(req, res) {
     // ---------------------------------------------------------
    
 let activeLessonContext = "";
+let lessonData = null; // 👈 عرفناه هنا لكي يراه الكود في الأسفل
 
 // 2. إذا أرسل الفرونت إند ID الدرس
-if (currentContext.lessonId) {
-  // جلب بيانات الدرس
-  const { data: lessonData } = await supabase
-    .from('lessons')
-    .select('*, subjects(title)')
-    .eq('id', currentContext.lessonId)
-    .single();
+if (currentContext && currentContext.lessonId) {
+  // نستخدم المتغير المعرف مسبقاً (بدون const)
+  const { data: lData } = await supabase
+      .from('lessons')
+      .select('*, subjects(title)')
+      .eq('id', currentContext.lessonId)
+      .single();
+  
+  lessonData = lData;
 
   if (lessonData) {
       // جلب المحتوى النصي (RAG Memory)
