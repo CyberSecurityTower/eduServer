@@ -374,25 +374,19 @@ async function enqueueJobRoute(req, res) {
     return res.json({ jobId: id });
   } catch (err) { res.status(500).json({ error: String(err) }); }
 }
-
 async function generateTitleRoute(req, res) {
   try {
-    const { message, language = 'Arabic' } = req.body || {};
-    if (!message || typeof message !== 'string' || message.trim().length === 0) {
-      return res.status(400).json({ error: 'A non-empty message is required.' });
-    }
-
-    const prompt = `Generate a very short, descriptive title (2-4 words) for the following user message. The title should be in ${language}. Respond with ONLY the title text. Message: "${escapeForPrompt(safeSnippet(message, 300))}"`;
-
-    if (!generateWithFailoverRef) return res.status(200).json({ title: message.substring(0, 30) });
+    const { message } = req.body || {};
     
-    const modelResp = await generateWithFailoverRef('titleIntent', prompt, { label: 'GenerateTitle', timeoutMs: 5000 });
-    const title = await extractTextFromResult(modelResp);
+    // 🛑 إيقاف الذكاء الاصطناعي نهائياً لتوليد العناوين
+    // نستخدم أول 50 حرف من الرسالة كعنوان
+    const staticTitle = message ? message.substring(0, 50) : 'New Chat';
+    
+    return res.json({ title: staticTitle });
 
-    return res.json({ title: title ? title.replace(/["']/g, '') : message.substring(0, 30) });
   } catch (err) {
     logger.error('/generate-title error:', err.stack);
-    return res.status(500).json({ title: req.body.message ? req.body.message.substring(0, 30) : 'New Chat' });
+    return res.status(500).json({ title: 'New Chat' });
   }
 }
 
