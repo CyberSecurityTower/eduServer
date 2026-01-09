@@ -118,8 +118,10 @@ async function generateChatSuggestions(req, res) {
 // ==========================================
 async function chatInteractive(req, res) {
   // ✅ 1. Receive data from frontend
-  let { userId, message, history, sessionId, currentContext, file, webSearch } = req.body;
+  let { userId, message, history, sessionId, currentContext, files, webSearch } = req.body;
 
+// نستدعي المدير الجديد
+const { payload: attachments, note: fileNote } = await mediaManager.processUserAttachments(userId, files);
   // Safety check
   if (!sessionId) sessionId = crypto.randomUUID();
   if (!Array.isArray(history)) history = [];
@@ -618,8 +620,8 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
  const modelResp = await generateWithFailoverRef('chat', finalPrompt, { 
         label: 'MasterChat', 
         timeoutMs: CONFIG.TIMEOUTS.chat,
-        fileData: filePayload,     // 👈 الملف جاهز
-        enableSearch: !!webSearch  // 👈 البحث
+    attachments: attachments, 
+        enableSearch: !!webSearch  
     });
     const rawText = await extractTextFromResult(modelResp);
     let parsedResponse = await ensureJsonOrRepair(rawText, 'analysis');
