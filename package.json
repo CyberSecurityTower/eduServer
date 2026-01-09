@@ -1,7 +1,7 @@
 
 {
   "name": "eduapp-ai-proxy-v2",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "A secure proxy for EduApp AI features",
   "main": "index.js",
   "scripts": {
@@ -17,8 +17,9 @@
     "express": "^4.18.2",
     "firebase-admin": "^12.0.0",
     "lru-cache": "^10.0.0",
+    "node-fetch": "^2.7.0",
     "https-proxy-agent": "^7.0.0",
-    "node-fetch": "^2.7.0"
+    "socks-proxy-agent": "^8.0.0"
   },
   "engines": {
     "node": "20"
