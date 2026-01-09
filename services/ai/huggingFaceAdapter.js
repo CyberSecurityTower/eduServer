@@ -1,16 +1,17 @@
-// services/ai/huggingFaceAdapter.js
 'use strict';
 const fetch = require('node-fetch');
 
+// 🟢 استخدام موديلات مستقرة ومجانية
 const MODELS = {
-    'deepseek': 'deepseek-ai/DeepSeek-R1-Distill-Qwen-32B', 
+    // سنستخدم Qwen 2.5 بدلاً من DeepSeek لأنه متاح ومستقر ومجاني حالياً
+    'deepseek': 'Qwen/Qwen2.5-72B-Instruct', 
     'qwen': 'Qwen/Qwen2.5-72B-Instruct', 
     'llama': 'meta-llama/Llama-3.3-70B-Instruct'
 };
 
-async function callHuggingFace(apiKey, prompt, systemInstruction, history, modelKey = 'deepseek') { // نعود لـ deepseek كافتراضي
+async function callHuggingFace(apiKey, prompt, systemInstruction, history, modelKey = 'deepseek') {
     
-    // 1. تجهيز الرسائل
+    // تجهيز الرسائل
     let messages = [];
     if (systemInstruction) messages.push({ role: 'system', content: systemInstruction });
     
@@ -24,14 +25,13 @@ async function callHuggingFace(apiKey, prompt, systemInstruction, history, model
     }
     messages.push({ role: 'user', content: prompt });
 
+    // اختيار الموديل
     const modelId = MODELS[modelKey] || MODELS['deepseek'];
     
-    // 🔥🔥 التصحيح الحاسم هنا: استخدام الرابط الجديد (Router) 🔥🔥
-    const url = `https://router.huggingface.co/hf-inference/models/${modelId}`;
-    console.log(`🕵️‍♂️ DEBUG KEY: Start='${apiKey ? apiKey.substring(0, 4) : 'NULL'}' | Length=${apiKey ? apiKey.length : 0} | HasSpace=${apiKey.includes(' ')}`);
+    // 🟢 التغيير هنا: استخدام الرابط القياسي (api-inference) بدلاً من router لتجنب أخطاء Not Found
+    const url = `https://api-inference.huggingface.co/models/${modelId}`;
 
-    // طباعة للتأكد في اللوج
-    console.log(`🔌 HF Request (Router): Model=${modelId} | Key=${apiKey.substring(0, 5)}...`);
+    console.log(`🔌 HF Request: Model=${modelId} | KeyPrefix=${apiKey ? apiKey.substring(0, 4) : 'NULL'}...`);
 
     try {
         const response = await fetch(url, {
@@ -40,43 +40,49 @@ async function callHuggingFace(apiKey, prompt, systemInstruction, history, model
                 'Authorization': `Bearer ${apiKey}`,
                 'Content-Type': 'application/json',
                 'x-use-cache': 'false',
-                'x-wait-for-model': 'true' // إجبار الانتظار للموديلات النائمة
+                'x-wait-for-model': 'true' // مهم جداً للانتظار
             },
             body: JSON.stringify({
                 messages: messages, 
-                max_tokens: 2048,
+                max_tokens: 2048, // تقليل التوكنز قليلاً لضمان السرعة
                 temperature: 0.6,
                 stream: false
             })
         });
 
-        // التعامل مع الأخطاء
         if (!response.ok) {
             const errText = await response.text();
             let errJson;
             try { errJson = JSON.parse(errText); } catch (e) { errJson = { error: errText }; }
 
-            console.error('❌ HF ROUTER ERROR:', JSON.stringify(errJson)); 
+            console.error('❌ HF API ERROR:', JSON.stringify(errJson)); 
 
-            // إذا كان الموديل يتحمل (Loading)
-            if (response.status === 503 || (errJson.error && errJson.error.includes('loading'))) {
-                throw new Error(`503_LOADING:${errJson.estimated_time || 5}`);
+            // التعامل مع تحميل الموديل (Model Loading)
+            if (response.status === 503 || (errJson.error && JSON.stringify(errJson).toLowerCase().includes('loading'))) {
+                // هذا الخطأ طبيعي في البداية، يعني أن الموديل يستيقظ
+                throw new Error(`503_LOADING:${errJson.estimated_time || 10}`);
             }
             
-            // أخطاء أخرى
             throw new Error(`HF_API_ERROR: ${errJson.error || response.statusText}`);
         }
 
         const result = await response.json();
         
-        // استخراج الرد
+        // استخراج الرد بمرونة
         let outputText = '';
         if (result.choices && result.choices[0]) {
             outputText = result.choices[0].message.content;
         } else if (Array.isArray(result) && result[0]) {
+            // أحياناً HF يرجع مصفوفة مباشرة
             outputText = result[0].generated_text || result[0].message?.content || '';
         } else if (result.generated_text) {
             outputText = result.generated_text;
+        }
+
+        // تنظيف الرد إذا كان يحتوي على System prompt بالخطأ
+        if (typeof outputText === 'string' && outputText.includes(prompt)) {
+             // بعض الموديلات تعيد السؤال، نحذفه
+             outputText = outputText.replace(prompt, '').trim();
         }
 
         if (!outputText) throw new Error('HF returned empty response');
