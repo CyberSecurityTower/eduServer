@@ -28,6 +28,7 @@ async function callHuggingFace(apiKey, prompt, systemInstruction, history, model
     
     // 🔥🔥 التصحيح الحاسم هنا: استخدام الرابط الجديد (Router) 🔥🔥
     const url = `https://router.huggingface.co/hf-inference/models/${modelId}`;
+    console.log(`🕵️‍♂️ DEBUG KEY: Start='${apiKey ? apiKey.substring(0, 4) : 'NULL'}' | Length=${apiKey ? apiKey.length : 0} | HasSpace=${apiKey.includes(' ')}`);
 
     // طباعة للتأكد في اللوج
     console.log(`🔌 HF Request (Router): Model=${modelId} | Key=${apiKey.substring(0, 5)}...`);
