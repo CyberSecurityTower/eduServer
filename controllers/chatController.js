@@ -119,7 +119,6 @@ async function generateChatSuggestions(req, res) {
 async function chatInteractive(req, res) {
   // ✅ 1. Receive data from frontend
 let { userId, message, history, sessionId, currentContext, files, file, webSearch } = req.body;
-const inputFiles = files || (file ? [file] : []);
 
  // Safety check
   if (!sessionId) sessionId = crypto.randomUUID();
