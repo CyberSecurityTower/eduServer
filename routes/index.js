@@ -16,6 +16,8 @@ const streakController = require('../controllers/streakController');
 const searchController = require('../controllers/searchController');
 const sourceController = require('../controllers/sourceController');
 const uploadMiddleware = require('../middleware/upload');
+const smartQueueMiddleware = require('../middleware/smartQueue'); // استيراد الجديد
+
 /*
 // ⏰ تشغيل منقذ الستريك كل ساعة (60 دقيقة)
 setInterval(() => {
