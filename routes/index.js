@@ -173,8 +173,9 @@ router.post('/search/quick', requireAuth, searchController.quickSearch);
 router.post(
     '/sources/upload', 
     requireAuth, 
-    uploadMiddleware.single('file'), 
-    sourceController.uploadFile
+    smartQueueMiddleware, // 1. الشرطي يحسب الحجم ويشوف لا يفوت ولا يستنى
+    uploadMiddleware.single('file'), // 2. إذا فات، Multer يرفعو
+    sourceController.uploadFile // 3. الكونترولر يبعثو لـ Cloudinary
 );
 
 // جلب الملفات الخاصة بدرس معين
