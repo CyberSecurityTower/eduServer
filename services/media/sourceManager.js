@@ -1,7 +1,7 @@
 // services/media/sourceManager.js
 'use strict';
 
-const supabase = require('../data/supabase');
+const supabase = require('../../services/data/supabase'); // تأكد من المسار الصحيح لملف supabase
 const cloudinary = require('../../config/cloudinary');
 const logger = require('../../utils/logger');
 const fs = require('fs');
@@ -9,35 +9,38 @@ const fs = require('fs');
 class SourceManager {
   
   /**
-   * رفع ملف واحد إلى Cloudinary وتسجيله في الداتابايز
+   * 📤 رفع مصدر جديد
    */
   async uploadSource(userId, lessonId, filePath, originalName, mimeType) {
     try {
-      logger.info(`📤 Uploading source for User: ${userId}...`);
+      logger.info(`📤 Uploading source [${originalName}] for Lesson: ${lessonId || 'Pending'}...`);
 
       // 1. الرفع إلى Cloudinary
-      // نستخدم folder خاص لفصل ملفات هذا النظام
       const uploadResult = await cloudinary.uploader.upload(filePath, {
-        folder: 'eduapp_sources_temp', // مجلد مؤقت
-        resource_type: 'auto', // يقبل pdf, images, raw
-        public_id: `user_${userId}_${Date.now()}` // اسم فريد
+        folder: 'eduapp_sources', // اسم المجلد في Cloudinary
+        resource_type: 'auto',    // يقبل كلش (pdf, img, raw)
+        use_filename: true,
+        public_id: `user_${userId}_${Date.now()}` // اسم فريد للملف
       });
 
-      // 2. حذف الملف المؤقت من السيرفر (نظافة)
+      // 2. حذف الملف المؤقت من السيرفر (تنظيف)
       if (fs.existsSync(filePath)) {
           fs.unlinkSync(filePath);
       }
 
-      // 3. الحفظ في الداتابايز
+      // 3. الحفظ في قاعدة البيانات
+      // file_type: نختصروه (image/png -> image)
+      const simpleType = mimeType.split('/')[0] === 'image' ? 'image' : 'document';
+
       const { data, error } = await supabase
         .from('lesson_sources')
         .insert({
           user_id: userId,
-          lesson_id: lessonId || null, // يمكن ربطه لاحقاً
-          file_url: uploadResult.secure_url,
-          file_type: uploadResult.format || mimeType.split('/')[1],
+          lesson_id: lessonId || null,
+          file_url: uploadResult.secure_url, // الرابط الآمن
+          file_type: simpleType,
           file_name: originalName,
-          public_id: uploadResult.public_id,
+          public_id: uploadResult.public_id, // نحتاجوه للحذف مبعد
           processed: false
         })
         .select()
@@ -45,49 +48,64 @@ class SourceManager {
 
       if (error) throw error;
 
-      logger.success(`✅ Source uploaded: ${originalName} (ID: ${data.id})`);
+      logger.success(`✅ Source Saved: ID ${data.id}`);
       return data;
 
     } catch (err) {
-      logger.error('❌ Source Upload Error:', err.message);
-      // تنظيف الملف إذا فشل الرفع
+      logger.error('❌ Source Upload Failed:', err.message);
+      // تنظيف الملف المؤقت حتى لو فشلت العملية
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
       throw err;
     }
   }
 
   /**
-   * جلب مصادر درس معين
+   * 📥 جلب مصادر درس معين
    */
-  async getSourcesForLesson(userId, lessonId) {
+  async getSourcesByLesson(userId, lessonId) {
     const { data, error } = await supabase
       .from('lesson_sources')
       .select('*')
-      .eq('user_id', userId)
-      .eq('lesson_id', lessonId);
+      .eq('lesson_id', lessonId)
+      // نسمح للمستخدم يشوف ملفاته، أو نضيف منطق للمشاركة لاحقاً
+      .eq('user_id', userId) 
+      .order('created_at', { ascending: false });
 
-    if (error) return [];
+    if (error) {
+        logger.error('Get Sources Error:', error.message);
+        return [];
+    }
     return data;
   }
 
   /**
-   * حذف مصدر (يدوياً أو عبر الكرون جوب)
+   * 🗑️ حذف مصدر
    */
-  async deleteSource(sourceId) {
-    // 1. جلب الـ public_id
+  async deleteSource(userId, sourceId) {
+    // 1. جلب معلومات الملف للتأكد من الملكية والحصول على public_id
     const { data: source } = await supabase
         .from('lesson_sources')
-        .select('public_id')
+        .select('public_id, user_id')
         .eq('id', sourceId)
         .single();
 
-    if (source && source.public_id) {
-        // حذف من Cloudinary
-        await cloudinary.uploader.destroy(source.public_id);
+    if (!source) throw new Error('Source not found');
+    if (source.user_id !== userId) throw new Error('Unauthorized');
+
+    // 2. الحذف من Cloudinary
+    if (source.public_id) {
+        // نحدد نوع المورد للحذف الصحيح
+        await cloudinary.uploader.destroy(source.public_id, { resource_type: 'raw' }); 
+        // ملاحظة: raw تغطي الـ PDF والملفات، للصور استعمل 'image'
+        // Cloudinary أحياناً يتطلب تحديد النوع بدقة، لكن نجربو raw أو auto
     }
 
-    // حذف من الداتابايز
-    await supabase.from('lesson_sources').delete().eq('id', sourceId);
+    // 3. الحذف من الداتابايز
+    const { error } = await supabase.from('lesson_sources').delete().eq('id', sourceId);
+    if (error) throw error;
+
+    logger.info(`🗑️ Source deleted: ${sourceId}`);
+    return true;
   }
 }
 
