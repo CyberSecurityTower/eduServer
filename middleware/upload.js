@@ -3,10 +3,8 @@
 
 const multer = require('multer');
 const path = require('path');
-const fs = require('fs');
 const os = require('os');
 
-// نستخدم مجلد الـ temp تاع النظام باش نتفاداو مشاكل الصلاحيات في Render
 const tempDir = os.tmpdir();
 
 const storage = multer.diskStorage({
@@ -14,34 +12,35 @@ const storage = multer.diskStorage({
     cb(null, tempDir);
   },
   filename: function (req, file, cb) {
-    // نسمي الملف باسم فريد باش ما يتخلطوش
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
     cb(null, 'eduapp-' + uniqueSuffix + path.extname(file.originalname));
   }
 });
 
-// فلتر لرفض الملفات الخبيثة (نقبلو الصور، PDF، Word, PowerPoint)
 const fileFilter = (req, file, cb) => {
+  // القائمة المسموحة
   const allowedTypes = [
     'image/jpeg', 'image/png', 'image/webp',
     'application/pdf',
     'application/msword',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // docx
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     'application/vnd.ms-powerpoint',
-    'application/vnd.openxmlformats-officedocument.presentationml.presentation' // pptx
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'text/plain' // زدتلك Text file بالك يحتاجوه
   ];
 
   if (allowedTypes.includes(file.mimeType) || allowedTypes.includes(file.mimetype)) {
     cb(null, true);
   } else {
-    cb(new Error('Invalid file type. Only Images, PDF, and Office docs are allowed.'), false);
+    cb(new Error('Unsupported file type.'), false);
   }
 };
 
 const upload = multer({ 
     storage: storage,
     fileFilter: fileFilter,
-    limits: { fileSize: 15 * 1024 * 1024 } // الحد الأقصى 15MB
+    // 🔥 هنا التغيير: رجعناها 50 ميغا
+    limits: { fileSize: 50 * 1024 * 1024 } 
 });
 
 module.exports = upload;
