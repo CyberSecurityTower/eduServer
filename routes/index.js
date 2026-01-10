@@ -165,17 +165,22 @@ router.post('/run-nightly-analysis', adminController.runNightlyAnalysis);
 // يتطلب مصادقة (requireAuth)
 router.post('/search/quick', requireAuth, searchController.quickSearch);
 
-// مسار الرفع (يقبل ملف واحد باسم 'sourceFile')
+
+// ==========================================
+// 8. Lesson Sources (Multi-upload System) 📂
+// ==========================================
+// رفع ملف جديد (يقبل حقل اسمه 'file')
 router.post(
     '/sources/upload', 
     requireAuth, 
-    uploadMiddleware.single('sourceFile'), 
-    sourceController.uploadLessonSource
+    uploadMiddleware.single('file'), 
+    sourceController.uploadFile
 );
 
-// مسار جلب المصادر لدرس معين
-router.get('/sources/:lessonId', requireAuth, sourceController.listLessonSources);
+// جلب الملفات الخاصة بدرس معين
+router.get('/sources/lesson/:lessonId', requireAuth, sourceController.getLessonFiles);
 
-
+// حذف ملف
+router.delete('/sources/:sourceId', requireAuth, sourceController.deleteFile);
 
 module.exports = router;
