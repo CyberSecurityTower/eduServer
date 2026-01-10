@@ -14,7 +14,8 @@ const announcementController = require('../controllers/announcementController');
 const { runStreakRescueMission } = require('../services/jobs/streakRescue');
 const streakController = require('../controllers/streakController'); 
 const searchController = require('../controllers/searchController');
-
+const sourceController = require('../controllers/sourceController');
+const uploadMiddleware = require('../middleware/upload');
 /*
 // ⏰ تشغيل منقذ الستريك كل ساعة (60 دقيقة)
 setInterval(() => {
@@ -163,4 +164,18 @@ router.post('/run-nightly-analysis', adminController.runNightlyAnalysis);
 // ==========================================
 // يتطلب مصادقة (requireAuth)
 router.post('/search/quick', requireAuth, searchController.quickSearch);
+
+// مسار الرفع (يقبل ملف واحد باسم 'sourceFile')
+router.post(
+    '/sources/upload', 
+    requireAuth, 
+    uploadMiddleware.single('sourceFile'), 
+    sourceController.uploadLessonSource
+);
+
+// مسار جلب المصادر لدرس معين
+router.get('/sources/:lessonId', requireAuth, sourceController.listLessonSources);
+
+
+
 module.exports = router;
