@@ -9,12 +9,14 @@ const fs = require('fs');
 class SourceManager {
   /**
    * 📤 رفع مصدر جديد
+   * @param {string} displayName - الاسم الذي سيظهر للمستخدم (Custom or Original)
+   * @param {string} originalFileName - الاسم الحقيقي للملف (لأغراض الأرشفة)
    */
-  async uploadSource(userId, lessonId, filePath, originalName, mimeType) {
+  async uploadSource(userId, lessonId, filePath, displayName, mimeType, originalFileName) {
     try {
-      logger.info(`📤 Uploading source [${originalName}] for Lesson: ${lessonId || 'Pending'}...`);
+      logger.info(`📤 Uploading source [${displayName}] (Original: ${originalFileName}) for Lesson: ${lessonId || 'Pending'}...`);
 
-      // 1. تحديد نوع المورد بدقة
+      // 1. تحديد نوع المورد
       let resourceType = 'raw'; 
       if (mimeType.startsWith('image/')) resourceType = 'image';
       else if (mimeType.startsWith('video/')) resourceType = 'video';
@@ -29,27 +31,32 @@ class SourceManager {
         access_mode: 'public'
       });
 
-      // 3. الحفظ في قاعدة البيانات مع الحالة "processing"
+      // 3. الحفظ في قاعدة البيانات
       const simpleType = mimeType.split('/')[0] === 'image' ? 'image' : 'document';
 
-      const { data, error } = await supabase
-        .from('lesson_sources')
-        .insert({
+      const insertData = {
           user_id: userId,
           lesson_id: lessonId || null,
           file_url: uploadResult.secure_url,
           file_type: simpleType,
-          file_name: originalName,
+          
+          file_name: displayName, // ✅ هذا الاسم الذي سيظهر في التطبيق (Custom Name)
+          original_file_name: originalFileName, 
+          
           public_id: uploadResult.public_id,
           processed: false,
-          status: 'processing' // 👈 [جديد] الحالة المبدئية
-        })
+          status: 'processing'
+      };
+
+      const { data, error } = await supabase
+        .from('lesson_sources')
+        .insert(insertData)
         .select()
         .single();
 
       if (error) throw error;
 
-      logger.success(`✅ Source Saved & Processing: ID ${data.id}`);
+      logger.success(`✅ Source Saved: ${data.file_name} (ID: ${data.id})`);
       return data;
 
     } catch (err) {
