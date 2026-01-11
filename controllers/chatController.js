@@ -153,11 +153,12 @@ if (req.body.files && req.body.files.length > 0) {
     // طباعة أول 50 حرف فقط من الداتا للتأكد أنها base64 سليمة وليست تالفة
     console.log('🔍 First file sample:', req.body.files[0].mime, req.body.files[0].data.substring(0, 50) + "...");
 }
+    /*
     // ✅ إضافة هذا الفحص: إذا انقطع الاتصال، توقف فوراً
     if (req.destroyed || res.writableEnded) {
         console.log('🛑 Client disconnected. Aborting AI request.');
         return; 
-    }
+    }*/
     // =========================================================
     // 🧩 التجهيز (Services Layer) - نظيف جداً
     // =========================================================
