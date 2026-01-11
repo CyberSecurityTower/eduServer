@@ -21,6 +21,7 @@ const CONFIG = {
     notification: 'gemini-2.5-flash',
     suggestion: 'gemini-2.5-flash',
     embedding: 'text-embedding-004',
+    lesson_generator: 'gemini-2.5-pro', 
   },
  TIMEOUTS: {
     default: Number(process.env.TIMEOUT_DEFAULT_MS || 30000), 
