@@ -186,4 +186,6 @@ router.get('/sources/lesson/:lessonId', requireAuth, sourceController.getLessonF
 // حذف ملف
 router.delete('/sources/:sourceId', requireAuth, sourceController.deleteFile);
 
+//  فحص حالة ملف معين (خفيف وسريع)
+router.get('/sources/:sourceId/status', requireAuth, sourceController.checkSourceStatus);
 module.exports = router;
