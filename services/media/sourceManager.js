@@ -31,12 +31,12 @@ class SourceManager {
         type: 'upload',       // يعني أن الملف عام
         access_mode: 'public' // تأكيد صريح للوصول العام
       });
-
+/*
       // 3. حذف الملف المؤقت (تنظيف)
       if (fs.existsSync(filePath)) {
           fs.unlinkSync(filePath);
       }
-
+*/
       // 4. الحفظ في قاعدة البيانات
       const simpleType = mimeType.split('/')[0] === 'image' ? 'image' : 'document';
 
