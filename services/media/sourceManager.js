@@ -60,12 +60,15 @@ class SourceManager {
     }
   }
 
-  // ... باقي الدوال ...
 
+  /**
+   * 📥 جلب مصادر درس معين
+   */
   async getSourcesByLesson(userId, lessonId) {
     const { data, error } = await supabase
       .from('lesson_sources')
-      .select('*')
+      // ✅ نختار (*) لجلب النص المستخرج، الحالة، ورسالة الخطأ
+      .select('*') 
       .eq('lesson_id', lessonId)
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
