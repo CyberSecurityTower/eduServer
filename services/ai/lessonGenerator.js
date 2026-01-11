@@ -2,7 +2,7 @@
 'use strict';
 
 const fs = require('fs');
-const { generateWithFailover } = require('./failover');
+const generateWithFailover = require('./failover');
 const { extractTextFromResult } = require('../../utils');
 const { MARKDOWN_LESSON_PROMPT } = require('../../config/lesson-prompts');
 const logger = require('../../utils/logger');
