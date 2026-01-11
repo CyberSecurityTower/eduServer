@@ -9,30 +9,31 @@ const keyManager = require('./keyManager');
 async function initializeModelPools() {
   await keyManager.init();
   const count = keyManager.getKeyCount();
-  logger.success(`🤖 AI Engine: Google Only Mode | Loaded ${count} Keys`);
+  logger.success(`🤖 AI Genius Hive-Mind Active | Nodes: ${count}`);
 }
 
 async function _callModelInstance(targetModelName, prompt, timeoutMs, label, systemInstruction, history, attachments, enableSearch) {
   
-  // سنحاول حتى 3 مرات باستخدام مفاتيح مختلفة في حال فشل أحدها
-  const MAX_RETRIES = 3; 
+  const MAX_ATTEMPTS = 3; 
+  // قائمة سوداء مؤقتة لهذا الطلب فقط (لضمان عدم تجربة نفس المفتاح مرتين في نفس الطلب)
+  const failedKeysInThisRequest = new Set();
 
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       
-      // طلب مفتاح من المدير
-      const keyObj = await keyManager.acquireKey(); // لا داعي لتمرير 'google'
+      // 1. طلب مفتاح ذكي
+      const keyObj = await keyManager.acquireKey();
       
-      if (!keyObj) {
-          if (attempt === 1) throw new Error('No Available AI Keys! System overloaded.');
-          await sleep(1000); 
-          continue; 
+      // إذا لم نجد مفتاحاً، أو أعطانا المدير مفتاحاً جربناه وفشل للتو (نادر الحدوث مع النظام الجديد لكن للاحتياط)
+      if (!keyObj || failedKeysInThisRequest.has(keyObj.key)) {
+          if (attempt === 1 && !keyObj) throw new Error('System Overload: No healthy AI nodes available.');
+          await sleep(500);
+          continue;
       }
 
       try {
-          // استخدام الموديل المحدد أو الافتراضي
           const selectedModel = targetModelName || 'gemini-1.5-flash';
           
-          if(attempt > 1) logger.warn(`🔄 Retry ${attempt}/${MAX_RETRIES} for [${label}] using Key: ${keyObj.nickname}...`);
+          if(attempt > 1) logger.warn(`🔄 Smart Retry ${attempt}/${MAX_ATTEMPTS} for [${label}] | Node: ${keyObj.nickname} (Health: ${keyObj.health})`);
           
           const genAI = keyObj.client;
           const tools = enableSearch ? [{ googleSearch: {} }] : [];
@@ -50,7 +51,6 @@ async function _callModelInstance(targetModelName, prompt, timeoutMs, label, sys
 
           let parts = [];
           if (attachments?.length) parts.push(...attachments);
-          // إضافة النص
           if (prompt) parts.push({ text: typeof prompt === 'string' ? prompt : JSON.stringify(prompt) });
 
           const result = await withTimeout(
@@ -61,8 +61,15 @@ async function _callModelInstance(targetModelName, prompt, timeoutMs, label, sys
           
           const response = await result.response;
           const responseText = response.text();
+          
+          // تحقق إضافي: هل النص فارغ؟ (أحياناً يحدث بدون خطأ)
+          if (!responseText || responseText.length < 2) throw new Error('Empty Response');
 
-          // استخراج المصادر (إذا تم استخدام البحث)
+          // ✅ نجاح باهر!
+          // نخبر المدير ليرفع صحة هذا المفتاح ويكافئ أدائه
+          keyManager.reportResult(keyObj.key, true);
+          
+          // استخراج المصادر
           let sources = [];
           if (enableSearch && response.candidates?.[0]?.groundingMetadata?.groundingChunks) {
               sources = response.candidates[0].groundingMetadata.groundingChunks
@@ -70,31 +77,32 @@ async function _callModelInstance(targetModelName, prompt, timeoutMs, label, sys
                   .filter(Boolean);
           }
 
-          // ✅ نجاح
-          keyManager.releaseKey(keyObj.key, true);
           return { text: responseText, sources: sources };
 
       } catch (err) {
           const errStr = String(err);
           let errType = 'error';
 
-          // تصنيف الخطأ
           if (errStr.includes('429') || errStr.includes('Quota')) errType = '429';
           else if (errStr.includes('Candidate was stopped')) errType = 'safety';
 
-          logger.warn(`❌ FAIL: Key ${keyObj.nickname}. Reason: ${errType}`);
+          logger.warn(`❌ Node Failure: ${keyObj.nickname} (${errType}). Reporting to Hive-Mind...`);
+
+          // 🚨 تبليغ الفشل فوراً!
+          // هذا سيقوم بخصم نقاط الصحة وعزل المفتاح إذا لزم الأمر
+          // وبالتالي، أي مستخدم آخر سيطلب مفتاحاً الآن لن يحصل على هذا المفتاح
+          keyManager.reportResult(keyObj.key, false, errType);
           
-          // تحرير المفتاح مع تسجيل الفشل
-          keyManager.releaseKey(keyObj.key, false, errType);
-          
-          // انتظار قصير قبل المحاولة التالية
-          await sleep(500);
+          // إضافته للقائمة السوداء المحلية لهذه الدالة
+          failedKeysInThisRequest.add(keyObj.key);
+
+          // انتظار ذكي قبل المحاولة التالية
+          await sleep(500 * attempt);
       }
   }
 
-  // إذا وصلنا هنا، يعني فشلت كل المحاولات
-  logger.error(`💀 AI SYSTEM FAIL: All ${MAX_RETRIES} attempts failed.`);
-  throw new Error('Service Busy: Unable to generate response after multiple attempts.');
+  logger.error(`💀 REQUEST FAILED after ${MAX_ATTEMPTS} attempts. The Hive is struggling.`);
+  throw new Error('AI Service Unavailable: Please try again later.');
 }
 
 module.exports = {
