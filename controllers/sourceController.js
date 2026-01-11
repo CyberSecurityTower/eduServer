@@ -9,6 +9,8 @@ const fs = require('fs');
 const https = require('https'); 
 const os = require('os');
 const path = require('path');
+const { pipeline } = require('stream/promises'); // أضف هذا
+
 // دالة المعالجة في الخلفية (Worker Function)
 async function processAIInBackground(sourceId, filePath, mimeType, lessonTitle) {
   try {
@@ -192,25 +194,27 @@ async function checkSourceStatus(req, res) {
 }
 
 // --- Helper: دالة لتحميل الملف من الرابط وحفظه مؤقتاً ---
-function downloadTempFile(url, fileName) {
-    return new Promise((resolve, reject) => {
-        const tempPath = path.join(os.tmpdir(), `retry-${Date.now()}-${fileName}`);
-        const file = fs.createWriteStream(tempPath);
-
-        https.get(url, (response) => {
-            if (response.statusCode !== 200) {
-                return reject(new Error(`Failed to download file: Status ${response.statusCode}`));
-            }
-            response.pipe(file);
-        }).on('error', (err) => {
-            fs.unlink(tempPath, () => {}); // تنظيف عند الخطأ
-            reject(err);
-        });
-
-        file.on('finish', () => {
-            file.close(() => resolve(tempPath));
-        });
-    });
+async function downloadTempFile(url, fileName) {
+    const tempPath = path.join(os.tmpdir(), `retry-${Date.now()}-${fileName}`);
+    
+    try {
+        // نستخدم fetch بدلاً من https لأنه يدعم الـ Redirects تلقائياً
+        const response = await fetch(url);
+        
+        if (!response.ok) throw new Error(`Download failed: ${response.statusText}`);
+        
+        // حفظ الملف باستخدام Stream Pipeline (أسرع وأكثر أماناً للذاكرة)
+        const fileStream = fs.createWriteStream(tempPath);
+        
+        // @ts-ignore (Node 20 supports ReadableStream here)
+        await pipeline(response.body, fileStream);
+        
+        return tempPath;
+    } catch (err) {
+        // تنظيف إذا فشل التحميل
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        throw err;
+    }
 }
 
 // 5. إعادة المحاولة (Retry Processing)
