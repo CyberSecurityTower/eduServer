@@ -17,12 +17,13 @@ const keyManager = require('../services/ai/keyManager');
 const { calculateSmartPrimeTime } = require('../services/engines/chronoV2');
 const { predictSystemHealth } = require('../services/ai/keyPredictor');
 const { decryptForAdmin } = require('../utils/crypto');
-const { clearSystemFeatureCache } = require('../services/data/helpers'); // استيراد
+const { clearSystemFeatureCache } = require('../services/data/helpers'); 
 const liveMonitor = require('../services/monitoring/realtimeStats');
 const { runStreakRescueMission } = require('../services/jobs/streakRescue');
 const { clearCurriculumCache } = require('../services/ai/curriculumContext');
 const { ensureJsonOrRepair, escapeForPrompt, safeSnippet, extractTextFromResult } = require('../utils');
 const db = getFirestoreInstance();
+const systemHealth = require('../services/monitoring/systemHealth'); 
 
 let generateWithFailoverRef; 
 
@@ -650,13 +651,19 @@ async function getKeysStatus(req, res) {
 }
 
 // 2. Add New Key
+
 async function addApiKey(req, res) {
     const { key, nickname } = req.body;
     
     const result = await keyManager.addKey(key, nickname || 'Admin_Added');
+    
+    // 🔧 إعادة تشغيل النظام فوراً
+    if (result.success) {
+        systemHealth.manualReset(); 
+    }
+
     res.json(result);
 }
-
 // 3. Revive Dead Key
 async function reviveApiKey(req, res) {
     const { key } = req.body;
@@ -781,6 +788,7 @@ async function activateLaunchKeys(req, res) {
 
         // سنضيف دالة reload بسيطة في KeyManager
         await require('../services/ai/keyManager').reloadKeys(); 
+        systemHealth.manualReset();
 
         res.json({ success: true, message: "🚀 All reserved keys are now ACTIVE! Let the games begin." });
 
