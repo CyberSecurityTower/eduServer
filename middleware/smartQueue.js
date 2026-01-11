@@ -3,101 +3,87 @@
 
 const logger = require('../utils/logger');
 
-// إعدادات السعة (Budget)
-const MAX_TOTAL_BYTES = 100 * 1024 * 1024; // السقف الإجمالي: 100 ميغا
-const MAX_QUEUE_SIZE = 50; // طابور الانتظار: أقصى حد 50 شخص يستناو
+const MAX_TOTAL_BYTES = 100 * 1024 * 1024; // 100MB Total Buffer
+const MAX_QUEUE_SIZE = 50; 
+const QUEUE_TIMEOUT_MS = 300000; // دقيقة واحدة كحد أقصى للانتظار في الطابور
 
-// حالة النظام الحالية (State)
 let currentLoadBytes = 0;
-const requestQueue = [];
+let requestQueue = []; // غيّرناها لـ let لنتمكن من التعديل عليها بسهولة
 
-/**
- * دالة لمحاولة تمرير المنتظرين في الطابور
- */
 const processQueue = () => {
     if (requestQueue.length === 0) return;
 
-    // نرتبو الطابور؟ لا، نخلوه FIFO (الأول فالأول) باش ما نحقروش مول الملف الكبير
-    // لكن الذكاء هنا: نفوتو أي واحد "يسمح بيه الحجم المتبقي"
+    // تصفية الطلبات التي انتهت مهلة انتظارها
+    const now = Date.now();
+    requestQueue = requestQueue.filter(item => {
+        if (now - item.queuedAt > QUEUE_TIMEOUT_MS) {
+            item.reject('Queue timeout'); // نرفض الطلب
+            return false;
+        }
+        return true;
+    });
+
+    // محاولة تمرير الطلبات
+    // نستخدم نسخة للتكرار لأننا سنعدل المصفوفة الأصلية
+    const queueSnapshot = [...requestQueue]; 
     
-    // ننسخ الطابور للتعديل
-    for (let i = 0; i < requestQueue.length; i++) {
-        const item = requestQueue[i];
-        
-        // هل المكان يكفي لهذا الملف؟
+    for (const item of queueSnapshot) {
         if (currentLoadBytes + item.size <= MAX_TOTAL_BYTES) {
-            // نزيدو الحمل
+            // 1. حجز المساحة
             currentLoadBytes += item.size;
             
-            // نحوه من الطابور
-            requestQueue.splice(i, 1);
-            i--; // نعدلو العداد لأننا حذفنا عنصر
-
-            // نسمحولو بالمرور
-            // logger.info(`🚦 Queue Released: File size ${(item.size / 1024 / 1024).toFixed(2)}MB. Current Load: ${(currentLoadBytes / 1024 / 1024).toFixed(2)}MB`);
-            item.next(); 
+            // 2. إزالة من الطابور
+            requestQueue = requestQueue.filter(q => q.id !== item.id);
+            
+            // 3. السماح بالمرور
+            logger.log(`🚦 Queue Released: ${(item.size / 1024 / 1024).toFixed(2)}MB. Load: ${(currentLoadBytes / 1024 / 1024).toFixed(2)}MB`);
+            item.next();
         }
     }
 };
 
-/**
- * الميدلويير الرئيسي
- */
 const smartQueueMiddleware = (req, res, next) => {
-    // 1. معرفة حجم الملف قبل رفعه (من الهيدر)
     const contentLength = parseInt(req.headers['content-length'] || '0', 10);
-
-    // إذا ما كاش هيدر أو الحجم 0 (طلب وهمي)، نفوتوه لـ Multer يتصرف معاه
     if (contentLength === 0) return next();
 
-    // 2. التحقق من أن الملف الواحد لا يتجاوز 50 ميغا (حماية أولية)
-    if (contentLength > 50 * 1024 * 1024) {
-        return res.status(413).json({ error: 'File too large. Max limit is 50MB.' });
-    }
+    // دالة لتنظيف الحمل عند انتهاء الطلب
+    const cleanup = () => {
+        currentLoadBytes -= contentLength;
+        if (currentLoadBytes < 0) currentLoadBytes = 0;
+        processQueue(); // نداء للطلبات التالية
+    };
 
-    // 3. هل السيرفر فارغ؟ (Direct Pass)
+    // 1. المسار السريع
     if (currentLoadBytes + contentLength <= MAX_TOTAL_BYTES) {
         currentLoadBytes += contentLength;
-        // console.log(`🟢 Direct Pass. Load: ${(currentLoadBytes/1024/1024).toFixed(2)}MB`);
-        
-        // نربطو دالة عند انتهاء الطلب (سواء نجح أو فشل) لتنظيف الحجم
-        res.on('finish', () => {
-            currentLoadBytes -= contentLength;
-            // console.log(`🔻 Request Done. Load freed. Current: ${(currentLoadBytes/1024/1024).toFixed(2)}MB`);
-            processQueue(); // نشوفو لي وراه
-        });
-        
-        res.on('close', () => { // في حالة انقطاع الاتصال فجأة
-             currentLoadBytes -= contentLength;
-             processQueue();
-        });
-
+        res.on('finish', cleanup);
+        res.on('close', cleanup);
         return next();
     }
 
-    // 4. السيرفر معمر -> للطابور (Queue)
+    // 2. الطابور
     if (requestQueue.length >= MAX_QUEUE_SIZE) {
-        return res.status(429).json({ error: 'Server is extremely busy. Please try again later.' });
+        return res.status(429).json({ error: 'Server busy. Queue full.' });
     }
 
-    // إضافة للطابور
-     console.log(`🟡 Queued. Size: ${(contentLength/1024/1024).toFixed(2)}MB`);
-    
-    requestQueue.push({
+    logger.warn(`🟡 Queued request (${(contentLength/1024/1024).toFixed(2)}MB). Position: ${requestQueue.length + 1}`);
+
+    // إضافة للطابور مع Timestamp ومعرف فريد
+    const queueItem = {
+        id: Date.now() + Math.random(),
         size: contentLength,
+        queuedAt: Date.now(),
         next: () => {
-            // نفس منطق التنظيف عند الانتهاء
-            res.on('finish', () => {
-                currentLoadBytes -= contentLength;
-                processQueue();
-            });
-            res.on('close', () => {
-                currentLoadBytes -= contentLength;
-                processQueue();
-            });
+            res.on('finish', cleanup);
+            res.on('close', cleanup);
             next();
+        },
+        reject: (reason) => {
+            if (!res.headersSent) res.status(503).json({ error: reason });
         }
-    });
+    };
+    
+    requestQueue.push(queueItem);
 };
 
 module.exports = smartQueueMiddleware;
