@@ -60,7 +60,8 @@ class SourceManager {
     }
   }
 
-  // ... باقي الدوال (getSourcesByLesson, deleteSource) تبقى كما هي ...
+  // ... باقي الدوال ...
+
   async getSourcesByLesson(userId, lessonId) {
     const { data, error } = await supabase
       .from('lesson_sources')
@@ -96,7 +97,6 @@ class SourceManager {
     logger.info(`🗑️ Source deleted: ${sourceId}`);
     return true;
   }
-}
 
   /**
    * 🔍 فحص حالة مصدر معين (للاستخدام في Polling)
@@ -104,15 +104,14 @@ class SourceManager {
   async getSourceStatus(userId, sourceId) {
     const { data, error } = await supabase
       .from('lesson_sources')
-      .select('status, error_message, extracted_text') // نجلب البيانات المهمة فقط
-      .eq('id', sourceId)
-      .eq('user_id', userId) // حماية أمنية: المستخدم يرى ملفاته فقط
-      .single();
+      .select('status, error_message, extracted_text')      .eq('id', sourceId)
+      .eq('user_id', userId)       .single();
 
     if (error) {
-        // إذا لم يتم العثور عليه أو حدث خطأ
+       
         return null; 
     }
     return data;
   }
+} 
 module.exports = new SourceManager();
