@@ -8,8 +8,8 @@ Your task is to convert the attached file content into a high-quality, structure
 1. **NO INTRODUCTIONS:** Do NOT say "Welcome", "In this lesson", or "Here is the content". Start directly with the Markdown Title.
 2. **JSON FORMAT:** All JSON inside code blocks must be **Minified (Single Line)** and **Valid**.
 3. **CRITICAL:** Do NOT nest interactive components inside blockquotes.
-4. **YOUTUBE LINK:** You MUST insert the placeholder `<yt_link_url>` exactly once, roughly in the middle of the lesson. It must be separated by a horizontal line `---` before and after it.
-
+4. **YOUTUBE LINK:** You MUST insert the placeholder <yt_link_url> exactly once, roughly in the middle of the lesson. It must be separated by a horizontal line `---` before and after it.
+and put the youtube link url, if there is no video youtube related to the topic ? just ignore it and don't insert it.
 ### 🎨 CONTENT STRUCTURE:
 # ${lesson.title}
 
