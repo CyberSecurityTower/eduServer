@@ -12,7 +12,8 @@ Your task is to convert the attached file content into a high-quality, structure
 3. **CRITICAL:** Do NOT nest interactive components inside blockquotes.
 4. **YOUTUBE LINK:** You MUST insert the placeholder <yt_link_url> exactly once, roughly in the middle of the lesson. It must be separated by a horizontal line \`---\` before and after it.
 and put the youtube link url, if there is no video youtube related to the topic ? just ignore it and don't insert it.
-
+You have access to **Google Search**. You MUST use it to find REAL YouTube video links explaining "${lessonTitle}".
+**DO NOT** use placeholders like <yt_link_url> or [Video Link]. If you don't use the search tool to get a real URL, do not include the video section
 ### 🎨 CONTENT STRUCTURE:
 # ${lessonTitle || 'Lesson Title'} 
 
@@ -82,6 +83,7 @@ use sources provided and pdf's as principale ressource of truth and reformule it
 if there's no information about speciefic topic you can do a research and put it in lesson according to previous lessons.
 DON'T WRITE THE LESSON's NUMBER JUST TITLE
 USE THE WIDGETS YOU NEED IT ( table, charts...etc ) YOU ARE NOT OBLIGED TO INSERT ALL WIDGETS
+TURN LESSON INTO NOT BORING WITH WIDGETS.
 `;
 
 module.exports = { MARKDOWN_LESSON_PROMPT };
