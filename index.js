@@ -88,6 +88,7 @@ async function boot() {
     const server = app.listen(CONFIG.PORT, () => {
       logger.success(`EduAI Brain V2.1 (Production) running on port ${CONFIG.PORT}`);
     });
+    server.setTimeout(300000);
 
     process.on('SIGINT', () => {
       stopWorker();
