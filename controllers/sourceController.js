@@ -154,21 +154,31 @@ async function deleteFile(req, res) {
     }
 }
 
-  /**
-   * 🔍 فحص حالة مصدر معين (للاستخدام في Polling)
-   */
-  async getSourceStatus(userId, sourceId) {
-    const { data, error } = await supabase
-      .from('lesson_sources')
-      .select('status, error_message, extracted_text') // نجلب البيانات المهمة فقط
-      .eq('id', sourceId)
-      .eq('user_id', userId) // حماية أمنية: المستخدم يرى ملفاته فقط
-      .single();
+// 4. فحص حالة المعالجة (Poling Endpoint)
+async function checkSourceStatus(req, res) {
+    try {
+        const { sourceId } = req.params;
+        const userId = req.user?.id;
 
-    if (error) {
-        // إذا لم يتم العثور عليه أو حدث خطأ
-        return null; 
+        const statusData = await sourceManager.getSourceStatus(userId, sourceId);
+
+        if (!statusData) {
+            return res.status(404).json({ error: 'Source not found or unauthorized' });
+        }
+
+        // نرسل الحالة
+        res.status(200).json({ 
+            success: true, 
+            status: statusData.status, // processing | completed | failed
+            error: statusData.error_message,
+            // نرسل النص فقط إذا اكتمل، لكي يتمكن الفرونت من عرضه مباشرة
+            data: statusData.status === 'completed' ? statusData.extracted_text : null
+        });
+
+    } catch (err) {
+        logger.error('Check Status Error:', err.message);
+        res.status(500).json({ error: err.message });
     }
-    return data;
-  }
-module.exports = { uploadFile, getLessonFiles, deleteFile, getSourceStatus };
+}
+
+module.exports = { uploadFile, getLessonFiles, deleteFile, checkSourceStatus  };
