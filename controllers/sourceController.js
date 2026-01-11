@@ -154,4 +154,21 @@ async function deleteFile(req, res) {
     }
 }
 
-module.exports = { uploadFile, getLessonFiles, deleteFile };
+  /**
+   * 🔍 فحص حالة مصدر معين (للاستخدام في Polling)
+   */
+  async getSourceStatus(userId, sourceId) {
+    const { data, error } = await supabase
+      .from('lesson_sources')
+      .select('status, error_message, extracted_text') // نجلب البيانات المهمة فقط
+      .eq('id', sourceId)
+      .eq('user_id', userId) // حماية أمنية: المستخدم يرى ملفاته فقط
+      .single();
+
+    if (error) {
+        // إذا لم يتم العثور عليه أو حدث خطأ
+        return null; 
+    }
+    return data;
+  }
+module.exports = { uploadFile, getLessonFiles, deleteFile, getSourceStatus };
