@@ -10,7 +10,7 @@ const https = require('https');
 const os = require('os');
 const path = require('path');
 const { pipeline } = require('stream/promises'); // أضف هذا
-
+const MAX_AUTO_RETRIES = 3;
 // دالة المعالجة في الخلفية (Worker Function)
 async function processAIInBackground(sourceId, filePath, mimeType, lessonTitle) {
   try {
@@ -300,41 +300,54 @@ async function retryProcessing(req, res) {
  * 🔓 دالة النظام لإعادة المحاولة (System Internal Retry)
  * تستخدم من قبل الـ Worker لاستكمال العمليات العالقة
  */
+// controllers/sourceController.js
+
 async function triggerSystemRetry(sourceId) {
     try {
-        logger.info(`🤖 [System Retry] Taking over source: ${sourceId}`);
-
-        // 1. جلب بيانات المصدر (بدون فلتر userId)
+        // 1. جلب بيانات المصدر مع عداد المحاولات
         const { data: source } = await supabase
             .from('lesson_sources')
             .select('*')
             .eq('id', sourceId)
             .single();
 
-        if (!source) {
-            logger.error(`❌ [System Retry] Source ${sourceId} not found.`);
-            return false;
+        if (!source) return false;
+
+        // 🛑 2. فحص قاطع الدائرة (Circuit Breaker)
+        if ((source.retry_count || 0) >= MAX_AUTO_RETRIES) {
+            logger.error(`💀 [System Retry] Source ${sourceId} is DEAD. Max retries (${MAX_AUTO_RETRIES}) exceeded.`);
+            
+            // نوسمها كـ "ميتة" لكي لا يلتقطها الـ Worker مجدداً
+            await supabase
+                .from('lesson_sources')
+                .update({ 
+                    status: 'failed_permanently', // حالة جديدة نهائية
+                    error_message: 'System gave up: Max auto-retries exceeded.' 
+                })
+                .eq('id', sourceId);
+            
+            return false; // ننسحب
         }
 
-        // 2. تحديث الحالة فوراً
+        logger.info(`🤖 [System Retry] Attempt ${(source.retry_count || 0) + 1}/${MAX_AUTO_RETRIES} for source: ${sourceId}`);
+
+        // 3. تحديث الحالة + زيادة العداد
         await supabase
             .from('lesson_sources')
             .update({ 
                 status: 'processing', 
-                error_message: 'Auto-recovered by system worker.' 
+                retry_count: (source.retry_count || 0) + 1, // زيادة العداد
+                error_message: null 
             })
             .eq('id', sourceId);
 
-        // 3. جلب عنوان الدرس
+        // 4. تنفيذ العمل (نفس الكود السابق)
         let lessonTitle = "University Topic";
         if (source.lesson_id) {
             const { data: lData } = await supabase.from('lessons').select('title').eq('id', source.lesson_id).single();
             if (lData) lessonTitle = lData.title;
         }
 
-        // 4. تحميل الملف وتشغيل الـ AI
-        // نستخدم setImmediate لعدم حجز الـ Worker، لكن في حالة الـ Worker يفضل await لضمان التسلسل
-        // سنجعلها متزامنة هنا لضمان عدم إغراق السيرفر
         const tempFilePath = await downloadTempFile(source.file_url, source.file_name || 'recovered_file');
         
         await processAIInBackground(
@@ -347,11 +360,9 @@ async function triggerSystemRetry(sourceId) {
         return true;
 
     } catch (err) {
+        // لا نحتاج لتحديث الحالة هنا لأن processAIInBackground تقوم بذلك، 
+        // لكن العداد قد زاد بالفعل في الخطوة 3، وهذا جيد.
         logger.error(`❌ [System Retry Failed] Source ${sourceId}:`, err.message);
-        await supabase
-            .from('lesson_sources')
-            .update({ status: 'failed', error_message: `Recovery failed: ${err.message}` })
-            .eq('id', sourceId);
         return false;
     }
 }
