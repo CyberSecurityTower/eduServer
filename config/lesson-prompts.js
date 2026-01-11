@@ -67,10 +67,6 @@ and put the youtube link url, if there is no video youtube related to the topic 
    The hidden answer is here
    ```
 
-**6. Math Equation:**
-   ```math
-   Assets = Liabilities + Equity
-   ```
 
 **7. Blockquotes (Alerts):**
    > !tip Tip text here
@@ -83,6 +79,7 @@ Generate the full lesson content now. Ensure the **Pie Chart JSON is an Array** 
 use sources provided and pdf's as principale ressource of truth and reformule it with your own language (arabic) simple with examples and good explaining with providing UI's like charts,interactive table...etc
 if there's no information about speciefic topic you can do a research and put it in lesson according to previous lessons.
 DON'T WRITE THE LESSON's NUMBER JUST TITLE
+USE THE WIDGETS YOU NEED IT ( table, charts...etc ) YOU ARE NOT OBLIGED TO INSERT ALL WIDGETS
 `;
 
 module.exports = { MARKDOWN_LESSON_PROMPT };
