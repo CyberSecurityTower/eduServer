@@ -6,9 +6,12 @@ const logger = require('../utils/logger');
 const MAX_TOTAL_BYTES = 100 * 1024 * 1024; // 100MB Total Buffer
 const MAX_QUEUE_SIZE = 50; 
 const QUEUE_TIMEOUT_MS = 300000; // دقيقة واحدة كحد أقصى للانتظار في الطابور
-
+const systemHealth = require('../services/monitoring/systemHealth'); // 👈 استيراد
+const MAX_TOTAL_BYTES = 100 * 1024 * 1024; 
+const MAX_QUEUE_SIZE = 50; 
+const QUEUE_TIMEOUT_MS = 300000;
 let currentLoadBytes = 0;
-let requestQueue = []; // غيّرناها لـ let لنتمكن من التعديل عليها بسهولة
+let requestQueue = []; 
 
 const processQueue = () => {
     if (requestQueue.length === 0) return;
@@ -43,6 +46,16 @@ const processQueue = () => {
 };
 
 const smartQueueMiddleware = (req, res, next) => {
+    
+    // 🔥 1. الفحص الأمني الجديد: هل السيرفر في حالة إغلاق؟
+    if (systemHealth.isLocked()) {
+        logger.warn(`⛔ Request Blocked: System in LOCKDOWN.`);
+        return res.status(503).json({ 
+            error: 'Server is currently overloaded (AI Capacity Reached). Please try again in 5 minutes.',
+            retryAfter: 300 // 5 دقائق
+        });
+    }
+
     const contentLength = parseInt(req.headers['content-length'] || '0', 10);
     if (contentLength === 0) return next();
 
