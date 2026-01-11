@@ -2,25 +2,23 @@
 'use strict';
 
 const fs = require('fs');
-const { generateWithFailover } = require('./failover'); // نستخدم نظام الفشل الذكي
+const { generateWithFailover } = require('./failover');
 const { extractTextFromResult } = require('../../utils');
 const { MARKDOWN_LESSON_PROMPT } = require('../../config/lesson-prompts');
 const logger = require('../../utils/logger');
 
 /**
- * دالة تقوم بقراءة الملف وإرساله للذكاء الاصطناعي لتوليد الدرس
- * @param {string} filePath - مسار الملف المؤقت
+ * @param {string} filePath - مسار الملف
  * @param {string} mimeType - نوع الملف
+ * @param {string} lessonTitle - عنوان الدرس (لتحسين السياق والبحث)
  */
-async function generateLessonFromSource(filePath, mimeType) {
+async function generateLessonFromSource(filePath, mimeType, lessonTitle) {
   try {
-    logger.info('🧠 AI Processing: Reading file for lesson generation...');
+    logger.info(`🧠 AI Processing: Generating lesson for "${lessonTitle}" with Search...`);
 
-    // 1. تحويل الملف إلى Buffer (لإرساله للـ AI)
     const fileBuffer = fs.readFileSync(filePath);
     const base64Data = fileBuffer.toString('base64');
 
-    // 2. تجهيز المرفق (Payload)
     const attachments = [{
       inlineData: {
         data: base64Data,
@@ -28,28 +26,31 @@ async function generateLessonFromSource(filePath, mimeType) {
       }
     }];
 
-    // 3. الإرسال للموديل (نستخدم 'analysis' أو 'chat' حسب ما تفضل)
-    // نمرر البرومبت الصارم + المرفق
+    // توليد البرومبت الديناميكي مع العنوان
+    const finalPrompt = MARKDOWN_LESSON_PROMPT(lessonTitle);
+
     const response = await generateWithFailover(
-      'analysis', 
-      MARKDOWN_LESSON_PROMPT, 
+      'analysis', // نستخدم بول التحليل
+      finalPrompt, 
       { 
         attachments: attachments,
-        timeoutMs: 120000, // نعطيه وقت أطول (دقيقتين) لأن قراءة الملفات قد تكون ثقيلة
-        label: 'LessonGenerator'
+        timeoutMs: 200000, // 3 دقائق (بحث + قراءة ملف يحتاج وقت)
+        label: 'LessonGenerator',
+        enableSearch: true //  تفعيل البحث لجلب روابط اليوتيوب
       }
     );
 
-    // 4. استخراج النص
     const lessonContent = await extractTextFromResult(response);
     
-    logger.success(`🧠 AI successfully generated lesson content (${lessonContent.length} chars).`);
+    // تحقق بسيط: إذا كان المحتوى قصيراً جداً، ربما فشل
+    if (!lessonContent || lessonContent.length < 50) return null;
+
+    logger.success(`🧠 AI Generated Lesson with Resources for: ${lessonTitle}`);
     return lessonContent;
 
   } catch (error) {
     logger.error('❌ AI Lesson Generation Failed:', error.message);
-    // في حالة الفشل، نرجع null ولا نوقف العملية كاملة (الملف أهم)
-    return null; 
+    return null;
   }
 }
 
