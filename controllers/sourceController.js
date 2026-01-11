@@ -6,7 +6,9 @@ const lessonGenerator = require('../services/ai/lessonGenerator');
 const supabase = require('../services/data/supabase');
 const logger = require('../utils/logger');
 const fs = require('fs');
-
+const https = require('https'); 
+const os = require('os');
+const path = require('path');
 // دالة المعالجة في الخلفية (Worker Function)
 async function processAIInBackground(sourceId, filePath, mimeType, lessonTitle) {
   try {
@@ -181,4 +183,111 @@ async function checkSourceStatus(req, res) {
     }
 }
 
-module.exports = { uploadFile, getLessonFiles, deleteFile, checkSourceStatus  };
+// --- Helper: دالة لتحميل الملف من الرابط وحفظه مؤقتاً ---
+function downloadTempFile(url, fileName) {
+    return new Promise((resolve, reject) => {
+        const tempPath = path.join(os.tmpdir(), `retry-${Date.now()}-${fileName}`);
+        const file = fs.createWriteStream(tempPath);
+
+        https.get(url, (response) => {
+            if (response.statusCode !== 200) {
+                return reject(new Error(`Failed to download file: Status ${response.statusCode}`));
+            }
+            response.pipe(file);
+        }).on('error', (err) => {
+            fs.unlink(tempPath, () => {}); // تنظيف عند الخطأ
+            reject(err);
+        });
+
+        file.on('finish', () => {
+            file.close(() => resolve(tempPath));
+        });
+    });
+}
+
+// 5. إعادة المحاولة (Retry Processing)
+async function retryProcessing(req, res) {
+    try {
+        const { sourceId } = req.params;
+        const userId = req.user?.id;
+
+        // 1. جلب بيانات المصدر
+        const { data: source } = await supabase
+            .from('lesson_sources')
+            .select('*')
+            .eq('id', sourceId)
+            .eq('user_id', userId)
+            .single();
+
+        if (!source) {
+            return res.status(404).json({ error: 'Source not found' });
+        }
+
+        // 2. التحقق مما إذا كان يستحق الإعادة (ليس مكتملاً بالفعل)
+        // ملاحظة: نسمح بالإعادة إذا كان failed أو حتى processing (في حال علق)
+        if (source.status === 'completed' && source.extracted_text) {
+            return res.status(400).json({ error: 'Source is already processed successfully.' });
+        }
+
+        // 3. تحديث الحالة فوراً ليعرف المستخدم أننا بدأنا
+        await supabase
+            .from('lesson_sources')
+            .update({ 
+                status: 'processing', 
+                error_message: null // مسح الخطأ القديم
+            })
+            .eq('id', sourceId);
+
+        // 4. الرد على العميل
+        res.status(202).json({ 
+            success: true, 
+            message: 'Retry initiated. Processing started in background.' 
+        });
+
+        // 5. العمل في الخلفية (Background Job)
+        (async () => {
+            try {
+                // أ. جلب عنوان الدرس (لتحسين الـ AI)
+                let lessonTitle = "University Topic";
+                if (source.lesson_id) {
+                    const { data: lData } = await supabase.from('lessons').select('title').eq('id', source.lesson_id).single();
+                    if (lData) lessonTitle = lData.title;
+                }
+
+                // ب. تحميل الملف من Cloudinary إلى Temp
+                logger.info(`🔄 [Retry] Downloading file for source ${sourceId}...`);
+                const tempFilePath = await downloadTempFile(source.file_url, source.file_name || 'temp_file');
+
+                // ج. استدعاء المعالج الموجود مسبقاً
+                // (هذه الدالة موجودة في نفس الملف وتتكفل بحذف الملف المؤقت بعد الانتهاء)
+                await processAIInBackground(
+                    source.id, 
+                    tempFilePath, 
+                    source.file_type === 'image' ? 'image/jpeg' : 'application/pdf', // تخمين بسيط للنوع أو جلبه من الـ DB إذا كنت تخزنه
+                    lessonTitle
+                );
+
+            } catch (bgErr) {
+                logger.error(`❌ [Retry Failed] Source ${sourceId}:`, bgErr.message);
+                // تسجيل الفشل مرة أخرى
+                await supabase
+                    .from('lesson_sources')
+                    .update({ status: 'failed', error_message: bgErr.message })
+                    .eq('id', sourceId);
+            }
+        })();
+
+    } catch (err) {
+        logger.error('Retry Endpoint Error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+}
+
+// تأكد من تصدير الدالة في النهاية
+module.exports = { 
+    uploadFile, 
+    getLessonFiles, 
+    deleteFile, 
+    checkSourceStatus, 
+    retryProcessing // 👈 الإضافة الجديدة
+};
