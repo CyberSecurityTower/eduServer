@@ -2,12 +2,71 @@
 'use strict';
 
 const sourceManager = require('../services/media/sourceManager');
-const lessonGenerator = require('../services/ai/lessonGenerator'); // الخدمة الجديدة
+const lessonGenerator = require('../services/ai/lessonGenerator');
 const supabase = require('../services/data/supabase');
 const logger = require('../utils/logger');
-const fs = require('fs'); // 👈 ضروري لحذف الملفات
+const fs = require('fs');
 
-// 1. رفع ملف + توليد درس (Parallel Processing) 🔥
+// دالة المعالجة في الخلفية (Worker Function)
+async function processAIInBackground(sourceId, filePath, mimeType, lessonTitle) {
+  try {
+    logger.info(`⚙️ [Background Job] Starting AI analysis for source: ${sourceId}`);
+
+    // تشغيل خدمة الـ AI (قد تستغرق وقتاً طويلاً)
+    const aiGeneratedLesson = await lessonGenerator.generateLessonFromSource(filePath, mimeType, lessonTitle);
+
+    if (aiGeneratedLesson) {
+        // نجاح: تحديث السجل إلى completed وحفظ النص
+        await supabase
+            .from('lesson_sources')
+            .update({ 
+                extracted_text: aiGeneratedLesson, 
+                processed: true,
+                status: 'completed', // ✅ تم الانتهاء
+                error_message: null
+            })
+            .eq('id', sourceId);
+            
+        logger.success(`✅ [Background Job] AI Finished for source: ${sourceId}`);
+    } else {
+        // فشل الـ AI في إرجاع محتوى (لكن العملية تمت)
+        await supabase
+            .from('lesson_sources')
+            .update({ 
+                status: 'failed', 
+                error_message: 'AI returned empty content or failed to process.' 
+            })
+            .eq('id', sourceId);
+        
+        logger.warn(`⚠️ [Background Job] AI returned empty for source: ${sourceId}`);
+    }
+
+  } catch (err) {
+    logger.error(`❌ [Background Job] Fatal Error for source ${sourceId}:`, err.message);
+    
+    // تسجيل الخطأ في قاعدة البيانات
+    await supabase
+        .from('lesson_sources')
+        .update({ 
+            status: 'failed', 
+            error_message: err.message 
+        })
+        .eq('id', sourceId);
+
+  } finally {
+    // 🧹 تنظيف الملف المؤقت: يتم الحذف هنا فقط بعد انتهاء الـ AI
+    if (filePath && fs.existsSync(filePath)) {
+        try { 
+            fs.unlinkSync(filePath); 
+            logger.info(`🧹 [Background Job] Temp file cleaned up: ${filePath}`);
+        } catch(e) {
+            console.error('Failed to delete temp file:', e);
+        }
+    }
+  }
+}
+
+// 1. دالة الرفع (Endpoint Handler)
 async function uploadFile(req, res) {
   const userId = req.user?.id;
   const { lessonId } = req.body;
@@ -17,76 +76,55 @@ async function uploadFile(req, res) {
   if (!file) return res.status(400).json({ error: 'No file provided' });
 
   try {
-    // 1. جلب عنوان الدرس (خطوة سريعة جداً) لتحسين جودة الـ AI
-    let lessonTitle = "University Topic"; // عنوان افتراضي
-    
+    // أ. جلب عنوان الدرس (لتحسين سياق الـ AI)
+    let lessonTitle = "University Topic"; 
     if (lessonId) {
         const { data } = await supabase
             .from('lessons')
             .select('title')
             .eq('id', lessonId)
             .single();
-        
-        if (data && data.title) {
-            lessonTitle = data.title;
-        }
+        if (data && data.title) lessonTitle = data.title;
     }
 
-    logger.info(`🚀 Starting Parallel Process for: ${file.originalname} | Topic: ${lessonTitle}`);
+    // ب. الرفع للكلاوديناري وإنشاء سجل DB (حالة processing)
+    // ملاحظة: لا نحذف الملف هنا، نتركه ليعمل عليه الـ AI
+    const uploadResult = await sourceManager.uploadSource(
+        userId, 
+        lessonId, 
+        file.path, 
+        file.originalname, 
+        file.mimetype
+    );
 
-    // --- المعالجة بالتوازي (Parallel Execution) ---
-    // نطلق العمليتين معاً في نفس اللحظة
-    const [uploadResult, aiGeneratedLesson] = await Promise.all([
-      // المهمة 1: الرفع للكلاوديناري والحفظ الأولي في الداتابايز
-      sourceManager.uploadSource(userId, lessonId, file.path, file.originalname, file.mimetype),
-      
-      // المهمة 2: إرسال الملف للـ AI لتوليد الدرس (مع تمرير العنوان وتفعيل البحث)
-      lessonGenerator.generateLessonFromSource(file.path, file.mimetype, lessonTitle)
-    ]);
-
-    // --- مرحلة الدمج (Merge Results) ---
-    // إذا نجح الـ AI في توليد نص، نقوم بتحديث السجل الذي أنشأه sourceManager
-    if (aiGeneratedLesson && uploadResult?.id) {
-        logger.info(`💾 Saving AI Lesson to DB for Source ID: ${uploadResult.id}`);
-        
-        await supabase
-            .from('lesson_sources')
-            .update({ 
-                extracted_text: aiGeneratedLesson, // خزنّا الدرس هنا
-                processed: true 
-            })
-            .eq('id', uploadResult.id);
-            
-        // تحديث الكائن المرتجع للفرونت أند لكي يظهر مباشرة
-        uploadResult.extracted_text = aiGeneratedLesson;
-        uploadResult.processed = true;
-    }
-
-    // الرد النهائي يحتوي على رابط الملف + شرح الـ AI
-    res.status(201).json({ 
+    // ج. الرد الفوري على العميل (202 Accepted)
+    // نقول له: "استلمنا الملف، وهو قيد المعالجة"
+    res.status(202).json({ 
         success: true, 
-        data: uploadResult,
-        message: aiGeneratedLesson ? 'File uploaded & Lesson generated with Resources!' : 'File uploaded (AI analysis skipped)'
+        message: 'File uploaded. AI processing started in background.',
+        data: uploadResult // يحتوي على id و status: 'processing'
     });
 
+    // د. إطلاق المعالجة في الخلفية (Fire & Forget)
+    // لا نستخدم await هنا لكي لا نحجز الرد
+    processAIInBackground(uploadResult.id, file.path, file.mimetype, lessonTitle);
+
   } catch (err) {
-    logger.error('Parallel Upload Error:', err.message);
-    res.status(500).json({ error: err.message });
-  } finally {
-    // ✅ الحذف الآمن: يتم الحذف بعد انتهاء العمليتين (سواء نجحوا أو فشلوا)
-    // هذا يمنع امتلاء السيرفر بالملفات المؤقتة
+    logger.error('Upload Endpoint Error:', err.message);
+    
+    // في حال فشل الرفع الأولي، ننظف الملف هنا لأن الخلفية لن تعمل
     if (file && file.path && fs.existsSync(file.path)) {
-        try { 
-            fs.unlinkSync(file.path); 
-            // logger.info('🧹 Temp file cleaned up.');
-        } catch(e) {
-            console.error('Failed to delete temp file:', e);
-        }
+        fs.unlinkSync(file.path);
+    }
+    
+    // إذا لم نرد بعد، نرسل خطأ
+    if (!res.headersSent) {
+        res.status(500).json({ error: err.message });
     }
   }
 }
 
-// 2. جلب ملفات درس
+// 2. جلب ملفات درس (كما هي)
 async function getLessonFiles(req, res) {
     try {
         const { lessonId } = req.params;
@@ -102,7 +140,7 @@ async function getLessonFiles(req, res) {
     }
 }
 
-// 3. حذف ملف
+// 3. حذف ملف (كما هي)
 async function deleteFile(req, res) {
     try {
         const { sourceId } = req.params;
