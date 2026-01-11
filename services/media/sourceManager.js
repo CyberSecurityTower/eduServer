@@ -27,7 +27,9 @@ class SourceManager {
         folder: 'eduapp_sources',
         resource_type: resourceType, // 👈 التغيير هنا: نحدد النوع يدوياً
         use_filename: true,
-        public_id: `user_${userId}_${Date.now()}` // اسم فريد
+        public_id: `user_${userId}_${Date.now()}` ,
+        type: 'upload',       // يعني أن الملف عام
+        access_mode: 'public' // تأكيد صريح للوصول العام
       });
 
       // 3. حذف الملف المؤقت (تنظيف)
