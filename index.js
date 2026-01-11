@@ -18,6 +18,7 @@ const { initGhostEngine } = require('./services/engines/ghostTeacher');
 const { initChatController, handleGeneralQuestion } = require('./controllers/chatController');
 const { initAdminController } = require('./controllers/adminController');
 const { initExamWorker } = require('./services/jobs/examWorker');
+const { recoverStuckJobs } = require('./services/jobs/recoveryWorker');
 
 // Managers
 const { initConversationManager } = require('./services/ai/managers/conversationManager');
@@ -73,7 +74,7 @@ async function boot() {
     initJobWorker({ handleGeneralQuestion });
 
     setTimeout(jobWorkerLoop, 1000);
-    
+    setTimeout(recoverStuckJobs, 5000);
     // 🔥 Ticker: فحص المواعيد كل دقيقة
     setInterval(() => {
       checkScheduledActions().catch(e => logger.error('Ticker failed:', e));
