@@ -7,7 +7,6 @@ const logger = require('../../utils/logger');
 const fs = require('fs');
 
 class SourceManager {
-  
   /**
    * 📤 رفع مصدر جديد
    */
@@ -15,21 +14,28 @@ class SourceManager {
     try {
       logger.info(`📤 Uploading source [${originalName}] for Lesson: ${lessonId || 'Pending'}...`);
 
-      // 1. الرفع إلى Cloudinary
+      // 1. تحديد نوع المورد بدقة (الحل للمشكلة)
+      // الصور والفيديوهات لها معاملة خاصة، أما المستندات (PDF, Word) يجب أن تكون 'raw'
+      let resourceType = 'raw'; 
+      if (mimeType.startsWith('image/')) resourceType = 'image';
+      else if (mimeType.startsWith('video/')) resourceType = 'video';
+      
+      // ملاحظة: PDF نجعله raw ليتم تحميله كما هو بدون تلاعب من Cloudinary
+
+      // 2. الرفع إلى Cloudinary
       const uploadResult = await cloudinary.uploader.upload(filePath, {
-        folder: 'eduapp_sources', // اسم المجلد في Cloudinary
-        resource_type: 'auto',    // يقبل كلش (pdf, img, raw)
+        folder: 'eduapp_sources',
+        resource_type: resourceType, // 👈 التغيير هنا: نحدد النوع يدوياً
         use_filename: true,
-        public_id: `user_${userId}_${Date.now()}` // اسم فريد للملف
+        public_id: `user_${userId}_${Date.now()}` // اسم فريد
       });
 
-      // 2. حذف الملف المؤقت من السيرفر (تنظيف)
+      // 3. حذف الملف المؤقت (تنظيف)
       if (fs.existsSync(filePath)) {
           fs.unlinkSync(filePath);
       }
 
-      // 3. الحفظ في قاعدة البيانات
-      // file_type: نختصروه (image/png -> image)
+      // 4. الحفظ في قاعدة البيانات
       const simpleType = mimeType.split('/')[0] === 'image' ? 'image' : 'document';
 
       const { data, error } = await supabase
@@ -37,10 +43,10 @@ class SourceManager {
         .insert({
           user_id: userId,
           lesson_id: lessonId || null,
-          file_url: uploadResult.secure_url, // الرابط الآمن
+          file_url: uploadResult.secure_url, // الرابط الآن سيكون /raw/upload/ وهو الصحيح
           file_type: simpleType,
           file_name: originalName,
-          public_id: uploadResult.public_id, // نحتاجوه للحذف مبعد
+          public_id: uploadResult.public_id,
           processed: false
         })
         .select()
@@ -58,7 +64,6 @@ class SourceManager {
       throw err;
     }
   }
-
   /**
    * 📥 جلب مصادر درس معين
    */
