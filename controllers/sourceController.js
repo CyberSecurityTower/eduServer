@@ -127,6 +127,7 @@ async function uploadFile(req, res) {
 }
 
 // 2. جلب ملفات درس (كما هي)
+
 async function getLessonFiles(req, res) {
     try {
         const { lessonId } = req.params;
@@ -134,13 +135,20 @@ async function getLessonFiles(req, res) {
 
         if (!lessonId) return res.status(400).json({ error: 'Lesson ID required' });
 
+        // البيانات القادمة هنا ستحتوي على extracted_text و status بفضل التعديل السابق
         const sources = await sourceManager.getSourcesByLesson(userId, lessonId);
-        res.status(200).json({ success: true, sources });
+        
+        // نرسل المصفوفة كاملة
+        res.status(200).json({ 
+            success: true, 
+            sources: sources 
+        });
 
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 }
+
 
 // 3. حذف ملف (كما هي)
 async function deleteFile(req, res) {
