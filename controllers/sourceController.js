@@ -295,11 +295,72 @@ async function retryProcessing(req, res) {
     }
 }
 
-// تأكد من تصدير الدالة في النهاية
+
+/**
+ * 🔓 دالة النظام لإعادة المحاولة (System Internal Retry)
+ * تستخدم من قبل الـ Worker لاستكمال العمليات العالقة
+ */
+async function triggerSystemRetry(sourceId) {
+    try {
+        logger.info(`🤖 [System Retry] Taking over source: ${sourceId}`);
+
+        // 1. جلب بيانات المصدر (بدون فلتر userId)
+        const { data: source } = await supabase
+            .from('lesson_sources')
+            .select('*')
+            .eq('id', sourceId)
+            .single();
+
+        if (!source) {
+            logger.error(`❌ [System Retry] Source ${sourceId} not found.`);
+            return false;
+        }
+
+        // 2. تحديث الحالة فوراً
+        await supabase
+            .from('lesson_sources')
+            .update({ 
+                status: 'processing', 
+                error_message: 'Auto-recovered by system worker.' 
+            })
+            .eq('id', sourceId);
+
+        // 3. جلب عنوان الدرس
+        let lessonTitle = "University Topic";
+        if (source.lesson_id) {
+            const { data: lData } = await supabase.from('lessons').select('title').eq('id', source.lesson_id).single();
+            if (lData) lessonTitle = lData.title;
+        }
+
+        // 4. تحميل الملف وتشغيل الـ AI
+        // نستخدم setImmediate لعدم حجز الـ Worker، لكن في حالة الـ Worker يفضل await لضمان التسلسل
+        // سنجعلها متزامنة هنا لضمان عدم إغراق السيرفر
+        const tempFilePath = await downloadTempFile(source.file_url, source.file_name || 'recovered_file');
+        
+        await processAIInBackground(
+            source.id, 
+            tempFilePath, 
+            source.file_type === 'image' ? 'image/jpeg' : 'application/pdf', 
+            lessonTitle
+        );
+
+        return true;
+
+    } catch (err) {
+        logger.error(`❌ [System Retry Failed] Source ${sourceId}:`, err.message);
+        await supabase
+            .from('lesson_sources')
+            .update({ status: 'failed', error_message: `Recovery failed: ${err.message}` })
+            .eq('id', sourceId);
+        return false;
+    }
+}
+
 module.exports = { 
     uploadFile, 
     getLessonFiles, 
     deleteFile, 
     checkSourceStatus, 
-    retryProcessing // 👈 الإضافة الجديدة
+    retryProcessing,
+    triggerSystemRetry
 };
