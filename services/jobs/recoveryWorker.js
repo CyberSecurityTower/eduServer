@@ -3,53 +3,51 @@
 
 const supabase = require('../data/supabase');
 const logger = require('../../utils/logger');
-const sourceController = require('../../controllers/sourceController');
+// استدعاء الكونترولر للوصول للدالة الجديدة
+const { triggerSystemRetry } = require('../../controllers/sourceController');
 
-/**
- * يبحث عن المهام العالقة (Zombie Jobs) ويعيد تشغيلها
- * الزومبي هو: مهمة حالتها 'processing' لكن مر عليها أكثر من 10 دقائق
- */
 async function recoverStuckJobs() {
-    logger.info('🧟 Recovery Worker: Checking for stuck processing jobs...');
+    logger.info('🧟 Recovery Worker: Hunting for zombies...');
 
-    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    // 1. تحديد المعايير:
+    // - معلقة (Processing) منذ أكثر من 5 دقائق (نفترض أن السيرفر مات أثناءها)
+    // - أو فاشلة (Failed) خلال آخر 24 ساعة (لمنحها فرصة ثانية أوتوماتيكية)
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
-    const { data: stuckJobs, error } = await supabase
+    // جلب المعلقة
+    const { data: stuckJobs } = await supabase
         .from('lesson_sources')
-        .select('*')
+        .select('id, status')
         .eq('status', 'processing')
-        .lt('created_at', tenMinutesAgo); // فقط القديمة جداً
+        .lt('created_at', fiveMinutesAgo);
 
-    if (error) {
-        logger.error('Recovery Check Failed:', error.message);
-        return;
-    }
-
+    /* 
+       (اختياري) إذا أردت إعادة محاولة "الفاشلة" أيضاً، ألغِ تعليق هذا الجزء.
+       لكن احذر: الملف الفاسد سيفشل دائماً، لذا يفضل إعادة المحاولة مرة واحدة فقط.
+       لذلك سنكتفي بالمعلقة (stuck) الآن لضمان الأمان.
+    */
+    
     if (!stuckJobs || stuckJobs.length === 0) {
-        logger.info('✅ No stuck jobs found.');
+        logger.info('✅ System Clean. No stuck jobs found.');
         return;
     }
 
-    logger.warn(`⚠️ Found ${stuckJobs.length} stuck jobs. Attempting resurrection...`);
+    logger.warn(`🚑 Found ${stuckJobs.length} stuck jobs. Starting intensive care...`);
 
+    // 2. المعالجة التسلسلية (واحد تلو الآخر)
+    // نستخدم for...of بدلاً من Promise.all لتجنب تفجير الذاكرة إذا كان هناك 100 ملف
     for (const job of stuckJobs) {
-        // 1. نضع علامة فشل مؤقتة لنعيد المحاولة
-        logger.info(`🔄 Resurrecting Job ID: ${job.id}`);
+        logger.info(`💉 Injecting life into Job ${job.id}...`);
         
-        // نحتاج لمحاكاة كائني req و res لاستدعاء retryProcessing
-        // أو الأفضل: استدعاء منطق إعادة المحاولة الداخلي مباشرة (لكن للسرعة سنحاكي الطلب)
-        // الحل الأنظف: سنعيد تعيين الحالة إلى 'failed' مع رسالة خاصة، والفرونت إند أو الكرون جوب سيعيد المحاولة
+        // استدعاء دالة النظام لإعادة المحاولة
+        await triggerSystemRetry(job.id);
         
-        await supabase
-            .from('lesson_sources')
-            .update({ 
-                status: 'failed', 
-                error_message: 'System restart detected. Auto-recovery marked this as failed. Please Retry.' 
-            })
-            .eq('id', job.id);
-            
-        // (اختياري) يمكنك استدعاء retryProcessing برمجياً هنا إذا أردت الأتمتة الكاملة
+        // انتظار صغير (1 ثانية) بين كل ملف والآخر لتهدئة المعالج
+        await new Promise(r => setTimeout(r, 1000));
     }
+
+    logger.success('✨ Recovery Mission Complete.');
 }
 
 module.exports = { recoverStuckJobs };
