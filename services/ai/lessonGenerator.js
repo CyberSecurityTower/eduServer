@@ -36,7 +36,8 @@ async function generateLessonFromSource(filePath, mimeType, lessonTitle) {
         attachments: attachments,
         timeoutMs: 300000, // 🔥 نعطيه 5 دقائق كاملة لأن Pro أبطأ لكن أدق
         label: 'LessonGeneratorPro', // Label للتتبع
-        enableSearch: true 
+        enableSearch: true ,
+        maxRetries: 20
       }
     );
  // ✅ التحقق القوي من النتيجة
