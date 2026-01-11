@@ -39,18 +39,25 @@ async function generateLessonFromSource(filePath, mimeType, lessonTitle) {
         enableSearch: true 
       }
     );
+ // ✅ التحقق القوي من النتيجة
+    if (!response || !response.text) {
+        logger.warn(`AI returned empty response for ${lessonTitle}`);
+        return null;
+    }
 
     const lessonContent = await extractTextFromResult(response);
     
-    // تحقق بسيط: إذا كان المحتوى قصيراً جداً، ربما فشل
-    if (!lessonContent || lessonContent.length < 50) return null;
+    // ✅ حماية إضافية: التأكد من أن المحتوى صالح للحفظ
+    if (lessonContent.length < 100) {
+        throw new Error("AI generated content is too short (Potential Failure).");
+    }
 
-    logger.success(`🧠 AI Generated Lesson with Resources for: ${lessonTitle}`);
     return lessonContent;
 
   } catch (error) {
-    logger.error('❌ AI Lesson Generation Failed:', error.message);
-    return null;
+    // نضمن أننا نلتقط الخطأ ولا نوقف السيرفر
+    logger.error('❌ AI Lesson Generator Handled Error:', error.message);
+    return null; // نرجع null ليعرف الكونترولر أنه فشل
   }
 }
 
