@@ -2,12 +2,9 @@
 'use strict';
 
 const logger = require('../utils/logger');
+const systemHealth = require('../services/monitoring/systemHealth'); // 👈 استيراد
 
 const MAX_TOTAL_BYTES = 100 * 1024 * 1024; // 100MB Total Buffer
-const MAX_QUEUE_SIZE = 50; 
-const QUEUE_TIMEOUT_MS = 300000; // دقيقة واحدة كحد أقصى للانتظار في الطابور
-const systemHealth = require('../services/monitoring/systemHealth'); // 👈 استيراد
-const MAX_TOTAL_BYTES = 100 * 1024 * 1024; 
 const MAX_QUEUE_SIZE = 50; 
 const QUEUE_TIMEOUT_MS = 300000;
 let currentLoadBytes = 0;
