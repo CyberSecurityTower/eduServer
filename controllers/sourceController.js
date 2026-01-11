@@ -73,14 +73,15 @@ async function processAIInBackground(sourceId, filePath, mimeType, lessonTitle) 
 // 1. دالة الرفع (Endpoint Handler)
 async function uploadFile(req, res) {
   const userId = req.user?.id;
-  const { lessonId } = req.body;
+  // 👇 نستقبل customName من الـ Body (الذي أرسلته عبر FormData)
+  const { lessonId, customName } = req.body;
   const file = req.file;
 
   if (!userId) return res.status(401).json({ error: 'Unauthorized' });
   if (!file) return res.status(400).json({ error: 'No file provided' });
 
   try {
-    // أ. جلب عنوان الدرس (لتحسين سياق الـ AI)
+    // أ. جلب عنوان الدرس (لتحسين سياق الـ AI وللاستخدام كاسم احتياطي)
     let lessonTitle = "University Topic"; 
     if (lessonId) {
         const { data } = await supabase
@@ -91,26 +92,36 @@ async function uploadFile(req, res) {
         if (data && data.title) lessonTitle = data.title;
     }
 
-    // ب. الرفع للكلاوديناري وإنشاء سجل DB (حالة processing)
-    // ملاحظة: لا نحذف الملف هنا، نتركه ليعمل عليه الـ AI
+    // 🔥 المنطق الجديد لتحديد اسم الملف (Display Name)
+    let finalFileName = file.originalname; // الافتراضي: اسم الملف الأصلي
+
+    // 1. إذا اختار المستخدم اسماً مخصصاً، نستخدمه
+    if (customName && customName.trim().length > 0) {
+        finalFileName = customName.trim();
+    } 
+    // 2. إذا لم يكن هناك اسم ملف أصلي (نادرة)، نستخدم عنوان الدرس
+    else if (!finalFileName || finalFileName.trim() === '') {
+        finalFileName = lessonTitle;
+    }
+
+    // ب. الرفع والكتابة في الداتابيز
     const uploadResult = await sourceManager.uploadSource(
         userId, 
         lessonId, 
         file.path, 
-        file.originalname, 
-        file.mimetype
+        finalFileName, // 👈 نرسل الاسم النهائي هنا
+        file.mimetype,
+        file.originalname // 👈 نرسل الاسم الأصلي أيضاً (للتخزين في عمود منفصل إن وجد)
     );
 
-    // ج. الرد الفوري على العميل (202 Accepted)
-    // نقول له: "استلمنا الملف، وهو قيد المعالجة"
+    // ج. الرد الفوري
     res.status(202).json({ 
         success: true, 
         message: 'File uploaded. AI processing started in background.',
-        data: uploadResult // يحتوي على id و status: 'processing'
+        data: uploadResult 
     });
 
-    // د. إطلاق المعالجة في الخلفية (Fire & Forget)
-    // لا نستخدم await هنا لكي لا نحجز الرد
+    // د. إطلاق المعالجة في الخلفية
     processAIInBackground(uploadResult.id, file.path, file.mimetype, lessonTitle);
 
   } catch (err) {
