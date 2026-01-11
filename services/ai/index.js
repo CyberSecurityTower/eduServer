@@ -12,21 +12,24 @@ async function initializeModelPools() {
   logger.success(`🤖 AI Genius Hive-Mind Active | Nodes: ${count}`);
 }
 
-async function _callModelInstance(targetModelName, prompt, timeoutMs, label, systemInstruction, history, attachments, enableSearch) {
+// 👇 أضفنا retryLimit هنا
+async function _callModelInstance(targetModelName, prompt, timeoutMs, label, systemInstruction, history, attachments, enableSearch, retryLimit = 3) {
   
-  const MAX_ATTEMPTS = 3; 
-  // قائمة سوداء مؤقتة لهذا الطلب فقط (لضمان عدم تجربة نفس المفتاح مرتين في نفس الطلب)
+  // نستخدم القيمة الممرة أو الافتراضي 3
+  const MAX_ATTEMPTS = retryLimit; 
   const failedKeysInThisRequest = new Set();
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       
-      // 1. طلب مفتاح ذكي
       const keyObj = await keyManager.acquireKey();
       
-      // إذا لم نجد مفتاحاً، أو أعطانا المدير مفتاحاً جربناه وفشل للتو (نادر الحدوث مع النظام الجديد لكن للاحتياط)
       if (!keyObj || failedKeysInThisRequest.has(keyObj.key)) {
-          if (attempt === 1 && !keyObj) throw new Error('System Overload: No healthy AI nodes available.');
-          await sleep(500);
+          if (attempt === 1 && !keyObj) {
+              // إذا لم نجد مفاتيح من أول مرة، هذا يعني النظام ميت تماماً
+               throw new Error('System Overload: No healthy AI nodes available.');
+          }
+          // إذا نفدت المفاتيح المتاحة (كلها cooldown)، ننتظر قليلاً ثم نحاول
+          await sleep(1000);
           continue;
       }
 
@@ -62,14 +65,11 @@ async function _callModelInstance(targetModelName, prompt, timeoutMs, label, sys
           const response = await result.response;
           const responseText = response.text();
           
-          // تحقق إضافي: هل النص فارغ؟ (أحياناً يحدث بدون خطأ)
           if (!responseText || responseText.length < 2) throw new Error('Empty Response');
 
-          // ✅ نجاح باهر!
-          // نخبر المدير ليرفع صحة هذا المفتاح ويكافئ أدائه
+          // ✅ نجاح
           keyManager.reportResult(keyObj.key, true);
           
-          // استخراج المصادر
           let sources = [];
           if (enableSearch && response.candidates?.[0]?.groundingMetadata?.groundingChunks) {
               sources = response.candidates[0].groundingMetadata.groundingChunks
@@ -86,22 +86,16 @@ async function _callModelInstance(targetModelName, prompt, timeoutMs, label, sys
           if (errStr.includes('429') || errStr.includes('Quota')) errType = '429';
           else if (errStr.includes('Candidate was stopped')) errType = 'safety';
 
-          logger.warn(`❌ Node Failure: ${keyObj.nickname} (${errType}). Reporting to Hive-Mind...`);
-
-          // 🚨 تبليغ الفشل فوراً!
-          // هذا سيقوم بخصم نقاط الصحة وعزل المفتاح إذا لزم الأمر
-          // وبالتالي، أي مستخدم آخر سيطلب مفتاحاً الآن لن يحصل على هذا المفتاح
+          // 🚨 تبليغ الفشل فوراً
           keyManager.reportResult(keyObj.key, false, errType);
-          
-          // إضافته للقائمة السوداء المحلية لهذه الدالة
           failedKeysInThisRequest.add(keyObj.key);
 
-          // انتظار ذكي قبل المحاولة التالية
+          // انتظار ذكي
           await sleep(500 * attempt);
       }
   }
 
-  logger.error(`💀 REQUEST FAILED after ${MAX_ATTEMPTS} attempts. The Hive is struggling.`);
+  logger.error(`💀 REQUEST FAILED after ${MAX_ATTEMPTS} attempts. tried: ${Array.from(failedKeysInThisRequest).length} keys.`);
   throw new Error('AI Service Unavailable: Please try again later.');
 }
 
