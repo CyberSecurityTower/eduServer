@@ -6,7 +6,7 @@ const generateWithFailover = require('./failover');
 const { extractTextFromResult } = require('../../utils');
 const { MARKDOWN_LESSON_PROMPT } = require('../../config/lesson-prompts');
 const logger = require('../../utils/logger');
-
+const systemHealth = require('../monitoring/systemHealth'); 
 /**
  * @param {string} filePath - مسار الملف
  * @param {string} mimeType - نوع الملف
@@ -52,12 +52,15 @@ async function generateLessonFromSource(filePath, mimeType, lessonTitle) {
     if (lessonContent.length < 100) {
         throw new Error("AI generated content is too short (Potential Failure).");
     }
+ // ✅ نجاح! نبلغ المراقب لتصفير العدادات
+    systemHealth.reportSuccess(); 
 
     return lessonContent;
 
   } catch (error) {
     // نضمن أننا نلتقط الخطأ ولا نوقف السيرفر
     logger.error('❌ AI Lesson Generator Handled Error:', error.message);
+     systemHealth.reportCriticalFailure(error);
     return null; // نرجع null ليعرف الكونترولر أنه فشل
   }
 }
