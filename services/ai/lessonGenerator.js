@@ -29,14 +29,14 @@ async function generateLessonFromSource(filePath, mimeType, lessonTitle) {
     // توليد البرومبت الديناميكي مع العنوان
     const finalPrompt = MARKDOWN_LESSON_PROMPT(lessonTitle);
 
-    const response = await generateWithFailover(
-      'analysis', // نستخدم بول التحليل
+      const response = await generateWithFailover(
+      'lesson_generator', // ✅ سيستخدم الآن gemini-1.5-pro
       finalPrompt, 
       { 
         attachments: attachments,
-        timeoutMs: 200000, // 3 دقائق (بحث + قراءة ملف يحتاج وقت)
-        label: 'LessonGenerator',
-        enableSearch: true //  تفعيل البحث لجلب روابط اليوتيوب
+        timeoutMs: 300000, // 🔥 نعطيه 5 دقائق كاملة لأن Pro أبطأ لكن أدق
+        label: 'LessonGeneratorPro', // Label للتتبع
+        enableSearch: true 
       }
     );
 
