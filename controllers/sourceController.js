@@ -5,6 +5,7 @@ const sourceManager = require('../services/media/sourceManager');
 const lessonGenerator = require('../services/ai/lessonGenerator'); // الخدمة الجديدة
 const supabase = require('../services/data/supabase');
 const logger = require('../utils/logger');
+const fs = require('fs'); // 👈 ضروري لحذف الملفات
 
 // 1. رفع ملف + توليد درس (Parallel Processing) 🔥
 async function uploadFile(req, res) {
@@ -15,11 +16,23 @@ async function uploadFile(req, res) {
   if (!userId) return res.status(401).json({ error: 'Unauthorized' });
   if (!file) return res.status(400).json({ error: 'No file provided' });
 
-  // رد أولي سريع (اختياري، لكن يفضل انتظار الانتهاء لضمان التحديث)
-  // سننتظر هنا لأننا نريد إرجاع الدرس المولد فوراً
-  
   try {
-    logger.info(`🚀 Starting Parallel Process for: ${file.originalname}`);
+    // 1. جلب عنوان الدرس (خطوة سريعة جداً) لتحسين جودة الـ AI
+    let lessonTitle = "University Topic"; // عنوان افتراضي
+    
+    if (lessonId) {
+        const { data } = await supabase
+            .from('lessons')
+            .select('title')
+            .eq('id', lessonId)
+            .single();
+        
+        if (data && data.title) {
+            lessonTitle = data.title;
+        }
+    }
+
+    logger.info(`🚀 Starting Parallel Process for: ${file.originalname} | Topic: ${lessonTitle}`);
 
     // --- المعالجة بالتوازي (Parallel Execution) ---
     // نطلق العمليتين معاً في نفس اللحظة
@@ -27,9 +40,8 @@ async function uploadFile(req, res) {
       // المهمة 1: الرفع للكلاوديناري والحفظ الأولي في الداتابايز
       sourceManager.uploadSource(userId, lessonId, file.path, file.originalname, file.mimetype),
       
-      // المهمة 2: إرسال الملف للـ AI لتوليد الدرس
-      // ملاحظة: نمرر file.path لأن الملف لا يزال موجوداً في Temp
-      lessonGenerator.generateLessonFromSource(file.path, file.mimetype)
+      // المهمة 2: إرسال الملف للـ AI لتوليد الدرس (مع تمرير العنوان وتفعيل البحث)
+      lessonGenerator.generateLessonFromSource(file.path, file.mimetype, lessonTitle)
     ]);
 
     // --- مرحلة الدمج (Merge Results) ---
@@ -45,7 +57,7 @@ async function uploadFile(req, res) {
             })
             .eq('id', uploadResult.id);
             
-        // تحديث الكائن المرتجع للفرونت أند
+        // تحديث الكائن المرتجع للفرونت أند لكي يظهر مباشرة
         uploadResult.extracted_text = aiGeneratedLesson;
         uploadResult.processed = true;
     }
@@ -54,12 +66,23 @@ async function uploadFile(req, res) {
     res.status(201).json({ 
         success: true, 
         data: uploadResult,
-        message: aiGeneratedLesson ? 'File uploaded & Lesson generated!' : 'File uploaded (AI analysis skipped)'
+        message: aiGeneratedLesson ? 'File uploaded & Lesson generated with Resources!' : 'File uploaded (AI analysis skipped)'
     });
 
   } catch (err) {
     logger.error('Parallel Upload Error:', err.message);
     res.status(500).json({ error: err.message });
+  } finally {
+    // ✅ الحذف الآمن: يتم الحذف بعد انتهاء العمليتين (سواء نجحوا أو فشلوا)
+    // هذا يمنع امتلاء السيرفر بالملفات المؤقتة
+    if (file && file.path && fs.existsSync(file.path)) {
+        try { 
+            fs.unlinkSync(file.path); 
+            // logger.info('🧹 Temp file cleaned up.');
+        } catch(e) {
+            console.error('Failed to delete temp file:', e);
+        }
+    }
   }
 }
 
