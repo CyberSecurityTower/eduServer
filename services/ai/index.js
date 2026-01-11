@@ -16,7 +16,7 @@ async function initializeModelPools() {
   logger.success(`🤖 AI Engine: Hybrid Mode Active | Loaded ${count} Keys`);
 }
 
-async function _callModelInstance(unused, prompt, timeoutMs, label, systemInstruction, history, attachments, enableSearch) {
+async function _callModelInstance(targetModelName, prompt, timeoutMs, label, systemInstruction, history, attachments, enableSearch) {
   
   // 🔁 سنحاول دورتين: الدورة الأولى HF ثم Google (حسب طلبك للتجربة)
   const MAX_CYCLES = 2; 
@@ -78,21 +78,21 @@ async function _callModelInstance(unused, prompt, timeoutMs, label, systemInstru
           
           if (!keyObj) break; // لا توجد مفاتيح جوجل
 
+         
           try {
-              logger.info(`🔹 [Try Google] Using Key: ${keyObj.nickname} | Search: ${enableSearch ? 'ON' : 'OFF'}...`);
+              // 👇 نستخدم الموديل المحدد في الكونفيج، أو نعود للافتراضي (flash)
+              const selectedModel = targetModelName || 'gemini-1.5-flash';
+              
+              logger.info(`🔹 [Try Google] Key: ${keyObj.nickname} | Model: ${selectedModel} | Search: ${enableSearch ? 'ON' : 'OFF'}...`);
               
               const genAI = keyObj.client;
-              
-              // 🌐 تفعيل البحث في الويب (Grounding)
-              // يتم تفعيله فقط إذا طلب المستخدم ذلك (enableSearch = true)
               const tools = enableSearch ? [{ googleSearch: {} }] : [];
               
               const model = genAI.getGenerativeModel({ 
-                  model: GOOGLE_MODELS[0], 
+                  model: selectedModel, // 👈 استخدام المتغير الديناميكي
                   systemInstruction,
                   tools: tools 
               });
-
               const chat = model.startChat({ 
                   history: history || [],
                   generationConfig: { temperature: 0.6 }
@@ -104,7 +104,7 @@ async function _callModelInstance(unused, prompt, timeoutMs, label, systemInstru
 
               const result = await withTimeout(
                   chat.sendMessage(parts),
-                  timeoutMs || 30000,
+                  timeoutMs || 180000,
                   `Gemini_Call`
               );
               
