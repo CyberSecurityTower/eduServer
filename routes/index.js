@@ -188,4 +188,8 @@ router.delete('/sources/:sourceId', requireAuth, sourceController.deleteFile);
 
 //  فحص حالة ملف معين (خفيف وسريع)
 router.get('/sources/:sourceId/status', requireAuth, sourceController.checkSourceStatus);
+
+//  إعادة المحاولة في حال الفشل
+router.post('/sources/:sourceId/retry', requireAuth, sourceController.retryProcessing);
+
 module.exports = router;
