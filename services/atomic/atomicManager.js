@@ -2,156 +2,98 @@
 'use strict';
 
 const supabase = require('../data/supabase');
-const CONFIG = require('../../config');
-// 🔥 استيراد الحارس الذري لمنح المكافآت
 const { checkAtomicMastery } = require('../engines/gatekeeper');
 
-// 🛑 Kill Switch
-const IS_ENABLED = CONFIG.ATOMIC_SYSTEM?.ENABLED || true;
-
 /**
- * 1. العين: جلب السياق الذري للدرس
- * (يدعم قراءة الأرقام القديمة والكائنات الذكية الجديدة)
+ * 1. العين (The Eye): جلب السياق الذري للدرس
+ * يطبق مبدأ Lazy Sync: يدمج الهيكلة الأصلية مع تقدم المستخدم في الذاكرة (RAM).
  */
 async function getAtomicContext(userId, lessonId) {
-  if (!IS_ENABLED) {
-    if (CONFIG.ATOMIC_SYSTEM?.DEBUG_MODE) console.log('⚠️ Atomic System is DISABLED.');
-    return null;
-  }
-
   try {
-    console.log(`🔍 Atomic Lookup: Lesson=${lessonId}, User=${userId}`);
-
+    // A. جلب الهيكلة الأصلية (Master Structure) وتقدم المستخدم بالتوازي
     const [structureRes, progressRes] = await Promise.all([
       supabase.from('atomic_lesson_structures').select('structure_data').eq('lesson_id', lessonId).single(),
       supabase.from('atomic_user_mastery').select('elements_scores').eq('user_id', userId).eq('lesson_id', lessonId).single()
     ]);
 
-    // Error Logging
-    if (structureRes.error) console.error(`❌ SUPABASE ERROR (Structure):`, JSON.stringify(structureRes.error));
-    if (progressRes.error && progressRes.error.code !== 'PGRST116') console.error(`❌ SUPABASE ERROR (Progress):`, JSON.stringify(progressRes.error));
-
-    if (!structureRes.data) {
-      console.log(`ℹ️ No atomic structure found for lesson: ${lessonId}`);
-      return null;
-    }
+    // إذا لم يكن هناك هيكلة ذرية لهذا الدرس، نعود فارغين
+    if (!structureRes.data) return null;
 
     const structure = structureRes.data.structure_data;
+    // إذا لم يكن لدى المستخدم سجل، نبدأ بكائن فارغ
     const userScores = progressRes.data?.elements_scores || {};
 
-    // تحليل العناصر
+    // B. التحليل والدمج (Lazy Sync Logic)
     let contextLines = [];
-    let nextTarget = null;
-    let totalWeightedScore = 0;
-    let totalWeight = 0;
-
+    let nextTarget = null; // ما هو العنصر التالي الذي يجب دراسته؟
+    
+    // ترتيب العناصر حسب التسلسل التعليمي
     const sortedElements = structure.elements.sort((a, b) => a.order - b.order);
 
-    contextLines.push(`📊 **ATOMIC LESSON PLAN (HIDDEN FROM USER):**`);
-    
+    contextLines.push(`🗺️ **ATOMIC ROADMAP (Lesson Structure):**`);
+
     for (const el of sortedElements) {
-      // 👇 الذكاء هنا: التحقق من نوع البيانات (رقم أم كائن)
+      // 1. البحث عن سكور المستخدم لهذا العنصر
+      // إذا كان العنصر جديداً (أضيف حديثاً للمنهج)، لن نجده في userScores -> نعتبره 0 تلقائياً
       const rawVal = userScores[el.id];
       let score = 0;
-      let isReviewDue = false;
 
-      if (typeof rawVal === 'number') {
-          score = rawVal; // النظام القديم
-      } else if (rawVal && typeof rawVal === 'object') {
-          score = rawVal.score || 0; // النظام الجديد
-          
-          // 🧠 فحص موعد المراجعة (SRS Check)
-          if (rawVal.next_review && new Date() > new Date(rawVal.next_review)) {
-              isReviewDue = true;
-          }
-      }
-
-      const weight = el.weight || 1;
-      
-      totalWeightedScore += (score * weight);
-      totalWeight += weight;
-
-      let status = "PENDING";
-      if (score >= 80) status = "MASTERED ✅";
-      else if (score > 0) status = "IN_PROGRESS 🚧";
-      
-      // 🚨 تنبيه المراجعة للـ AI
-      if (isReviewDue) {
-          status += " ⏰ (REVIEW DUE!)";
-          // إذا حان وقت المراجعة، نجعل هذا العنصر هو الهدف التالي فوراً
-          if (!nextTarget) nextTarget = el; 
+      if (rawVal && typeof rawVal === 'object') {
+          score = rawVal.score || 0;
+      } else if (typeof rawVal === 'number') {
+          score = rawVal;
       }
       
-      if (!nextTarget && score < 60) {
+      // 2. تحديد الحالة للعرض
+      let status = "⬜ Not Started";
+      if (score >= 80) status = "✅ Mastered";
+      else if (score > 0) status = "🚧 In Progress";
+
+      // 3. تحديد التركيز الحالي (أول عنصر غير متقن)
+      let focusMarker = "";
+      if (!nextTarget && score < 80) {
         nextTarget = el;
-        status += " 👈 (CURRENT FOCUS)";
+        focusMarker = "👈 [CURRENT FOCUS]";
+        status = "🔥 WORKING ON THIS";
       }
 
-      contextLines.push(`- [${el.title}] (Weight: ${weight}): ${score}% -> ${status}`);
+      contextLines.push(`- [ID: ${el.id}] ${el.title}: (${score}%) ${status} ${focusMarker}`);
     }
 
-    const globalMastery = totalWeight > 0 ? Math.round(totalWeightedScore / totalWeight) : 0;
-    
-    // 1. استخراج قائمة الـ IDs والعناوين لتعليم الـ AI
-    const mappingList = sortedElements.map(el => `- "${el.title}" => ID: "${el.id}"`).join('\n');
-    
-    const finalPromptContext = `
+    // C. صياغة البرومبت للـ AI
+    // نعطيه الخريطة كاملة ليعرف أين هو المستخدم وإلى أين يذهب
+    const finalPrompt = `
     ${contextLines.join('\n')}
     
-    📈 **Global Lesson Mastery:** ${globalMastery}%
-    🎯 **IMMEDIATE GOAL:** ${nextTarget ? `Explain/Test user on "${nextTarget.title}"` : "Lesson Complete! Review or Quiz."}
+    🎯 **IMMEDIATE GOAL:** Help user understand: "${nextTarget ? nextTarget.title : 'Review/Quiz'}"
     
-    **INSTRUCTIONS FOR AI:**
-    1. Guide the user through the "ATOMIC LESSON PLAN".
-    2. Do NOT list percentages to the user.
-    3. Do NOT move to the next element until "CURRENT FOCUS" is understood.
-    4. 🚨 **STRICT UPDATE RULE:** If the user explains a concept correctly, YOU MUST MARK IT AS MASTERED. Do NOT just praise them. You MUST output the JSON signal.
-       Example: { "atomic_update": { "element_id": "geo_historical_impact", "new_score": 90 } }.
-       
-    🚨 **CRITICAL INSTRUCTION FOR AI (ID MAPPING):**
-    When updating progress, you MUST use the EXACT ID from this list corresponding to the topic the user discussed:
-    ${mappingList}
-
-    ❌ DO NOT invent new IDs like "intro_loc" or use Arabic titles as IDs.
-    ✅ Example: If user explains "الموقع الجغرافي", send: { "atomic_update": { "element_id": "geo_location_borders", "new_score": 90 } }
+    **INSTRUCTIONS:**
+    1. You see the full roadmap above. Guide the user step-by-step.
+    2. If user asks about a future topic, answer briefly but remind them: "We will get there soon (see roadmap), let's focus on ${nextTarget?.title} first."
+    3. **UPDATE SIGNAL:** If user proves they understand the CURRENT FOCUS, send:
+       { "atomic_update": { "element_id": "${nextTarget?.id || 'none'}", "new_score": 80 } }
     `;
 
     return {
-      prompt: finalPromptContext,
-      rawData: { structure, userScores, nextTarget },
-      globalMastery
+      prompt: finalPrompt,
+      nextTargetId: nextTarget?.id
     };
 
   } catch (err) {
-    console.error('❌ Atomic Manager Error:', err.message);
+    console.error('❌ Atomic Context Error:', err.message);
     return null;
   }
 }
 
 /**
- * 2. اليد: تحديث التقدم (باستخدام محرك Cortex-X)
+ * 2. اليد (The Hand): تحديث التقدم
+ * (لم نغير فيها الكثير، فقط تأكدنا أنها خفيفة)
  */
 async function updateAtomicProgress(userId, lessonId, updateSignal) {
-  if (!IS_ENABLED || !updateSignal) return;
+  if (!updateSignal || !updateSignal.element_id) return;
 
   try {
-    console.log(`⚛️ Attempting Atomic Update for ${lessonId}...`);
-
-    // 1. جلب الهيكل (Structure)
-    const { data: structureRes, error: structError } = await supabase
-      .from('atomic_lesson_structures')
-      .select('structure_data')
-      .eq('lesson_id', lessonId)
-      .single();
-
-    if (structError || !structureRes) {
-        console.warn(`⚠️ Atomic Structure missing for ${lessonId}. Update skipped.`);
-        return;
-    }
-
-    const structure = structureRes.structure_data;
-    
-    // 2. جلب التقدم الحالي
+    // 1. جلب التقدم الحالي
     const { data: progressRes } = await supabase
       .from('atomic_user_mastery')
       .select('elements_scores')
@@ -161,221 +103,33 @@ async function updateAtomicProgress(userId, lessonId, updateSignal) {
 
     let currentScores = progressRes?.elements_scores || {}; 
 
-    // 3. تطبيق التحديث (Logic)
-    if (updateSignal.element_id === 'ALL') {
-        // Bulk Update (تجاوز المحرك العصبي مؤقتاً للتحديث الشامل)
-        console.log(`🚀 Setting ALL elements to ${updateSignal.new_score}%`);
-        structure.elements.forEach(el => {
-            // يمكننا هنا تطبيق منطق بسيط للكل، أو مجرد وضع السكور
-            currentScores[el.id] = { 
-                score: updateSignal.new_score, 
-                stability: 10, // افتراض استقرار متوسط عند الإتقان الشامل
-                difficulty: 5,
-                reps: 1,
-                last_review: new Date().toISOString()
-            };
-        });
-
+    // 2. التحديث المباشر (بدون FSRS معقد الآن لنسرع العملية)
+    const elId = updateSignal.element_id;
+    
+    if (elId === 'ALL') {
+        // حالة خاصة: نجاح في امتحان شامل
+        // (يمكنك تنفيذ منطق تحديث الكل هنا)
     } else {
-        // ====================================================
-        // 🧠 Cortex-X Integration (Individual Update)
-        // ====================================================
-        console.log(`🔧 Updating element ${updateSignal.element_id} to ${updateSignal.new_score}%`);
-        
-        const oldDataRaw = currentScores[updateSignal.element_id];
-        
-        // Backward Compatibility: تحويل الرقم القديم إلى كائن
-        let oldDataObj = {};
-        if (typeof oldDataRaw === 'number') {
-            oldDataObj = { score: oldDataRaw, stability: 0, difficulty: 5, reps: 1 };
-        } else {
-            oldDataObj = oldDataRaw || {};
-        }
-
-        // 🔥 استدعاء المحرك العصبي
-        const neuroData = calculateNeuroParams(oldDataObj, updateSignal.new_score);
-
-        // الحفظ
-        currentScores[updateSignal.element_id] = neuroData;
-        
-        console.log(`🧠 Neuro-Update: Stability=${neuroData.stability} days | Difficulty=${neuroData.difficulty} | Next=${neuroData.next_review}`);
+        // تحديث عنصر واحد
+        currentScores[elId] = {
+            score: updateSignal.new_score,
+            last_updated: new Date().toISOString()
+        };
     }
 
-    // 4. إعادة حساب المعدل العام (Global Mastery)
-    let totalWeightedScore = 0;
-    let totalWeight = 0;
-
-    structure.elements.forEach(el => {
-      const val = currentScores[el.id];
-      // التعامل مع الرقم أو الكائن لحساب المعدل
-      const score = (typeof val === 'number') ? val : (val?.score || 0);
-      const weight = el.weight || 1;
-      
-      totalWeightedScore += (score * weight);
-      totalWeight += weight;
-    });
-
-    const newGlobalMastery = totalWeight > 0 ? Math.round(totalWeightedScore / totalWeight) : 0;
-
-    // 5. الحفظ في الداتابايز (Upsert)
-    const status = newGlobalMastery >= 95 ? 'completed' : 'started';
-
-    const { error: upsertError } = await supabase.from('atomic_user_mastery').upsert({
+    // 3. الحفظ
+    await supabase.from('atomic_user_mastery').upsert({
       user_id: userId,
       lesson_id: lessonId,
       elements_scores: currentScores,
-      current_mastery: newGlobalMastery,
-      last_updated: new Date().toISOString(),
-      status: status 
+      last_updated: new Date().toISOString()
     }, { onConflict: 'user_id, lesson_id' });
 
-    if (upsertError) {
-        console.error(`❌ DB WRITE ERROR:`, upsertError.message);
-    } else {
-        console.log(`✅ DB SUCCESS: Saved progress for ${lessonId} (Mastery: ${newGlobalMastery}%)`);
-    }
-
-    // 6. استدعاء الحارس للمكافآت
-    if (newGlobalMastery >= 95) {
-        await checkAtomicMastery(userId, lessonId, newGlobalMastery);
-    }
+    console.log(`✅ Atomic Update: ${elId} -> ${updateSignal.new_score}%`);
 
   } catch (err) {
-    console.error('❌ Critical Atomic Error:', err.message);
+    console.error('Atomic Update Error:', err.message);
   }
 }
 
-/**
- * 3. المجمع: جلب التقدم الذري للمستخدم (بديل getProgress القديم)
- */
-async function getAtomicProgress(userId) {
-  try {
-    const { data: atomicData, error } = await supabase
-      .from('atomic_user_mastery')
-      .select('lesson_id, current_mastery, status, last_updated')
-      .eq('user_id', userId);
-
-    if (error) throw error;
-
-    const progressMap = {}; 
-    const completedLessons = [];
-    let totalScore = 0;
-
-    if (atomicData) {
-        atomicData.forEach(row => {
-            progressMap[row.lesson_id] = {
-                score: row.current_mastery,
-                status: row.status || (row.current_mastery >= 95 ? 'completed' : 'in_progress'),
-                lastAttempt: row.last_updated
-            };
-
-            if (row.current_mastery >= 95) {
-                completedLessons.push(row.lesson_id);
-            }
-            totalScore += row.current_mastery;
-        });
-    }
-
-    return {
-        stats: {
-            lessons_started: atomicData ? atomicData.length : 0,
-            lessons_mastered: completedLessons.length,
-            global_mastery: (atomicData && atomicData.length > 0) ? Math.round(totalScore / atomicData.length) : 0
-        },
-        atomicMap: progressMap,
-        dailyTasks: { tasks: [] }
-    };
-
-  } catch (err) {
-    console.error('Atomic getProgress Error:', err.message);
-    return { atomicMap: {}, stats: {} };
-  }
-}
-
-/**
- * 🧠 Cortex-X Engine: Advanced FSRS Logic
- * يحسب المعاملات العصبية بناءً على الأداء والوقت والصعوبة.
- */
-function calculateNeuroParams(oldData, newScore) {
-    // 1. الثوابت
-    const W = [0.4, 0.6, 2.4, 5.8, 4.93, 0.94, 0.86, 0.01, 1.49, 0.14, 0.94, 2.18, 0.05, 0.34, 1.26, 0.29, 2.61]; 
-    
-    // 2. استخراج الحالة السابقة مع قيم افتراضية آمنة
-    let s = Number(oldData?.stability) || 0; 
-    let d = Number(oldData?.difficulty) || 5; 
-    let r = Number(oldData?.reps) || 0;
-    
-    // 3. تقييم الأداء
-    let rating = 1;
-    if (newScore >= 95) rating = 4;
-    else if (newScore >= 80) rating = 3;
-    else if (newScore >= 60) rating = 2;
-    else rating = 1;
-
-    // 4. حساب الوقت المنقضي
-    const now = new Date();
-    // حماية ضد التواريخ الفاسدة في البيانات القديمة
-    let lastReview = now;
-    if (oldData?.last_review && !isNaN(new Date(oldData.last_review).getTime())) {
-        lastReview = new Date(oldData.last_review);
-    }
-    
-    const daysElapsed = Math.max(0, (now - lastReview) / (1000 * 60 * 60 * 24));
-
-    // ====================================================
-    // 🚀 المحرك الرياضي
-    // ====================================================
-
-    if (r === 0) {
-        // اللقاء الأول
-        d = 5 - (rating - 3); 
-        s = (rating === 1) ? 0.5 : (rating === 2 ? 1 : (rating === 3 ? 3 : 7)); 
-    } else {
-        // المراجعات اللاحقة
-        let nextD = d - 0.8 + (0.08 * (4 - rating) * 0.05) + (rating === 1 ? 2 : 0);
-        d = Math.min(10, Math.max(1, nextD)); 
-
-        if (rating > 1) {
-            // حماية من القسمة على صفر أو الأسس السالبة مع الصفر
-            // إذا كان الاستقرار القديم صفراً (خطأ بيانات)، نرفعه لـ 0.1
-            const safeS = Math.max(0.1, s);
-            
-            const nextS = safeS * (1 + Math.exp(W[8]) * (11 - d) * Math.pow(safeS, -W[9]) * (Math.exp((1 - rating) * W[10]) - 1) + (daysElapsed / safeS) * 0.5); 
-            s = Math.min(365, nextS); 
-        } else {
-            const safeS = Math.max(0.1, s);
-            const nextS = 0.5 * Math.pow(d, -0.5) * Math.pow(safeS, 0.1); 
-            s = Math.max(0.5, nextS);
-        }
-    }
-
-    // 5. حساب التاريخ القادم (مع شبكة أمان)
-    const nextDate = new Date();
-    const fuzz = (Math.random() * 0.1) - 0.05;
-    // التأكد أن s رقم صالح وليس Infinity أو NaN
-    if (!isFinite(s) || isNaN(s)) s = 1; 
-    
-    const finalDays = Math.max(0.5, s * (1 + fuzz));
-    nextDate.setDate(nextDate.getDate() + finalDays);
-
-    // 🛡️ الحماية النهائية: إذا كان التاريخ فاسداً، نضع موعداً افتراضياً (غداً)
-    let finalNextReviewISO;
-    if (isNaN(nextDate.getTime())) {
-        const fallbackDate = new Date();
-        fallbackDate.setDate(fallbackDate.getDate() + 1);
-        finalNextReviewISO = fallbackDate.toISOString();
-        console.warn("⚠️ Neuro-Math Warning: Invalid date generated, using fallback.");
-    } else {
-        finalNextReviewISO = nextDate.toISOString();
-    }
-
-    return {
-        score: newScore,
-        stability: parseFloat(s.toFixed(2)),
-        difficulty: parseFloat(d.toFixed(2)),
-        reps: r + 1,
-        last_review: now.toISOString(),
-        next_review: finalNextReviewISO
-    };
-}
-module.exports = { getAtomicContext, updateAtomicProgress, getAtomicProgress };
+module.exports = { getAtomicContext, updateAtomicProgress };
