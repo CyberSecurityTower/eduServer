@@ -660,20 +660,18 @@ const currentSemester = settings?.value || 'S1'; // القيمة الدينام�
         }
         throw aiError; // إعادة رمي الخطأ ليتم التقاطه في الـ Catch السفلي
     }
-   
     const rawText = await extractTextFromResult(modelResp);
     let parsedResponse = await ensureJsonOrRepair(rawText, 'analysis');
 
     if (!parsedResponse?.reply) parsedResponse = { reply: rawText || "Error.", widgets: [] };
    
-    // =========================================================
+// =========================================================
     // 🆕 المحطة 3: المراقب (The Monitor) - المنطق المصحح
     // =========================================================
     
-    // 👇 التعديل هنا: تجاهل تام لما يرسله الـ AI في atomic_update
-    // كان سابقاً: let updateSignal = parsedResponse.atomic_update || null;
-    
-    let updateSignal = null; // 🔒 FORCE NULL: AI cannot update progress directly.
+    // 1. تعريف إشارة التحديث (نأخذها من الـ AI أولاً)
+    // هذا هو التصحيح: نستخدم updateSignal مباشرة لتوحيد المتغيرات
+     let updateSignal = parsedResponse.atomic_update || null; 
     
     // 2. استخراج ID الدرس (تصحيح شامل وقوي) 🔥
     // نحاول جلبه من السياق الحالي، وإذا لم نجد، نحاول جلبه من البيانات الذرية المحملة سابقاً
