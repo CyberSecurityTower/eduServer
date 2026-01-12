@@ -248,5 +248,5 @@ module.exports = {
   initChatController,
   chatInteractive,
   // Helper handlers
-  generateChatSuggestions
+  // generateChatSuggestions
 };
