@@ -7,14 +7,16 @@ const { extractTextFromResult } = require('../../utils');
 const { MARKDOWN_LESSON_PROMPT } = require('../../config/lesson-prompts');
 const logger = require('../../utils/logger');
 const systemHealth = require('../monitoring/systemHealth'); 
+const CONFIG = require('../../config'); // ✅ استيراد الكونفيج
+
 /**
  * @param {string} filePath - مسار الملف
  * @param {string} mimeType - نوع الملف
- * @param {string} lessonTitle - عنوان الدرس (لتحسين السياق والبحث)
+ * @param {string} lessonTitle - عنوان الدرس
  */
 async function generateLessonFromSource(filePath, mimeType, lessonTitle) {
   try {
-    logger.info(`🧠 AI Processing: Generating lesson for "${lessonTitle}" with Search...`);
+    logger.info(`🧠 AI Processing: Generating lesson for "${lessonTitle}"...`);
 
     const fileBuffer = fs.readFileSync(filePath);
     const base64Data = fileBuffer.toString('base64');
@@ -26,21 +28,24 @@ async function generateLessonFromSource(filePath, mimeType, lessonTitle) {
       }
     }];
 
-    // توليد البرومبت الديناميكي مع العنوان
     const finalPrompt = MARKDOWN_LESSON_PROMPT(lessonTitle);
 
-      const response = await generateWithFailover(
-      'lesson_generator', // ✅ سيستخدم الآن gemini-1.5-pro
+    // 🔥 التغيير الجذري: نستخدم اسم الموديل من الكونفيج (الذي يجب أن يكون flash)
+    // أو نكتب 'gemini-1.5-flash' مباشرة هنا لضمان عدم توقف النظام
+    const targetModel = CONFIG.MODEL.lesson_generator || 'gemini-1.5-flash';
+
+    const response = await generateWithFailover(
+      'lesson_generator', 
       finalPrompt, 
       { 
         attachments: attachments,
-        timeoutMs: 300000, // 🔥 نعطيه 5 دقائق كاملة لأن Pro أبطأ لكن أدق
-        label: 'LessonGeneratorPro', // Label للتتبع
-        enableSearch: true ,
-        maxRetries: 20
+        timeoutMs: 120000, // دقيقتين كافية للـ pro
+        label: 'LessonGenFlash', 
+        enableSearch: false, 
+        maxRetries: 10
       }
     );
- // ✅ التحقق القوي من النتيجة
+
     if (!response || !response.text) {
         logger.warn(`AI returned empty response for ${lessonTitle}`);
         return null;
@@ -48,20 +53,17 @@ async function generateLessonFromSource(filePath, mimeType, lessonTitle) {
 
     const lessonContent = await extractTextFromResult(response);
     
-    // ✅ حماية إضافية: التأكد من أن المحتوى صالح للحفظ
     if (lessonContent.length < 100) {
-        throw new Error("AI generated content is too short (Potential Failure).");
+        throw new Error("AI generated content is too short.");
     }
- // ✅ نجاح! نبلغ المراقب لتصفير العدادات
-    systemHealth.reportSuccess(); 
 
+    systemHealth.reportSuccess(); 
     return lessonContent;
 
   } catch (error) {
-    // نضمن أننا نلتقط الخطأ ولا نوقف السيرفر
     logger.error('❌ AI Lesson Generator Handled Error:', error.message);
-     systemHealth.reportCriticalFailure(error);
-    return null; // نرجع null ليعرف الكونترولر أنه فشل
+    systemHealth.reportCriticalFailure(error);
+    return null; 
   }
 }
 
