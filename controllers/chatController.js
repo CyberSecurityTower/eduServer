@@ -941,7 +941,6 @@ if (tasksChanged || (parsedResponse.lesson_signal && parsedResponse.lesson_signa
     });
 
     // Background processing (Fire and Forget)
-    // Removed the extra 'try {' here that was breaking the structure
     setImmediate(async () => {
       try {
         const updatedHistory = [
@@ -949,11 +948,6 @@ if (tasksChanged || (parsedResponse.lesson_signal && parsedResponse.lesson_signa
           { role: 'user', text: message, timestamp: nowISO() },
           { role: 'model', text: parsedResponse.reply, timestamp: nowISO() }
         ];
-
-        // 1. 🔥 تشغيل التحديث الذري
-        if (updateSignal && extractedLessonId) {
-          await updateAtomicProgress(userId, extractedLessonId, updateSignal);
-        }
 
         // 2. حفظ الشات (كما هو)
         await saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory)
