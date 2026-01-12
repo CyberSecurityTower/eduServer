@@ -7,8 +7,7 @@ const { extractTextFromResult } = require('../../utils');
 const { MARKDOWN_LESSON_PROMPT } = require('../../config/lesson-prompts');
 const logger = require('../../utils/logger');
 const systemHealth = require('../monitoring/systemHealth'); 
-const CONFIG = require('../../config'); // ✅ استيراد الكونفيج
-
+const CONFIG = require('../../config'); 
 /**
  * @param {string} filePath - مسار الملف
  * @param {string} mimeType - نوع الملف
@@ -31,15 +30,14 @@ async function generateLessonFromSource(filePath, mimeType, lessonTitle) {
     const finalPrompt = MARKDOWN_LESSON_PROMPT(lessonTitle);
 
     // 🔥 التغيير الجذري: نستخدم اسم الموديل من الكونفيج (الذي يجب أن يكون flash)
-    // أو نكتب 'gemini-1.5-flash' مباشرة هنا لضمان عدم توقف النظام
-    const targetModel = CONFIG.MODEL.lesson_generator || 'gemini-1.5-flash';
+    const targetModel = CONFIG.MODEL.lesson_generator || 'gemini-2.5-flash';
 
     const response = await generateWithFailover(
       'lesson_generator', 
       finalPrompt, 
       { 
         attachments: attachments,
-        timeoutMs: 120000, // دقيقتين كافية للـ pro
+        timeoutMs: 120000, 
         label: 'LessonGenFlash', 
         enableSearch: false, 
         maxRetries: 10
