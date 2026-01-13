@@ -357,6 +357,7 @@ console.log(`🔎 [DEBUG] Step 1: Searching for lesson metadata for ID: '${curre
       getSystemFeatureFlag('feature_genui_table'),
       getSystemFeatureFlag('feature_genui_chart')
     ]);
+    const curriculumReport = ""; 
 
     // معالجة المنهج يدوياً بناءً على الشرط
     let finalCurriculumMap = "";
