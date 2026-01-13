@@ -58,14 +58,10 @@ async function processChat(req, res) {
     // ---------------------------------------------------------
     // 👁️ 1. معالجة "العيون" (Vision & Files)
     // ---------------------------------------------------------
-    // إذا كان هناك ملفات، نعالجها عبر مدير الوسائط
-    // ملاحظة: files يمكن أن تكون مصفوفة Base64 أو روابط
     const { payload: attachments, note: fileNote } = await mediaManager.processUserAttachments(userId, files);
     
-    // دمج ملاحظات الملفات مع الرسالة (مثلاً: "المستخدم أرفق ملف PDF يحتوي على...")
     let finalMessage = message + (fileNote || "");
 
-    // إذا لم يكن هناك ملفات وكان هناك روابط في النص، نثري الرسالة (Scraper)
     if ((!attachments || attachments.length === 0) && message) {
         finalMessage = await scraper.enrichMessageWithContext(message);
     }
@@ -78,9 +74,7 @@ async function processChat(req, res) {
     let atomicContext = "";
     let atomicData = null;
 
-    // A. هل الطالب داخل درس معين؟
     if (currentContext.lessonId) {
-        // جلب بيانات الدرس
         const { data: lData } = await supabase
             .from('lessons')
             .select('*, subjects(title)')
@@ -90,14 +84,13 @@ async function processChat(req, res) {
         lessonData = lData;
 
         if (lessonData) {
-            // جلب محتوى الدرس (RAG)
             const { data: contentData } = await supabase
                 .from('lessons_content')
                 .select('content')
                 .eq('lesson_id', lessonData.id)
                 .single();
 
-            const snippet = safeSnippet(contentData?.content || "", 2000); // نأخذ جزء كبير
+            const snippet = safeSnippet(contentData?.content || "", 2000);
             
             locationContext = `
             📍 **CURRENT LOCATION:** 
@@ -112,25 +105,25 @@ async function processChat(req, res) {
             👉 INSTRUCTION: The user is looking at this content RIGHT NOW. Answer questions based on it.
             `;
 
-            // B. حقن النظام الذري (Atomic Context)
             const atomicResult = await getAtomicContext(userId, currentContext.lessonId);
             if (atomicResult) {
                 atomicContext = atomicResult.prompt;
                 atomicData = atomicResult.rawData;
             }
         }
-    } 
-    // B. هل هو في صفحة عامة؟ (مثل Dashboard, Profile)
-    else if (currentContext.pageTitle) {
+    } else if (currentContext.pageTitle) {
         locationContext = `📍 **CURRENT LOCATION:** User is browsing page: "${currentContext.pageTitle}".`;
     }
 
     // ---------------------------------------------------------
-    // 👤 3. بناء الملف الشخصي والسياق
+    // 👤 3. بناء الملف الشخصي والسياق (تم التصحيح هنا)
     // ---------------------------------------------------------
-    // جلب البيانات بشكل متوازي للسرعة
+    
+    // أ. جلب البروفايل أولاً (لأنه مفتاح لباقي البيانات)
+    const userProfile = await getProfile(userId);
+
+    // ب. جلب باقي البيانات بالتوازي
     const [
-        userProfile,
         memoryReport,
         progressReport,
         curriculumMap,
@@ -138,33 +131,27 @@ async function processChat(req, res) {
         isTableEnabled,
         isChartEnabled
     ] = await Promise.all([
-        getProfile(userId),
         runMemoryAgent(userId, message).catch(() => ''),
         formatProgressForAI(userId).catch(() => ''),
-        getCurriculumContext(), // خريطة المنهج كاملة
-        getStudentScheduleStatus(userProfile?.group), // حالة الجدول الزمني
+        getCurriculumContext(),
+        getStudentScheduleStatus(userProfile?.group), // ✅ الآن userProfile معرف
         getSystemFeatureFlag('feature_genui_table'),
         getSystemFeatureFlag('feature_genui_chart')
     ]);
 
-    // تجميع الميزات
     const enabledFeatures = { table: isTableEnabled, chart: isChartEnabled };
-
-    // السياق الزمني (الجزائر)
     const timeContext = getAlgiersTimeContext().contextSummary;
 
     // ---------------------------------------------------------
     // 🧠 4. تجميع "الدماغ" (Prompt Engineering)
     // ---------------------------------------------------------
-    // استخدام البرومبت المركزي الموجود في ai-prompts.js
-    // نمرر له كل ما جمعناه
     const systemPrompt = PROMPTS.chat.interactiveChat(
         finalMessage,
         memoryReport,
-        '', // curriculumReport (أصبحنا نستخدم locationContext أدق)
-        history.map(m => `${m.role}: ${m.text}`).join('\n'), // تنسيق التاريخ
+        '', // curriculumReport skipped (using locationContext)
+        history.map(m => `${m.role}: ${m.text}`).join('\n'),
         progressReport,
-        [], // weaknesses (اختياري)
+        [], // weaknesses
         userProfile.emotionalState || {},
         userProfile,
         `
@@ -172,11 +159,11 @@ async function processChat(req, res) {
         ${locationContext}
         ${scheduleStatus ? scheduleStatus.context : ''}
         ${webSearch ? '🌍 **WEB SEARCH:** ENABLED. You can search the internet for real-time info.' : ''}
-        `, // System Context Combined
+        `,
         {}, // examContext
         [], // activeAgenda
         "", // groupContext
-        currentContext, // raw context
+        currentContext,
         null, // gravityContext
         "", // absenceContext
         enabledFeatures,
@@ -186,7 +173,7 @@ async function processChat(req, res) {
     logger.info(`🧠 ChatBrain: Generating response for ${userId} (Search: ${webSearch}, Files: ${attachments.length})...`);
 
     // ---------------------------------------------------------
-    // ⚡ 5. الإرسال للموديل (Execution)
+    // ⚡ 5. الإرسال للموديل
     // ---------------------------------------------------------
     let modelResponse;
     let usedSources = [];
@@ -194,13 +181,12 @@ async function processChat(req, res) {
     try {
         const result = await generateWithFailoverRef('chat', systemPrompt, {
             label: 'ChatBrain_v1',
-            timeoutMs: webSearch ? 60000 : 45000, // وقت أطول للبحث
-            attachments: attachments, // إرسال الصور/الملفات
-            enableSearch: !!webSearch, // تفعيل البحث
+            timeoutMs: webSearch ? 60000 : 45000,
+            attachments: attachments,
+            enableSearch: !!webSearch,
             maxRetries: 2
         });
 
-        // التعامل مع صيغ الاستجابة المختلفة
         if (typeof result === 'object' && result.text) {
             modelResponse = result.text;
             usedSources = result.sources || [];
@@ -214,12 +200,11 @@ async function processChat(req, res) {
     }
 
     // ---------------------------------------------------------
-    // 🧹 6. تنظيف ومعالجة الرد (Post-Processing)
+    // 🧹 6. تنظيف ومعالجة الرد
     // ---------------------------------------------------------
     const rawText = await extractTextFromResult(modelResponse);
     let parsedResponse = await ensureJsonOrRepair(rawText, 'analysis');
 
-    // Fallback إذا فشل الـ JSON
     if (!parsedResponse?.reply) {
         parsedResponse = { 
             reply: rawText || "عذراً، حدث خطأ في المعالجة.", 
@@ -228,19 +213,16 @@ async function processChat(req, res) {
     }
 
     // ---------------------------------------------------------
-    // ⚛️ 7. النظام الذري والمكافآت (The Atomic Monitor)
+    // ⚛️ 7. النظام الذري والمكافآت
     // ---------------------------------------------------------
     let updateSignal = parsedResponse.atomic_update || null;
     let lessonSignal = parsedResponse.lesson_signal || null;
 
-    // A. تحليل النص للكويزات (تصحيح تلقائي)
-    // إذا وجدنا "Score: 5/5" في النص، نعتبره إنجازاً
     const scoreMatch = finalMessage.match(/(\d+)\s*[\/|من]\s*(\d+)/);
     if (scoreMatch) {
         const score = parseInt(scoreMatch[1]);
         const total = parseInt(scoreMatch[2]);
         if (total > 0 && (score / total) >= 0.7) {
-            // نجاح في الكويز -> تحديث ذري شامل
             if (lessonData) {
                 updateSignal = { element_id: 'ALL', new_score: 100, reason: 'quiz_passed' };
                 lessonSignal = { type: 'complete', id: lessonData.id, score: (score/total)*100 };
@@ -248,16 +230,13 @@ async function processChat(req, res) {
         }
     }
 
-    // B. تنفيذ التحديث الذري
     if (updateSignal && lessonData) {
         await updateAtomicProgress(userId, lessonData.id, updateSignal);
     }
 
-    // C. منح المكافآت (إتمام الدرس)
     if (lessonSignal && lessonSignal.type === 'complete') {
         const gateResult = await markLessonComplete(userId, lessonSignal.id, lessonSignal.score || 100);
         
-        // إضافة ويدجت الاحتفال
         if (gateResult.reward?.coins_added > 0) {
             parsedResponse.widgets = parsedResponse.widgets || [];
             parsedResponse.widgets.push({ 
@@ -267,39 +246,36 @@ async function processChat(req, res) {
                     coins: gateResult.reward.coins_added 
                 } 
             });
-            // تحديث رصيد الفرونت أند
             res.locals.rewardData = { 
                 reward: gateResult.reward, 
                 new_total_coins: gateResult.new_total_coins 
             };
         }
         
-        // تحديث المهام تلقائياً
         await refreshUserTasks(userId, true);
         parsedResponse.widgets = parsedResponse.widgets || [];
         parsedResponse.widgets.push({ type: 'event_trigger', data: { event: 'tasks_updated' } });
     }
 
     // ---------------------------------------------------------
-    // 📤 8. إرسال الرد النهائي
+    // 📤 8. الرد النهائي
     // ---------------------------------------------------------
     const responsePayload = {
         reply: parsedResponse.reply,
         widgets: parsedResponse.widgets || [],
         sessionId: sessionId,
         mood: parsedResponse.newMood,
-        sources: usedSources, // روابط البحث إن وجدت
-        ...(res.locals?.rewardData || {}) // بيانات المكافأة
+        sources: usedSources,
+        ...(res.locals?.rewardData || {})
     };
 
     res.status(200).json(responsePayload);
 
     // ---------------------------------------------------------
-    // 💾 9. الحفظ في الخلفية (Background)
+    // 💾 9. الحفظ الخلفي
     // ---------------------------------------------------------
     setImmediate(async () => {
         try {
-            // حفظ الرسائل
             const updatedHistory = [
                 ...history,
                 { role: 'user', text: message, timestamp: nowISO() },
@@ -307,7 +283,6 @@ async function processChat(req, res) {
             ];
             await saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory);
             
-            // تحديث الحالة الشعورية
             if (parsedResponse.newMood) {
                 supabase.from('ai_memory_profiles').update({
                     emotional_state: { mood: parsedResponse.newMood, reason: parsedResponse.moodReason }
