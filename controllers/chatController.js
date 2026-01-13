@@ -290,7 +290,8 @@ if (attachments.length > 0) {
           - All their questions (like "Explain this", "Give me a quiz") refer to "${lessonData.title}" unless stated otherwise.
           - Do NOT ask "What lesson do you mean?". You already know it.
           `;
-      }
+                console.log("📜 [DEBUG] Content sent to AI:", snippet.substring(0, 100) + "..."); 
+}
     }
   
 
