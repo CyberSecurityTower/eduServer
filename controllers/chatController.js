@@ -324,7 +324,7 @@ console.log(`🔎 [DEBUG] Step 1: Searching for lesson metadata for ID: '${curre
               
               console.log("📜 [DEBUG] Context injected successfully into Prompt.");
           }
-      }
+      }}
     // =========================================================
     // 6. Data Aggregation (Parallel Fetching)
     // =========================================================
