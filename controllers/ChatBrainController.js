@@ -21,7 +21,9 @@ const { markLessonComplete } = require('../services/engines/gatekeeper');
 const { runMemoryAgent } = require('../services/ai/managers/memoryManager');
 const { getCurriculumContext } = require('../services/ai/curriculumContext');
 const { getProfile, formatProgressForAI, saveChatSession, refreshUserTasks, getStudentScheduleStatus } = require('../services/data/helpers');
-const { extractTextFromResult, ensureJsonOrRepair, safeSnippet, getAlgiersTimeContext, nowISO } = require('../utils');
+// 👇 تصحيح الاستيراد: nowISO نأخذها من dbUtils
+const { nowISO } = require('../services/data/dbUtils'); 
+const { extractTextFromResult, ensureJsonOrRepair, safeSnippet, getAlgiersTimeContext } = require('../utils');
 const { getSystemFeatureFlag } = require('../services/data/helpers');
 
 // Reference for Failover Service (Injected)
@@ -75,27 +77,32 @@ async function processChat(req, res) {
     let atomicData = null;
 
     if (currentContext.lessonId) {
-        const { data: lData } = await supabase
+        const { data: lData, error: lError } = await supabase
             .from('lessons')
             .select('*, subjects(title)')
             .eq('id', currentContext.lessonId)
             .single();
         
+        if (lError) {
+            console.warn(`⚠️ ChatBrain: Lesson ID ${currentContext.lessonId} not found in DB.`);
+        }
+
         lessonData = lData;
 
         if (lessonData) {
+            // جلب محتوى الدرس (RAG)
             const { data: contentData } = await supabase
                 .from('lessons_content')
                 .select('content')
-                .eq('lesson_id', lessonData.id)
-                .single();
+                .eq('lesson_id', lessonData.id) // أو .eq('id', lessonData.id) حسب الهيكلة
+                .maybeSingle(); // استخدام maybeSingle لتجنب الخطأ إذا لم يوجد محتوى
 
-            const snippet = safeSnippet(contentData?.content || "", 2000);
+            const snippet = safeSnippet(contentData?.content || "No content available yet.", 2000);
             
             locationContext = `
             📍 **CURRENT LOCATION:** 
             - User is studying Lesson: "${lessonData.title}"
-            - Subject: "${lessonData.subjects?.title}"
+            - Subject: "${lessonData.subjects?.title || 'Unknown Subject'}"
             - Context Source: "Official Curriculum"
             
             📖 **LESSON CONTENT (Reference):**
@@ -110,16 +117,19 @@ async function processChat(req, res) {
                 atomicContext = atomicResult.prompt;
                 atomicData = atomicResult.rawData;
             }
+        } else {
+            // Fallback: إذا لم نجد الدرس في القاعدة، نستخدم العنوان المرسل من الفرونت
+            locationContext = `📍 **CURRENT LOCATION:** User is studying Lesson: "${currentContext.lessonTitle || 'Unknown'}". (Metadata missing in DB).`;
         }
     } else if (currentContext.pageTitle) {
         locationContext = `📍 **CURRENT LOCATION:** User is browsing page: "${currentContext.pageTitle}".`;
     }
 
     // ---------------------------------------------------------
-    // 👤 3. بناء الملف الشخصي والسياق (تم التصحيح هنا)
+    // 👤 3. بناء الملف الشخصي والسياق
     // ---------------------------------------------------------
     
-    // أ. جلب البروفايل أولاً (لأنه مفتاح لباقي البيانات)
+    // أ. جلب البروفايل أولاً
     const userProfile = await getProfile(userId);
 
     // ب. جلب باقي البيانات بالتوازي
@@ -134,7 +144,7 @@ async function processChat(req, res) {
         runMemoryAgent(userId, message).catch(() => ''),
         formatProgressForAI(userId).catch(() => ''),
         getCurriculumContext(),
-        getStudentScheduleStatus(userProfile?.group), // ✅ الآن userProfile معرف
+        getStudentScheduleStatus(userProfile?.group),
         getSystemFeatureFlag('feature_genui_table'),
         getSystemFeatureFlag('feature_genui_chart')
     ]);
@@ -148,7 +158,7 @@ async function processChat(req, res) {
     const systemPrompt = PROMPTS.chat.interactiveChat(
         finalMessage,
         memoryReport,
-        '', // curriculumReport skipped (using locationContext)
+        '', // curriculumReport skipped
         history.map(m => `${m.role}: ${m.text}`).join('\n'),
         progressReport,
         [], // weaknesses
@@ -281,6 +291,7 @@ async function processChat(req, res) {
                 { role: 'user', text: message, timestamp: nowISO() },
                 { role: 'model', text: parsedResponse.reply, timestamp: nowISO() }
             ];
+            
             await saveChatSession(sessionId, userId, message.substring(0, 30), updatedHistory);
             
             if (parsedResponse.newMood) {
