@@ -247,50 +247,54 @@ if (attachments.length > 0) {
         });
       }
     }
-
-    // ---------------------------------------------------------
-    // 5. Context Injection & Ghost Teacher Logic
+// ---------------------------------------------------------
+    // 5. Context Injection & Ghost Teacher Logic (UPDATED)
     // ---------------------------------------------------------
    
-let activeLessonContext = "";
-let lessonData = null; // 👈 عرفناه هنا لكي يراه الكود في الأسفل
+    let activeLessonContext = "";
+    let lessonData = null; 
 
-// 2. إذا أرسل الفرونت إند ID الدرس
-if (currentContext && currentContext.lessonId) {
-  // نستخدم المتغير المعرف مسبقاً (بدون const)
-  const { data: lData } = await supabase
-      .from('lessons')
-      .select('*, subjects(title)')
-      .eq('id', currentContext.lessonId)
-      .single();
-  
-  lessonData = lData;
-
-  if (lessonData) {
-      // جلب المحتوى النصي (RAG Memory)
-      const { data: contentData } = await supabase
-          .from('lessons_content')
-          .select('content')
-          .eq('lesson_id', lessonData.id)
-          .single();
+    // ✅ التحقق من وجود ID الدرس القادم من الفرونت إند
+    if (currentContext && currentContext.lessonId) {
+        
+        // 1. جلب بيانات الدرس الأساسية (بدون علاقات معقدة)
+        const { data: lData } = await supabase
+            .from('lessons')
+            .select('id, title, subject_id') 
+            .eq('id', currentContext.lessonId)
+            .single();
       
-      const snippet = safeSnippet(contentData?.content || "", 1500); // نأخذ جزء كبير من الدرس
-      
-      // 3. تجهيز السياق للـ AI
-      activeLessonContext = `
-      📚 **ACTIVE LESSON CONTEXT (User is looking at this NOW):**
-      Title: "${lessonData.title}"
-      Subject: "${lessonData.subjects?.title}"
-      Content Snippet:
-      """
-      ${snippet}
-      """
-      👉 INSTRUCTION: The user is asking about THIS lesson. Use the content above to answer accurately.
-      `;
-  }
-}
-  
+        if (lData) {
+            lessonData = lData;
 
+            // 2. جلب (اسم المادة) و (محتوى الدرس) بشكل منفصل ومتوازي
+            const [subjectRes, contentRes] = await Promise.all([
+                // جلب اسم المادة إذا وجد subject_id
+                lData.subject_id 
+                    ? supabase.from('subjects').select('title').eq('id', lData.subject_id).single()
+                    : Promise.resolve({ data: null }),
+                
+                // جلب محتوى الدرس النصي
+                supabase.from('lessons_content').select('content').eq('lesson_id', lData.id).single()
+            ]);
+
+            const subjectTitle = subjectRes.data?.title || "General";
+            const fullContent = contentRes.data?.content || "";
+            const snippet = safeSnippet(fullContent, 2000); // نأخذ 2000 حرف من المحتوى
+            
+            // 3. تجهيز السياق للـ AI
+            activeLessonContext = `
+            📚 **ACTIVE LESSON CONTEXT (User is looking at this NOW):**
+            - Lesson Title: "${lessonData.title}"
+            - Subject: "${subjectTitle}"
+            - Lesson Content Snippet:
+            """
+            ${snippet}
+            """
+            👉 INSTRUCTION: The user is currently reading this lesson. Use the title and content above to answer their questions accurately.
+            `;
+        }
+    }
     // =========================================================
     // 6. Data Aggregation (Parallel Fetching)
     // =========================================================
