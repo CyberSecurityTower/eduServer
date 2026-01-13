@@ -247,9 +247,8 @@ if (attachments.length > 0) {
         });
       }
     }
-
-    // ---------------------------------------------------------
-    // 5. Context Injection & Ghost Teacher Logic
+// ---------------------------------------------------------
+    // 5. Context Injection & Ghost Teacher Logic (DEBUG MODE)
     // ---------------------------------------------------------
    
     let activeLessonContext = "";
@@ -257,44 +256,66 @@ if (attachments.length > 0) {
 
     // 2. إذا أرسل الفرونت إند ID الدرس
     if (currentContext && currentContext.lessonId) {
-      const { data: lData } = await supabase
+      
+      console.log(`🔎 [DEBUG] Step 1: Searching for lesson metadata for ID: '${currentContext.lessonId}'`);
+
+      // جلب الميتاداتا من جدول lessons
+      const { data: lData, error: lError } = await supabase
           .from('lessons')
           .select('*, subjects(title)')
           .eq('id', currentContext.lessonId)
           .single();
       
-      lessonData = lData;
+      if (lError) {
+          console.error(`❌ [DEBUG] Error fetching from 'lessons' table:`, lError.message);
+      } else if (!lData) {
+          console.warn(`⚠️ [DEBUG] Lesson ID '${currentContext.lessonId}' NOT FOUND in 'lessons' table!`);
+      } else {
+          console.log(`✅ [DEBUG] Found Lesson Metadata: ${lData.title}`);
+          lessonData = lData;
+      }
 
       if (lessonData) {
+          console.log(`🔎 [DEBUG] Step 2: Fetching content from 'lessons_content' for ID: '${lessonData.id}'`);
+
           // جلب المحتوى النصي
-          const { data: contentData } = await supabase
+          const { data: contentData, error: cError } = await supabase
               .from('lessons_content')
               .select('content')
-              .eq('id', lessonData.id)
+              .eq('id', lessonData.id) // تأكدنا سابقاً أن العمود هو id
               .single();
           
-          const snippet = safeSnippet(contentData?.content || "", 1500);
-          
-          // 🔥 التعديل هنا: صياغة قوية جداً تجبر الـ AI على الالتزام بالسياق
-          activeLessonContext = `
-          🔴 **CRITICAL CONTEXT: USER IS HERE NOW**
-          You are currently inside the lesson: "${lessonData.title}" (Subject: ${lessonData.subjects?.title}).
-          
-          **LESSON CONTENT SUMMARY:**
-          """
-          ${snippet}
-          """
-          
-          👉 **MANDATORY INSTRUCTION:** 
-          - The user is standing inside this lesson. 
-          - All their questions (like "Explain this", "Give me a quiz") refer to "${lessonData.title}" unless stated otherwise.
-          - Do NOT ask "What lesson do you mean?". You already know it.
-          `;
-                console.log("📜 [DEBUG] Content sent to AI:", snippet.substring(0, 100) + "..."); 
-}
+          if (cError) {
+              console.error(`❌ [DEBUG] Error fetching content:`, cError.message);
+          } else if (!contentData) {
+              console.warn(`⚠️ [DEBUG] Content entry NOT FOUND for ID: '${lessonData.id}'`);
+          } else {
+              console.log(`✅ [DEBUG] Content Found! Length: ${contentData.content.length} chars`);
+              
+              const snippet = safeSnippet(contentData?.content || "", 2000);
+              
+              // حقن السياق بقوة
+              activeLessonContext = `
+              🔴 **URGENT INSTRUCTION: LESSON FOCUS**
+              The user is explicitly asking about the lesson: "${lessonData.title}".
+              
+              **SOURCE MATERIAL (TRUTH):**
+              """
+              ${snippet}
+              """
+              
+              **RULES:**
+              1. EXPLAIN ONLY based on the "SOURCE MATERIAL" above.
+              2. Do NOT hallucinate. Do NOT talk about other lessons.
+              3. Speak in Algerian Derja + Academic Arabic.
+              `;
+              
+              console.log("📜 [DEBUG] Context injected successfully into Prompt.");
+          }
+      }
+    } else {
+        console.log("ℹ️ [DEBUG] No lessonId provided in currentContext.");
     }
-  
-
     // =========================================================
     // 6. Data Aggregation (Parallel Fetching)
     // =========================================================
