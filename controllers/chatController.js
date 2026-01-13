@@ -328,10 +328,18 @@ console.log(`🔎 [DEBUG] Step 1: Searching for lesson metadata for ID: '${curre
     // =========================================================
     // 6. Data Aggregation (Parallel Fetching)
     // =========================================================
+  // ... (بعد جلب activeLessonContext)
+
+    // 🔥 التعديل الذكي: هل نحن داخل درس؟
+    // إذا نعم: نخفي المنهج العام لكي لا يتشتت الـ AI.
+    // إذا لا (سؤال عام): نظهر المنهج ليجيب عن الأسئلة العامة.
+    const shouldShowCurriculum = !activeLessonContext; 
+
+    // 6. Data Aggregation
     const [
       rawProfile,
       memoryReport,
-      curriculumReport,
+      // curriculumReport,  <-- سنحذفه من هنا ونعالجه يدوياً
       weaknessesRaw,
       formattedProgress,
       userTasksRes,
@@ -341,7 +349,7 @@ console.log(`🔎 [DEBUG] Step 1: Searching for lesson metadata for ID: '${curre
     ] = await Promise.all([
       getProfile(userId).catch(() => ({})),
       runMemoryAgent(userId, message).catch(() => ''),
-      runCurriculumAgent(userId, message).catch(() => ''),
+      // runCurriculumAgent... <-- حذفناه من المصفوفة
       fetchUserWeaknesses(userId).catch(() => []),
       formatProgressForAI(userId).catch(() => ''),
       supabase.from('user_tasks').select('*').eq('user_id', userId).eq('status', 'pending'),
@@ -349,6 +357,14 @@ console.log(`🔎 [DEBUG] Step 1: Searching for lesson metadata for ID: '${curre
       getSystemFeatureFlag('feature_genui_table'),
       getSystemFeatureFlag('feature_genui_chart')
     ]);
+
+    // معالجة المنهج يدوياً بناءً على الشرط
+    let finalCurriculumMap = "";
+    if (shouldShowCurriculum) {
+        finalCurriculumMap = await getCurriculumContext(); // الدالة المستوردة
+    } else {
+        console.log("🙈 [Focus Mode] Hiding General Curriculum to focus on Lesson.");
+    }
      // تجميع الميزات في كائن واحد
     const enabledFeatures = {
         table: isTableEnabled,
@@ -600,30 +616,27 @@ const { data: settings } = await supabase
   .single();
 
 const currentSemester = settings?.value || 'S1'; // القيمة الديناميكية
-    const systemContextCombined = `
+   const systemContextCombined = `
     User Identity: Name=${fullUserProfile.firstName}, Group=${groupId}, Role=${fullUserProfile.role}.
     ${ageContext}
     📅 **ACADEMIC SEASON:** We are currently in **${currentSemester}**.
     ${getAlgiersTimeContext().contextSummary}
     ${scheduleContextString}
     ${sharedContext}
-    ${activeLessonContext}
+    
+    =========== FOCUS ZONE ===========
+    ${activeLessonContext} 
+    ==================================
+
     ${rewardContext}
-    ${welcomeContext}
-    ${streakContext}
     ${distractionContext}
-    ${fatigueContext}
-    ${pastExamsContext}
 
     📋 **CURRENT TODO LIST:**
     ${tasksList}
     
-    ${gravitySection} 
-    ${antiSamataProtocol}
     
-    📚 **FULL CURRICULUM MAP:**
-    ${curriculumMap}
-    ${examContext.subject ? `🚨 **EXAM ALERT:** Subject: "${examContext.subject}" is happening **${examContext.timingHuman}**. Focus on this immediately!` : ""}
+    ${finalCurriculumMap ? `📚 **FULL CURRICULUM MAP (Reference Only):**\n${finalCurriculumMap}` : ""}
+    ${examContext.subject ? `🚨 **EXAM ALERT:** ...` : ""}
     `;
 
     // ---------------------------------------------------------
