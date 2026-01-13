@@ -62,15 +62,18 @@ async function getAtomicContext(userId, lessonId) {
 
     // C. صياغة البرومبت للـ AI
     // نعطيه الخريطة كاملة ليعرف أين هو المستخدم وإلى أين يذهب
-   const finalPrompt = `
+  const finalPrompt = `
+    📍 **LOCATION AWARENESS:** User is studying Lesson ID: ${lessonId}
+    
+    🗺️ **ATOMIC STRUCTURE (Roadmap for this lesson):**
     ${contextLines.join('\n')}
     
-    🎯 **IMMEDIATE GOAL:** Help user understand: "${nextTarget ? nextTarget.title : 'Review/Quiz'}"
+    🎯 **CURRENT FOCUS:** The user is currently at step: "${nextTarget ? nextTarget.title : 'Reviewing'}"
     
     **INSTRUCTIONS:**
-    1. You see the full roadmap above. Guide the user step-by-step based on their current progress.
-    2. If user asks about a future topic, answer briefly but remind them: "We will get there soon (see roadmap), let's focus on ${nextTarget?.title} first."
-    3. **NOTE:** Do NOT generate any progress updates or JSON scores. Just teach the content efficiently.
+    1. Use the content of this lesson to explain "${nextTarget ? nextTarget.title : 'the concepts'}".
+    2. Guide them based on the roadmap above.
+    3. **NOTE:** Do NOT generate any progress updates or JSON scores. Just teach.
     `;
     return {
       prompt: finalPrompt,
