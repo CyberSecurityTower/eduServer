@@ -70,7 +70,7 @@ router.delete('/auth/delete-account', requireAuth, authController.deleteAccount)
 // 2. User App Features (الميزات الأساسية)
 // ==========================================
 
-router.post('/chat-interactive', chatController.chatInteractive);
+// router.post('/chat-interactive', chatController.chatInteractive);
 router.post('/generate-chat-suggestions', chatController.generateChatSuggestions); 
 
 router.post('/generate-daily-tasks', tasksController.generateDailyTasks);
