@@ -62,18 +62,16 @@ async function getAtomicContext(userId, lessonId) {
 
     // C. صياغة البرومبت للـ AI
     // نعطيه الخريطة كاملة ليعرف أين هو المستخدم وإلى أين يذهب
-    const finalPrompt = `
+   const finalPrompt = `
     ${contextLines.join('\n')}
     
     🎯 **IMMEDIATE GOAL:** Help user understand: "${nextTarget ? nextTarget.title : 'Review/Quiz'}"
     
     **INSTRUCTIONS:**
-    1. You see the full roadmap above. Guide the user step-by-step.
+    1. You see the full roadmap above. Guide the user step-by-step based on their current progress.
     2. If user asks about a future topic, answer briefly but remind them: "We will get there soon (see roadmap), let's focus on ${nextTarget?.title} first."
-    3. **UPDATE SIGNAL:** If user proves they understand the CURRENT FOCUS, send:
-       { "atomic_update": { "element_id": "${nextTarget?.id || 'none'}", "new_score": 80 } }
+    3. **NOTE:** Do NOT generate any progress updates or JSON scores. Just teach the content efficiently.
     `;
-
     return {
       prompt: finalPrompt,
       nextTargetId: nextTarget?.id
