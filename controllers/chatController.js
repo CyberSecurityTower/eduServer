@@ -256,13 +256,12 @@ if (attachments.length > 0) {
 
     // 2. إذا أرسل الفرونت إند ID الدرس
     if (currentContext && currentContext.lessonId) {
-      
-      console.log(`🔎 [DEBUG] Step 1: Searching for lesson metadata for ID: '${currentContext.lessonId}'`);
+console.log(`🔎 [DEBUG] Step 1: Searching for lesson metadata for ID: '${currentContext.lessonId}'`);
 
-      // جلب الميتاداتا من جدول lessons
+      // 1. جلب بيانات الدرس فقط (بدون ربط مع subjects لتجنب الخطأ)
       const { data: lData, error: lError } = await supabase
           .from('lessons')
-          .select('*, subjects(title)')
+          .select('*') // 👈 حذفنا subjects(title) التي كانت تسبب المشكلة
           .eq('id', currentContext.lessonId)
           .single();
       
@@ -271,8 +270,21 @@ if (attachments.length > 0) {
       } else if (!lData) {
           console.warn(`⚠️ [DEBUG] Lesson ID '${currentContext.lessonId}' NOT FOUND in 'lessons' table!`);
       } else {
-          console.log(`✅ [DEBUG] Found Lesson Metadata: ${lData.title}`);
-          lessonData = lData;
+          // 2. جلب اسم المادة يدوياً (اختياري، للترتيب)
+          let subjectTitle = 'General';
+          if (lData.subject_id) {
+              const { data: sData } = await supabase
+                  .from('subjects')
+                  .select('title')
+                  .eq('id', lData.subject_id)
+                  .single();
+              if (sData) subjectTitle = sData.title;
+          }
+
+          console.log(`✅ [DEBUG] Found Lesson: ${lData.title} (Subject: ${subjectTitle})`);
+          
+          // دمج البيانات كما كان يتوقعها الكود القديم
+          lessonData = { ...lData, subjects: { title: subjectTitle } };
       }
 
       if (lessonData) {
@@ -282,7 +294,7 @@ if (attachments.length > 0) {
           const { data: contentData, error: cError } = await supabase
               .from('lessons_content')
               .select('content')
-              .eq('id', lessonData.id) // تأكدنا سابقاً أن العمود هو id
+              .eq('id', lessonData.id)
               .single();
           
           if (cError) {
@@ -292,7 +304,7 @@ if (attachments.length > 0) {
           } else {
               console.log(`✅ [DEBUG] Content Found! Length: ${contentData.content.length} chars`);
               
-              const snippet = safeSnippet(contentData?.content || "", 2000);
+              const snippet = safeSnippet(contentData?.content || "", 2500); // زدنا الحجم قليلاً
               
               // حقن السياق بقوة
               activeLessonContext = `
@@ -306,16 +318,13 @@ if (attachments.length > 0) {
               
               **RULES:**
               1. EXPLAIN ONLY based on the "SOURCE MATERIAL" above.
-              2. Do NOT hallucinate. Do NOT talk about other lessons.
-              3. Speak in Algerian Derja + Academic Arabic.
+              2. Do NOT hallucinate. 
+              3. Use the exact definitions found in the text.
               `;
               
               console.log("📜 [DEBUG] Context injected successfully into Prompt.");
           }
       }
-    } else {
-        console.log("ℹ️ [DEBUG] No lessonId provided in currentContext.");
-    }
     // =========================================================
     // 6. Data Aggregation (Parallel Fetching)
     // =========================================================
