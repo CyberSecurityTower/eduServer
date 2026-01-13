@@ -62,10 +62,9 @@ async function processChat(req, res) {
 
         // A. البحث عن الدرس (Lesson) بدون علاقات
         if (targetId) {
-            // بحث مباشر بـ ID فقط
             const { data } = await supabase
                 .from('lessons')
-                .select('*') // لا نطلب subjects هنا
+                .select('*')
                 .eq('id', targetId)
                 .maybeSingle();
             metaData = data;
@@ -83,7 +82,7 @@ async function processChat(req, res) {
             metaData = data;
         }
 
-        // C. جلب اسم المادة (Subject) يدوياً إذا وجدنا الدرس
+        // C. جلب اسم المادة (Subject) يدوياً
         if (metaData && metaData.subject_id) {
             const { data: subjectData } = await supabase
                 .from('subjects')
@@ -96,7 +95,7 @@ async function processChat(req, res) {
             }
         }
 
-        // D. جلب المحتوى (Content) بشكل منفصل
+        // D. جلب المحتوى (Content)
         const effectiveId = metaData?.id || targetId;
         if (effectiveId) {
             // محاولة 1: الربط المباشر (id = id)
@@ -125,11 +124,25 @@ async function processChat(req, res) {
             title: targetTitle, 
             subject_id: null 
         };
-        // إضافة هيكل المادة يدوياً ليتوافق مع البرومبت
         lessonData.subjects = { title: subjectTitle };
 
         const rawContent = contentData?.content || "";
         const contentSnippet = rawContent ? safeSnippet(rawContent, 2500) : null;
+
+        // =========================================================
+        // 🖨️ طباعة نتائج البحث (DEBUGGING LOGS)
+        // =========================================================
+        console.log("\n🔎 [DEBUG] DATABASE RETRIEVAL RESULT:");
+        console.log("--------------------------------------------------");
+        console.log(`🆔 TARGET ID:   ${effectiveId}`);
+        console.log(`📚 LESSON:      ${lessonData.title}`);
+        console.log(`🏷️ SUBJECT:     ${subjectTitle}`);
+        console.log(`📄 HAS CONTENT? ${contentSnippet ? "✅ YES" : "❌ NO"}`);
+        if (contentSnippet) {
+            console.log(`📝 START OF CONTENT: "${contentSnippet.substring(0, 150).replace(/\n/g, ' ')}..."`);
+        }
+        console.log("--------------------------------------------------\n");
+        // =========================================================
 
         // F. بناء سياق الموقع
         if (contentSnippet) {
@@ -161,6 +174,7 @@ async function processChat(req, res) {
             if (atomicRes) atomicContext = atomicRes.prompt;
         }
     } 
+
     
     if (!locationContext && currentContext.pageTitle) {
         locationContext = `📍 **CURRENT LOCATION:** User is browsing page: "${currentContext.pageTitle}".`;
