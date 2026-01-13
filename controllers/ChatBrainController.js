@@ -61,26 +61,67 @@ async function processChat(req, res) {
         let contentData = null;
 
         // A. المحاولة الأولى: البحث بالمعرف (ID) إذا وجد
+        // جدول الدروس يعتمد على المفتاح النصي (مثل: adm_1)
         if (targetId) {
-            const { data } = await supabase.from('lessons').select('*, subjects(title)').eq('id', targetId).maybeSingle();
+            const { data } = await supabase
+                .from('lessons')
+                .select('*, subjects(title)') // يفترض وجود علاقة Foreign Key باسم subjects
+                .eq('id', targetId)
+                .maybeSingle();
             metaData = data;
         }
 
         // B. المحاولة الثانية: إذا فشل المعرف، نبحث بالعنوان (Fuzzy Search)
+        // التأكد من أن البحث يتم في عمود 'title' الموجود في الصورة الثانية
         if (!metaData && targetTitle) {
             console.log(`⚠️ ID search failed for ${targetId}. Trying title: "${targetTitle}"`);
-            const { data } = await supabase.from('lessons').select('*, subjects(title)').ilike('title', `%${targetTitle}%`).limit(1).maybeSingle();
-            metaData = data;
+            
+            // نستخدم ilike للبحث المرن (Case Insensitive)
+            const { data, error } = await supabase
+                .from('lessons')
+                .select('*, subjects(title)')
+                .ilike('title', `%${targetTitle.trim()}%`) 
+                .limit(1)
+                .maybeSingle();
+            
+            if (error) {
+                // في حال فشل الربط مع subjects، نحاول جلب الدرس فقط
+                console.warn("⚠️ Error fetching with relation, retrying raw:", error.message);
+                const { data: rawData } = await supabase
+                    .from('lessons')
+                    .select('*')
+                    .ilike('title', `%${targetTitle.trim()}%`)
+                    .limit(1)
+                    .maybeSingle();
+                metaData = rawData;
+            } else {
+                metaData = data;
+            }
         }
 
         // C. جلب المحتوى (بناءً على ما وجدناه أو المعرف الأصلي)
         const effectiveId = metaData?.id || targetId;
+        
         if (effectiveId) {
-            const { data } = await supabase.from('lessons_content')
+            // حسب الصورة الأولى، الجدول يحتوي على id يطابق جدول الدروس (adm_1) وعمود content
+            // نحاول الربط المباشر بـ id أولاً (الأكثر دقة حسب الصور)
+            const { data, error } = await supabase
+                .from('lessons_content')
                 .select('content')
-                .or(`id.eq.${effectiveId},lesson_id.eq.${effectiveId}`)
+                .eq('id', effectiveId) // الافتراض: id المحتوى = id الدرس (1:1)
                 .maybeSingle();
-            contentData = data;
+
+            if (data) {
+                contentData = data;
+            } else {
+                // محاولة احتياطية: ربما يكون الربط عبر lesson_id
+                const { data: fkData } = await supabase
+                    .from('lessons_content')
+                    .select('content')
+                    .eq('lesson_id', effectiveId)
+                    .maybeSingle();
+                contentData = fkData;
+            }
         }
 
         // D. تجهيز البيانات النهائية
@@ -99,7 +140,7 @@ async function processChat(req, res) {
             locationContext = `
             📍 **CURRENT LOCATION:** 
             - User is studying: "${lessonData.title}"
-            - Subject: "${lessonData.subjects?.title}"
+            - Subject: "${lessonData.subjects?.title || 'Unknown Subject'}"
             
             📖 **LESSON CONTENT (FROM DB):**
             """
@@ -109,11 +150,10 @@ async function processChat(req, res) {
             `;
         } else {
             // حالة 2: لم نجد محتوى، لكن لدينا عنوان الدرس (Force Mode)
-            // نجبر الـ AI على الشرح من معرفته
             locationContext = `
             📍 **CURRENT LOCATION:** 
             - User is currently opening the lesson: "${lessonData.title}"
-            - Subject: "${lessonData.subjects?.title}"
+            - Subject: "${lessonData.subjects?.title || 'Unknown Subject'}"
             
             ⚠️ **NOTE:** Database content is missing for this lesson.
             👉 **INSTRUCTION:** You MUST explain "${lessonData.title}" using your own internal knowledge. Do NOT ask "what lesson?". Assume the user is looking at it.
