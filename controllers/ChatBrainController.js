@@ -69,24 +69,46 @@ async function processChat(req, res) {
     }
 
     // ---------------------------------------------------------
-    // 📍 2. الوعي المكاني (Context Awareness)
+    // 📍 2. الوعي المكاني (Context Awareness) - مع ميزة الاسترداد الذكي 🔥
     // ---------------------------------------------------------
     let locationContext = "";
     let lessonData = null;
     let atomicContext = "";
     let atomicData = null;
 
-    if (currentContext.lessonId) {
-        const { data: lData, error: lError } = await supabase
-            .from('lessons')
-            .select('*, subjects(title)')
-            .eq('id', currentContext.lessonId)
-            .single();
+    if (currentContext.lessonId || currentContext.lessonTitle) {
         
-        if (lError) {
-            console.warn(`⚠️ ChatBrain: Lesson ID ${currentContext.lessonId} not found in DB.`);
+        // أ. المحاولة الأولى: البحث بالمعرف (ID) الدقيق
+        let query = supabase
+            .from('lessons')
+            .select('*, subjects(title)');
+            
+        if (currentContext.lessonId) {
+            query = query.eq('id', currentContext.lessonId);
+        } else {
+            // حالة نادرة: لا يوجد ID ولكن يوجد عنوان
+            query = query.ilike('title', `%${currentContext.lessonTitle}%`);
         }
 
+        let { data: lData } = await query.maybeSingle();
+
+        // ب. المحاولة الثانية (الإنقاذ): إذا فشل الـ ID، نبحث بالعنوان
+        if (!lData && currentContext.lessonTitle && currentContext.lessonId) {
+            logger.warn(`⚠️ Lesson ID "${currentContext.lessonId}" not found. Trying Fuzzy Search for: "${currentContext.lessonTitle}"...`);
+            
+            const { data: fuzzyData } = await supabase
+                .from('lessons')
+                .select('*, subjects(title)')
+                .ilike('title', `%${currentContext.lessonTitle}%`) // بحث مرن
+                .limit(1)
+                .maybeSingle();
+            
+            if (fuzzyData) {
+                lData = fuzzyData;
+                logger.success(`✅ Smart Recover: Found lesson "${lData.title}" (ID: ${lData.id}) instead of missing ID.`);
+            }
+        }
+        
         lessonData = lData;
 
         if (lessonData) {
@@ -94,8 +116,8 @@ async function processChat(req, res) {
             const { data: contentData } = await supabase
                 .from('lessons_content')
                 .select('content')
-                .eq('lesson_id', lessonData.id) // أو .eq('id', lessonData.id) حسب الهيكلة
-                .maybeSingle(); // استخدام maybeSingle لتجنب الخطأ إذا لم يوجد محتوى
+                .eq('id', lessonData.id) // أو lesson_id حسب الجدول
+                .maybeSingle();
 
             const snippet = safeSnippet(contentData?.content || "No content available yet.", 2000);
             
@@ -104,6 +126,7 @@ async function processChat(req, res) {
             - User is studying Lesson: "${lessonData.title}"
             - Subject: "${lessonData.subjects?.title || 'Unknown Subject'}"
             - Context Source: "Official Curriculum"
+            - Lesson ID: "${lessonData.id}"
             
             📖 **LESSON CONTENT (Reference):**
             """
@@ -112,19 +135,19 @@ async function processChat(req, res) {
             👉 INSTRUCTION: The user is looking at this content RIGHT NOW. Answer questions based on it.
             `;
 
-            const atomicResult = await getAtomicContext(userId, currentContext.lessonId);
+            // جلب السياق الذري باستخدام الـ ID الصحيح الذي وجدناه
+            const atomicResult = await getAtomicContext(userId, lessonData.id);
             if (atomicResult) {
                 atomicContext = atomicResult.prompt;
                 atomicData = atomicResult.rawData;
             }
         } else {
-            // Fallback: إذا لم نجد الدرس في القاعدة، نستخدم العنوان المرسل من الفرونت
-            locationContext = `📍 **CURRENT LOCATION:** User is studying Lesson: "${currentContext.lessonTitle || 'Unknown'}". (Metadata missing in DB).`;
+            // Fallback النهائي: إذا لم نجد الدرس لا بالاسم ولا بالمعرف
+            locationContext = `📍 **CURRENT LOCATION:** User says they are studying: "${currentContext.lessonTitle || 'Unknown'}". (Warning: Lesson not found in Database).`;
         }
     } else if (currentContext.pageTitle) {
         locationContext = `📍 **CURRENT LOCATION:** User is browsing page: "${currentContext.pageTitle}".`;
     }
-
     // ---------------------------------------------------------
     // 👤 3. بناء الملف الشخصي والسياق
     // ---------------------------------------------------------
