@@ -19,6 +19,7 @@ const { initChatController, handleGeneralQuestion } = require('./controllers/cha
 const { initAdminController } = require('./controllers/adminController');
 const { initExamWorker } = require('./services/jobs/examWorker');
 const { recoverStuckJobs } = require('./services/jobs/recoveryWorker');
+const { initChatBrainController } = require('./controllers/ChatBrainController'); // 👈🔥 إضافة المتحكم الجديد
 
 // Managers
 const { initConversationManager } = require('./services/ai/managers/conversationManager');
@@ -70,7 +71,9 @@ async function boot() {
       saveMemoryChunk: memoryManager.saveMemoryChunk 
     });
     initAdminController({ generateWithFailover });
-
+   initChatBrainController({
+      generateWithFailover
+    });
     initJobWorker({ handleGeneralQuestion });
 
     setTimeout(jobWorkerLoop, 1000);
