@@ -248,51 +248,65 @@ if (attachments.length > 0) {
       }
     }
 // ---------------------------------------------------------
-    // 5. Context Injection & Ghost Teacher Logic (UPDATED)
+    // 5. Context Injection & Ghost Teacher Logic (FIXED & SEPARATED)
     // ---------------------------------------------------------
    
     let activeLessonContext = "";
-    let lessonData = null; 
+    let lessonData = null; // نُعرفه هنا ليتم استخدامه لاحقاً في الـ Reward Logic
 
-    // ✅ التحقق من وجود ID الدرس القادم من الفرونت إند
     if (currentContext && currentContext.lessonId) {
-        
-        // 1. جلب بيانات الدرس الأساسية (بدون علاقات معقدة)
-        const { data: lData } = await supabase
+        console.log(`🔍 Context: Fetching Lesson Data for ID: ${currentContext.lessonId}`);
+
+        // 1. جلب بيانات الدرس الأساسية (بدون Join للعلاقات لتفادي المشاكل)
+        const { data: lData, error: lErr } = await supabase
             .from('lessons')
             .select('id, title, subject_id') 
             .eq('id', currentContext.lessonId)
             .single();
-      
-        if (lData) {
-            lessonData = lData;
 
-            // 2. جلب (اسم المادة) و (محتوى الدرس) بشكل منفصل ومتوازي
-            const [subjectRes, contentRes] = await Promise.all([
-                // جلب اسم المادة إذا وجد subject_id
+        if (lErr) {
+            console.error("❌ Error fetching lesson meta:", lErr.message);
+        }
+
+        if (lData) {
+            lessonData = lData; // حفظ البيانات لاستخدامها في الأسفل
+
+            // 2. جلب المحتوى + اسم المادة في عمليات منفصلة متوازية (أسرع وأضمن)
+            const [contentRes, subjectRes] = await Promise.all([
+                // جلب المحتوى النصي
+                supabase.from('lessons_content').select('content').eq('lesson_id', lData.id).single(),
+                // جلب اسم المادة (فقط إذا كان subject_id موجود)
                 lData.subject_id 
                     ? supabase.from('subjects').select('title').eq('id', lData.subject_id).single()
-                    : Promise.resolve({ data: null }),
-                
-                // جلب محتوى الدرس النصي
-                supabase.from('lessons_content').select('content').eq('lesson_id', lData.id).single()
+                    : Promise.resolve({ data: null })
             ]);
 
-            const subjectTitle = subjectRes.data?.title || "General";
-            const fullContent = contentRes.data?.content || "";
-            const snippet = safeSnippet(fullContent, 2000); // نأخذ 2000 حرف من المحتوى
+            const rawContent = contentRes.data?.content || "";
+            const subjectTitle = subjectRes.data?.title || "General Subject";
             
-            // 3. تجهيز السياق للـ AI
+            // تنظيف النص وأخذ جزء كافٍ للسياق
+            const snippet = safeSnippet(rawContent, 3500); // زيادة الحد لضمان وصول الشرح
+
+            console.log(`✅ Lesson Loaded: "${lData.title}" | Content Length: ${snippet.length}`);
+
+            // 3. صياغة السياق بلهجة "آمرة" للـ AI ليتجاهل عدم وجود Group
             activeLessonContext = `
-            📚 **ACTIVE LESSON CONTEXT (User is looking at this NOW):**
-            - Lesson Title: "${lessonData.title}"
-            - Subject: "${subjectTitle}"
-            - Lesson Content Snippet:
+            🛑 **PRIORITY OVERRIDE: ACTIVE LESSON MODE**
+            The user is currently INSIDE a lesson. Ignore any "missing group" or "select path" logic.
+            Your ONLY task is to act as a teacher for THIS specific lesson.
+
+            📘 **CURRENT LESSON DATA:**
+            - **Title:** "${lData.title}"
+            - **Subject:** "${subjectTitle}"
+            - **Content Context:**
             """
-            ${snippet}
+            ${snippet || "(No text content found in DB, ask user to check connection)"}
             """
-            👉 INSTRUCTION: The user is currently reading this lesson. Use the title and content above to answer their questions accurately.
+            
+            👉 **INSTRUCTION:** Explain or answer based ONLY on the content above. Do not suggest other paths.
             `;
+        } else {
+            console.warn(`⚠️ Lesson ID ${currentContext.lessonId} not found in DB.`);
         }
     }
     // =========================================================
