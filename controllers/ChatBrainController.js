@@ -61,32 +61,31 @@ async function processChat(req, res) {
         let contentData = null;
 
         // A. المحاولة الأولى: البحث بالمعرف (ID) إذا وجد
-        // جدول الدروس يعتمد على المفتاح النصي (مثل: adm_1)
         if (targetId) {
+            // التصحيح هنا: استخدام !subject_id لتحديد العلاقة صراحة
             const { data } = await supabase
                 .from('lessons')
-                .select('*, subjects(title)') // يفترض وجود علاقة Foreign Key باسم subjects
+                .select('*, subjects!subject_id(title)') 
                 .eq('id', targetId)
                 .maybeSingle();
             metaData = data;
         }
 
         // B. المحاولة الثانية: إذا فشل المعرف، نبحث بالعنوان (Fuzzy Search)
-        // التأكد من أن البحث يتم في عمود 'title' الموجود في الصورة الثانية
         if (!metaData && targetTitle) {
             console.log(`⚠️ ID search failed for ${targetId}. Trying title: "${targetTitle}"`);
             
-            // نستخدم ilike للبحث المرن (Case Insensitive)
+            // التصحيح هنا أيضاً: استخدام !subject_id
             const { data, error } = await supabase
                 .from('lessons')
-                .select('*, subjects(title)')
+                .select('*, subjects!subject_id(title)')
                 .ilike('title', `%${targetTitle.trim()}%`) 
                 .limit(1)
                 .maybeSingle();
             
             if (error) {
-                // في حال فشل الربط مع subjects، نحاول جلب الدرس فقط
                 console.warn("⚠️ Error fetching with relation, retrying raw:", error.message);
+                // محاولة أخيرة بدون الربط مع subjects لتجنب توقف الكود
                 const { data: rawData } = await supabase
                     .from('lessons')
                     .select('*')
@@ -103,18 +102,17 @@ async function processChat(req, res) {
         const effectiveId = metaData?.id || targetId;
         
         if (effectiveId) {
-            // حسب الصورة الأولى، الجدول يحتوي على id يطابق جدول الدروس (adm_1) وعمود content
-            // نحاول الربط المباشر بـ id أولاً (الأكثر دقة حسب الصور)
+            // محاولة جلب المحتوى بناءً على id
             const { data, error } = await supabase
                 .from('lessons_content')
                 .select('content')
-                .eq('id', effectiveId) // الافتراض: id المحتوى = id الدرس (1:1)
+                .eq('id', effectiveId)
                 .maybeSingle();
 
             if (data) {
                 contentData = data;
             } else {
-                // محاولة احتياطية: ربما يكون الربط عبر lesson_id
+                // محاولة احتياطية للبحث عبر lesson_id إذا كان الجدول يستخدمه كـ FK
                 const { data: fkData } = await supabase
                     .from('lessons_content')
                     .select('content')
@@ -125,10 +123,13 @@ async function processChat(req, res) {
         }
 
         // D. تجهيز البيانات النهائية
+        // معالجة حالة إذا لم تنجح العلاقة وجاءت subjects فارغة
+        const subjectTitle = metaData?.subjects?.title || 'General';
+
         lessonData = metaData || { 
             id: targetId || 'manual_override', 
             title: targetTitle, 
-            subjects: { title: 'General' } 
+            subjects: { title: subjectTitle } 
         };
 
         const rawContent = contentData?.content || "";
@@ -136,11 +137,10 @@ async function processChat(req, res) {
 
         // E. بناء سياق الموقع (الحاسم)
         if (contentSnippet) {
-            // حالة 1: وجدنا محتوى في قاعدة البيانات
             locationContext = `
             📍 **CURRENT LOCATION:** 
             - User is studying: "${lessonData.title}"
-            - Subject: "${lessonData.subjects?.title || 'Unknown Subject'}"
+            - Subject: "${subjectTitle}"
             
             📖 **LESSON CONTENT (FROM DB):**
             """
@@ -149,18 +149,17 @@ async function processChat(req, res) {
             👉 INSTRUCTION: Use this content to explain.
             `;
         } else {
-            // حالة 2: لم نجد محتوى، لكن لدينا عنوان الدرس (Force Mode)
             locationContext = `
             📍 **CURRENT LOCATION:** 
             - User is currently opening the lesson: "${lessonData.title}"
-            - Subject: "${lessonData.subjects?.title || 'Unknown Subject'}"
+            - Subject: "${subjectTitle}"
             
             ⚠️ **NOTE:** Database content is missing for this lesson.
             👉 **INSTRUCTION:** You MUST explain "${lessonData.title}" using your own internal knowledge. Do NOT ask "what lesson?". Assume the user is looking at it.
             `;
         }
 
-        // جلب السياق الذري (إذا وجدنا ID حقيقي)
+        // جلب السياق الذري
         if (metaData?.id) {
             const atomicRes = await getAtomicContext(userId, metaData.id);
             if (atomicRes) atomicContext = atomicRes.prompt;
