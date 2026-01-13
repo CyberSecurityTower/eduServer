@@ -130,4 +130,22 @@ async function updateAtomicProgress(userId, lessonId, updateSignal) {
   }
 }
 
-module.exports = { getAtomicContext, updateAtomicProgress };
+/**
+ * 3. ✅ الدالة المفقودة التي سببت الخطأ
+ * تقوم بجلب كل تقدم المستخدم الذري (ليستخدمها helpers.js)
+ */
+async function getAtomicProgress(userId) {
+    try {
+        const { data, error } = await supabase
+            .from('atomic_user_mastery')
+            .select('*')
+            .eq('user_id', userId);
+            
+        if (error) throw error;
+        return data || [];
+    } catch (err) {
+        console.error("❌ Error getting atomic progress:", err);
+        return [];
+    }
+}
+module.exports = { getAtomicContext, updateAtomicProgress, getAtomicProgress  };
