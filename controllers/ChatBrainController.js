@@ -25,7 +25,7 @@ let generateWithFailoverRef;
 
 function initChatBrainController(dependencies) {
   generateWithFailoverRef = dependencies.generateWithFailover;
-  logger.info('🧠 ChatBrain Controller Initialized (Aggressive Mode).');
+  logger.info('🧠 ChatBrain Controller Initialized (Force-Context Mode).');
 }
 
 async function processChat(req, res) {
@@ -45,84 +45,95 @@ async function processChat(req, res) {
     }
 
     // ---------------------------------------------------------
-    // 📍 2. الوعي المكاني (Aggressive Context Retrieval) 🔥
+    // 📍 2. الوعي المكاني (Force Retrieval) 🔥
     // ---------------------------------------------------------
     let locationContext = "";
-    let lessonData = null; // سيحمل { id, title, subject }
+    let lessonData = null;
     let atomicContext = "";
-    let atomicData = null;
-
-    // سنبحث عن الدرس إذا توفر ID أو Title
+    
+    // استخراج البيانات من الطلب
     const targetId = currentContext.lessonId;
-    const targetTitle = currentContext.lessonTitle;
+    const targetTitle = currentContext.lessonTitle || "Unknown Lesson";
 
-    if (targetId || targetTitle) {
+    if (targetId || targetTitle !== "Unknown Lesson") {
         
-        // أ. تشغيل 3 استعلامات في وقت واحد لضمان العثور على البيانات
-        // 1. البحث عن تعريف الدرس
-        const metaPromise = targetId 
-            ? supabase.from('lessons').select('*, subjects(title)').eq('id', targetId).maybeSingle()
-            : supabase.from('lessons').select('*, subjects(title)').ilike('title', `%${targetTitle}%`).limit(1).maybeSingle();
+        let metaData = null;
+        let contentData = null;
 
-        // 2. البحث عن المحتوى (نبحث في العمودين id و lesson_id لضمان النتيجة)
-        const contentPromise = targetId 
-            ? supabase.from('lessons_content').select('content').or(`id.eq.${targetId},lesson_id.eq.${targetId}`).maybeSingle()
-            : Promise.resolve({ data: null }); // لا يمكن البحث عن المحتوى بالعنوان مباشرة بسهولة
+        // A. المحاولة الأولى: البحث بالمعرف (ID) إذا وجد
+        if (targetId) {
+            const { data } = await supabase.from('lessons').select('*, subjects(title)').eq('id', targetId).maybeSingle();
+            metaData = data;
+        }
 
-        // 3. البحث عن الهيكل الذري
-        const atomicPromise = targetId 
-            ? getAtomicContext(userId, targetId)
-            : Promise.resolve(null);
+        // B. المحاولة الثانية: إذا فشل المعرف، نبحث بالعنوان (Fuzzy Search)
+        if (!metaData && targetTitle) {
+            console.log(`⚠️ ID search failed for ${targetId}. Trying title: "${targetTitle}"`);
+            const { data } = await supabase.from('lessons').select('*, subjects(title)').ilike('title', `%${targetTitle}%`).limit(1).maybeSingle();
+            metaData = data;
+        }
 
-        // انتظار النتائج
-        const [metaRes, contentRes, atomicRes] = await Promise.all([metaPromise, contentPromise, atomicPromise]);
+        // C. جلب المحتوى (بناءً على ما وجدناه أو المعرف الأصلي)
+        const effectiveId = metaData?.id || targetId;
+        if (effectiveId) {
+            const { data } = await supabase.from('lessons_content')
+                .select('content')
+                .or(`id.eq.${effectiveId},lesson_id.eq.${effectiveId}`)
+                .maybeSingle();
+            contentData = data;
+        }
 
-        // ب. تجميع البيانات المتاحة
-        lessonData = metaRes.data || { 
-            id: targetId || 'unknown_id', 
-            title: targetTitle || 'Unknown Lesson', 
+        // D. تجهيز البيانات النهائية
+        lessonData = metaData || { 
+            id: targetId || 'manual_override', 
+            title: targetTitle, 
             subjects: { title: 'General' } 
         };
 
-        const rawContent = contentRes.data?.content || "";
-        
-        // ج. بناء السياق (إذا وجدنا محتوى OR وجدنا تعريف الدرس)
-        if (rawContent || metaRes.data) {
-            
-            // إذا لم يكن هناك محتوى في DB، نضع ملاحظة للـ AI
-            const contentSnippet = rawContent 
-                ? safeSnippet(rawContent, 2500) 
-                : "No text content found in database for this lesson.";
+        const rawContent = contentData?.content || "";
+        const contentSnippet = rawContent ? safeSnippet(rawContent, 2500) : null;
 
+        // E. بناء سياق الموقع (الحاسم)
+        if (contentSnippet) {
+            // حالة 1: وجدنا محتوى في قاعدة البيانات
             locationContext = `
             📍 **CURRENT LOCATION:** 
-            - Studying: "${lessonData.title}"
+            - User is studying: "${lessonData.title}"
             - Subject: "${lessonData.subjects?.title}"
-            - ID: "${lessonData.id}"
             
-            📖 **LESSON SOURCE:**
+            📖 **LESSON CONTENT (FROM DB):**
             """
             ${contentSnippet}
             """
-            👉 INSTRUCTION: User is on this lesson. Use the text above to explain.
+            👉 INSTRUCTION: Use this content to explain.
             `;
-
-            if (atomicRes) {
-                atomicContext = atomicRes.prompt;
-                atomicData = atomicRes.rawData;
-            }
+        } else {
+            // حالة 2: لم نجد محتوى، لكن لدينا عنوان الدرس (Force Mode)
+            // نجبر الـ AI على الشرح من معرفته
+            locationContext = `
+            📍 **CURRENT LOCATION:** 
+            - User is currently opening the lesson: "${lessonData.title}"
+            - Subject: "${lessonData.subjects?.title}"
             
-            // Debug Log
-            console.log(`✅ Context Loaded: ${rawContent.length > 0 ? 'Content Found (' + rawContent.length + ' chars)' : 'Meta Only'}`);
+            ⚠️ **NOTE:** Database content is missing for this lesson.
+            👉 **INSTRUCTION:** You MUST explain "${lessonData.title}" using your own internal knowledge. Do NOT ask "what lesson?". Assume the user is looking at it.
+            `;
+        }
+
+        // جلب السياق الذري (إذا وجدنا ID حقيقي)
+        if (metaData?.id) {
+            const atomicRes = await getAtomicContext(userId, metaData.id);
+            if (atomicRes) atomicContext = atomicRes.prompt;
         }
     } 
     
+    // Fallback للصفحات العامة
     if (!locationContext && currentContext.pageTitle) {
         locationContext = `📍 **CURRENT LOCATION:** User is browsing page: "${currentContext.pageTitle}".`;
     }
 
     // ---------------------------------------------------------
-    // 👤 3. البروفايل والبيانات المساعدة
+    // 👤 3. البيانات المساعدة
     // ---------------------------------------------------------
     const userProfile = await getProfile(userId);
 
@@ -146,7 +157,7 @@ async function processChat(req, res) {
     const timeContext = getAlgiersTimeContext().contextSummary;
 
     // ---------------------------------------------------------
-    // 🧠 4. البرومبت والإرسال
+    // 🧠 4. البرومبت
     // ---------------------------------------------------------
     const systemPrompt = PROMPTS.chat.interactiveChat(
         finalMessage,
@@ -171,7 +182,7 @@ async function processChat(req, res) {
 
     try {
         const result = await generateWithFailoverRef('chat', systemPrompt, {
-            label: 'ChatBrain_v2',
+            label: 'ChatBrain_v3',
             timeoutMs: webSearch ? 60000 : 45000,
             attachments: attachments,
             enableSearch: !!webSearch,
@@ -191,7 +202,7 @@ async function processChat(req, res) {
     }
 
     // ---------------------------------------------------------
-    // 🧹 5. المعالجة والرد
+    // 🧹 5. المعالجة
     // ---------------------------------------------------------
     const rawText = await extractTextFromResult(modelResponse);
     let parsedResponse = await ensureJsonOrRepair(rawText, 'analysis');
@@ -200,25 +211,25 @@ async function processChat(req, res) {
         parsedResponse = { reply: rawText || "Error.", widgets: [] };
     }
 
-    // Atomic Updates Logic
+    // Atomic & Rewards
     let updateSignal = parsedResponse.atomic_update || null;
     let lessonSignal = parsedResponse.lesson_signal || null;
 
     const scoreMatch = finalMessage.match(/(\d+)\s*[\/|من]\s*(\d+)/);
-    if (scoreMatch) {
+    if (scoreMatch && lessonData?.id && lessonData.id !== 'manual_override') {
         const score = parseInt(scoreMatch[1]);
         const total = parseInt(scoreMatch[2]);
-        if (total > 0 && (score / total) >= 0.7 && lessonData) {
+        if (total > 0 && (score / total) >= 0.7) {
             updateSignal = { element_id: 'ALL', new_score: 100, reason: 'quiz_passed' };
             lessonSignal = { type: 'complete', id: lessonData.id, score: (score/total)*100 };
         }
     }
 
-    if (updateSignal && lessonData) {
+    if (updateSignal && lessonData?.id && lessonData.id !== 'manual_override') {
         await updateAtomicProgress(userId, lessonData.id, updateSignal);
     }
 
-    if (lessonSignal && lessonSignal.type === 'complete' && lessonData) {
+    if (lessonSignal && lessonSignal.type === 'complete' && lessonData?.id) {
         const gateResult = await markLessonComplete(userId, lessonData.id, lessonSignal.score || 100);
         if (gateResult.reward?.coins_added > 0) {
             parsedResponse.widgets = parsedResponse.widgets || [];
