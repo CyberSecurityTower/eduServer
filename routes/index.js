@@ -17,6 +17,7 @@ const searchController = require('../controllers/searchController');
 const sourceController = require('../controllers/sourceController');
 const uploadMiddleware = require('../middleware/upload');
 const smartQueueMiddleware = require('../middleware/smartQueue'); // استيراد الجديد
+const chatBrainController = require('../controllers/ChatBrainController'); 
 
 /*
 // ⏰ تشغيل منقذ الستريك كل ساعة (60 دقيقة)
@@ -192,4 +193,7 @@ router.get('/sources/:sourceId/status', requireAuth, sourceController.checkSourc
 //  إعادة المحاولة في حال الفشل
 router.post('/sources/:sourceId/retry', requireAuth, sourceController.retryProcessing);
 
+// ✅ المسار الجديد (الأقوى والأشمل)
+// يدعم: Web Search, Files, Context Awareness
+router.post('/chat', chatBrainController.processChat);
 module.exports = router;
