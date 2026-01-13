@@ -25,7 +25,7 @@ let generateWithFailoverRef;
 
 function initChatBrainController(dependencies) {
   generateWithFailoverRef = dependencies.generateWithFailover;
-  logger.info('🧠 ChatBrain Controller Initialized (Force-Context Mode).');
+  logger.info('🧠 ChatBrain Controller Initialized (No-Relations Mode).');
 }
 
 async function processChat(req, res) {
@@ -45,13 +45,12 @@ async function processChat(req, res) {
     }
 
     // ---------------------------------------------------------
-    // 📍 2. الوعي المكاني (Force Retrieval) 🔥
+    // 📍 2. الوعي المكاني (Manual Lookup Mode) 🔥
     // ---------------------------------------------------------
     let locationContext = "";
     let lessonData = null;
     let atomicContext = "";
     
-    // استخراج البيانات من الطلب
     const targetId = currentContext.lessonId;
     const targetTitle = currentContext.lessonTitle || "Unknown Lesson";
 
@@ -59,83 +58,80 @@ async function processChat(req, res) {
         
         let metaData = null;
         let contentData = null;
+        let subjectTitle = 'General';
 
-        // A. المحاولة الأولى: البحث بالمعرف (ID) إذا وجد
+        // A. البحث عن الدرس (Lesson) بدون علاقات
         if (targetId) {
-            // التصحيح هنا: استخدام !subject_id لتحديد العلاقة صراحة
+            // بحث مباشر بـ ID فقط
             const { data } = await supabase
                 .from('lessons')
-                .select('*, subjects!subject_id(title)') 
+                .select('*') // لا نطلب subjects هنا
                 .eq('id', targetId)
                 .maybeSingle();
             metaData = data;
         }
 
-        // B. المحاولة الثانية: إذا فشل المعرف، نبحث بالعنوان (Fuzzy Search)
+        // B. البحث بالعنوان (إذا لم نجد بالـ ID)
         if (!metaData && targetTitle) {
-            console.log(`⚠️ ID search failed for ${targetId}. Trying title: "${targetTitle}"`);
-            
-            // التصحيح هنا أيضاً: استخدام !subject_id
-            const { data, error } = await supabase
+            console.log(`⚠️ Lookup by ID failed/missing. Trying title: "${targetTitle}"`);
+            const { data } = await supabase
                 .from('lessons')
-                .select('*, subjects!subject_id(title)')
+                .select('*')
                 .ilike('title', `%${targetTitle.trim()}%`) 
                 .limit(1)
                 .maybeSingle();
+            metaData = data;
+        }
+
+        // C. جلب اسم المادة (Subject) يدوياً إذا وجدنا الدرس
+        if (metaData && metaData.subject_id) {
+            const { data: subjectData } = await supabase
+                .from('subjects')
+                .select('title')
+                .eq('id', metaData.subject_id)
+                .maybeSingle();
             
-            if (error) {
-                console.warn("⚠️ Error fetching with relation, retrying raw:", error.message);
-                // محاولة أخيرة بدون الربط مع subjects لتجنب توقف الكود
-                const { data: rawData } = await supabase
-                    .from('lessons')
-                    .select('*')
-                    .ilike('title', `%${targetTitle.trim()}%`)
-                    .limit(1)
-                    .maybeSingle();
-                metaData = rawData;
-            } else {
-                metaData = data;
+            if (subjectData) {
+                subjectTitle = subjectData.title;
             }
         }
 
-        // C. جلب المحتوى (بناءً على ما وجدناه أو المعرف الأصلي)
+        // D. جلب المحتوى (Content) بشكل منفصل
         const effectiveId = metaData?.id || targetId;
-        
         if (effectiveId) {
-            // محاولة جلب المحتوى بناءً على id
-            const { data, error } = await supabase
+            // محاولة 1: الربط المباشر (id = id)
+            const { data: c1 } = await supabase
                 .from('lessons_content')
                 .select('content')
                 .eq('id', effectiveId)
                 .maybeSingle();
-
-            if (data) {
-                contentData = data;
+            
+            if (c1) {
+                contentData = c1;
             } else {
-                // محاولة احتياطية للبحث عبر lesson_id إذا كان الجدول يستخدمه كـ FK
-                const { data: fkData } = await supabase
+                // محاولة 2: الربط عبر lesson_id
+                const { data: c2 } = await supabase
                     .from('lessons_content')
                     .select('content')
                     .eq('lesson_id', effectiveId)
                     .maybeSingle();
-                contentData = fkData;
+                contentData = c2;
             }
         }
 
-        // D. تجهيز البيانات النهائية
-        // معالجة حالة إذا لم تنجح العلاقة وجاءت subjects فارغة
-        const subjectTitle = metaData?.subjects?.title || 'General';
-
+        // E. تجميع البيانات
         lessonData = metaData || { 
             id: targetId || 'manual_override', 
             title: targetTitle, 
-            subjects: { title: subjectTitle } 
+            subject_id: null 
         };
+        // إضافة هيكل المادة يدوياً ليتوافق مع البرومبت
+        lessonData.subjects = { title: subjectTitle };
 
         const rawContent = contentData?.content || "";
         const contentSnippet = rawContent ? safeSnippet(rawContent, 2500) : null;
 
-        // E. بناء سياق الموقع (الحاسم)
+        // F. بناء سياق الموقع
         if (contentSnippet) {
             locationContext = `
             📍 **CURRENT LOCATION:** 
@@ -166,7 +162,6 @@ async function processChat(req, res) {
         }
     } 
     
-    // Fallback للصفحات العامة
     if (!locationContext && currentContext.pageTitle) {
         locationContext = `📍 **CURRENT LOCATION:** User is browsing page: "${currentContext.pageTitle}".`;
     }
@@ -292,7 +287,6 @@ async function processChat(req, res) {
         ...(res.locals?.rewardData || {})
     });
 
-    // Background Save
     setImmediate(async () => {
         try {
             const updatedHistory = [
