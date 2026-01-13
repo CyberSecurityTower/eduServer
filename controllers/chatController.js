@@ -252,43 +252,46 @@ if (attachments.length > 0) {
     // 5. Context Injection & Ghost Teacher Logic
     // ---------------------------------------------------------
    
-let activeLessonContext = "";
-let lessonData = null; // 👈 عرفناه هنا لكي يراه الكود في الأسفل
+    let activeLessonContext = "";
+    let lessonData = null;
 
-// 2. إذا أرسل الفرونت إند ID الدرس
-if (currentContext && currentContext.lessonId) {
-  // نستخدم المتغير المعرف مسبقاً (بدون const)
-  const { data: lData } = await supabase
-      .from('lessons')
-      .select('*, subjects(title)')
-      .eq('id', currentContext.lessonId)
-      .single();
-  
-  lessonData = lData;
-
-  if (lessonData) {
-      // جلب المحتوى النصي (RAG Memory)
-      const { data: contentData } = await supabase
-          .from('lessons_content')
-          .select('content')
-          .eq('lesson_id', lessonData.id)
+    // 2. إذا أرسل الفرونت إند ID الدرس
+    if (currentContext && currentContext.lessonId) {
+      const { data: lData } = await supabase
+          .from('lessons')
+          .select('*, subjects(title)')
+          .eq('id', currentContext.lessonId)
           .single();
       
-      const snippet = safeSnippet(contentData?.content || "", 1500); // نأخذ جزء كبير من الدرس
-      
-      // 3. تجهيز السياق للـ AI
-      activeLessonContext = `
-      📚 **ACTIVE LESSON CONTEXT (User is looking at this NOW):**
-      Title: "${lessonData.title}"
-      Subject: "${lessonData.subjects?.title}"
-      Content Snippet:
-      """
-      ${snippet}
-      """
-      👉 INSTRUCTION: The user is asking about THIS lesson. Use the content above to answer accurately.
-      `;
-  }
-}
+      lessonData = lData;
+
+      if (lessonData) {
+          // جلب المحتوى النصي
+          const { data: contentData } = await supabase
+              .from('lessons_content')
+              .select('content')
+              .eq('lesson_id', lessonData.id)
+              .single();
+          
+          const snippet = safeSnippet(contentData?.content || "", 1500);
+          
+          // 🔥 التعديل هنا: صياغة قوية جداً تجبر الـ AI على الالتزام بالسياق
+          activeLessonContext = `
+          🔴 **CRITICAL CONTEXT: USER IS HERE NOW**
+          You are currently inside the lesson: "${lessonData.title}" (Subject: ${lessonData.subjects?.title}).
+          
+          **LESSON CONTENT SUMMARY:**
+          """
+          ${snippet}
+          """
+          
+          👉 **MANDATORY INSTRUCTION:** 
+          - The user is standing inside this lesson. 
+          - All their questions (like "Explain this", "Give me a quiz") refer to "${lessonData.title}" unless stated otherwise.
+          - Do NOT ask "What lesson do you mean?". You already know it.
+          `;
+      }
+    }
   
 
     // =========================================================
