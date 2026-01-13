@@ -270,7 +270,7 @@ if (attachments.length > 0) {
           const { data: contentData } = await supabase
               .from('lessons_content')
               .select('content')
-              .eq('lesson_id', lessonData.id)
+              .eq('id', lessonData.id)
               .single();
           
           const snippet = safeSnippet(contentData?.content || "", 1500);
