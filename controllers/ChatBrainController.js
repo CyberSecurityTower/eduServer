@@ -79,18 +79,26 @@ async function getChatHistory(req, res) {
 }
 
 // ============================================================
-// 🧠 Main Process Chat (محدث بالبرومبتات الجديدة)
+// 🧠 Main Process Chat (Final Version)
 // ============================================================
 async function processChat(req, res) {
+  // 1. استخراج البيانات (ندعم currentContext أو القيم المباشرة)
   let { 
-    userId, message, files = [], 
-    lessonId, lessonTitle, webSearch 
+    userId, message, files = [], webSearch, 
+    currentContext 
   } = req.body;
 
-  const currentContextId = lessonId || 'general';
+  // استخراج معرف وعنوان الدرس بدقة
+  const lessonId = currentContext?.lessonId || req.body.lessonId;
+  const lessonTitle = currentContext?.lessonTitle || req.body.lessonTitle;
+
+  // تحديد سياق الجلسة (إذا لم يوجد درس، نعتبره general)
+  const currentContextId = (lessonId && lessonId !== 'undefined') ? lessonId : 'general';
 
   try {
-    // 1. إدارة الجلسة
+    // ---------------------------------------------------------
+    // 2. إدارة الجلسة (Session Management)
+    // ---------------------------------------------------------
     let sessionId;
     const { data: existingSession } = await supabase
         .from('chat_sessions')
@@ -101,12 +109,13 @@ async function processChat(req, res) {
 
     if (existingSession) {
         sessionId = existingSession.id;
+        // تحديث "آخر ظهور" للجلسة
         supabase.from('chat_sessions').update({ updated_at: new Date() }).eq('id', sessionId).then();
     } else {
         const { data: newSession, error: createError } = await supabase.from('chat_sessions').insert({
             user_id: userId,
             context_id: currentContextId,
-            context_type: lessonId ? 'lesson' : 'general',
+            context_type: (lessonId && lessonId !== 'general') ? 'lesson' : 'general',
             summary: lessonTitle || 'General Chat'
         }).select().single();
 
@@ -117,7 +126,9 @@ async function processChat(req, res) {
         sessionId = newSession.id;
     }
 
-    // 2. معالجة الملفات
+    // ---------------------------------------------------------
+    // 3. معالجة الملفات (Cloudinary)
+    // ---------------------------------------------------------
     const uploadedAttachments = [];
     const geminiInlineParts = [];
 
@@ -144,33 +155,38 @@ async function processChat(req, res) {
         }
     }
 
-    // 3. تحضير البيانات للبرومبت (Profile & Context)
-    // أ) جلب اسم الطالب لإعطاء طابع شخصي
-    // سنفترض وجود جدول profiles أو auth.users، سنحاول جلبه بسرعة
-    // إذا لم نجد، نستخدم "Student"
+    // ---------------------------------------------------------
+    // 4. جلب محتوى الدرس (Context Fetching)
+    // ---------------------------------------------------------
+    let contentSnippet = "";
+    let locationContext = `Currently in: ${lessonTitle || 'General Chat'}`;
+    
+    // إذا كان المستخدم داخل درس فعلي
+    if (lessonId && lessonId !== 'general') {
+        // أ) جلب النص من جدول المحتوى (عملية منفصلة كما طلبت)
+        const { data: contentData } = await supabase
+            .from('lessons_content')
+            .select('content')
+            .eq('lesson_id', lessonId)
+            .maybeSingle();
+
+        if (contentData && contentData.content) {
+            // نأخذ النص كاملاً أو جزءاً كبيراً منه (Gemini Pro/Flash يقبل سياقاً كبيراً)
+            contentSnippet = contentData.content.substring(0, 25000); 
+            locationContext = `Active Lesson: "${lessonTitle}"`;
+        }
+    }
+
+    // جلب اسم الطالب (اختياري للتحسين)
     let userProfile = { firstName: 'Student' };
     try {
-        // حاول جلب الاسم من الميتاداتا الخاصة بالمستخدم أو جدول بروفايل
         const { data: profile } = await supabase.from('ai_memory_profiles').select('user_name').eq('user_id', userId).maybeSingle();
         if (profile?.user_name) userProfile.firstName = profile.user_name;
     } catch(e) {}
 
-    // ب) سياق الدرس والمحتوى
-    let locationContext = `Currently in: ${lessonTitle || 'General Chat'}`;
-    let contentSnippet = "";
-    let lessonData = null;
-
-    if (lessonId && lessonId !== 'general') {
-        const { data: lesson } = await supabase.from('lessons').select('*').eq('id', lessonId).maybeSingle();
-        if (lesson) {
-            lessonData = lesson;
-            const { data: c } = await supabase.from('lessons_content').select('content').eq('lesson_id', lessonId).maybeSingle();
-            contentSnippet = c?.content ? c.content : "";
-            locationContext = `Active Lesson: "${lesson.title}"`;
-        }
-    }
-
-    // 4. بناء الذاكرة (History)
+    // ---------------------------------------------------------
+    // 5. بناء الذاكرة (History)
+    // ---------------------------------------------------------
     const { data: historyData } = await supabase
         .from('chat_messages')
         .select('role, content, metadata')
@@ -186,7 +202,9 @@ async function processChat(req, res) {
         return { role: msg.role === 'user' ? 'user' : 'model', parts };
     });
 
-    // 5. حفظ رسالة المستخدم
+    // ---------------------------------------------------------
+    // 6. حفظ رسالة المستخدم
+    // ---------------------------------------------------------
     const { data: savedUserMsg } = await supabase.from('chat_messages').insert({
         session_id: sessionId,
         user_id: userId,
@@ -196,26 +214,26 @@ async function processChat(req, res) {
         metadata: { context: lessonId }
     }).select().single();
 
-    // 6. الاتصال بالذكاء الاصطناعي 🤖
-    // ✅ استخدام ملفات الـ Config الجديدة
+    // ---------------------------------------------------------
+    // 7. الاتصال بالذكاء الاصطناعي 🤖
+    // ---------------------------------------------------------
     
-    // أولاً: نولد برومبت الشخصية والسياق
+    // استخدام البرومبت الجديد وتمرير محتوى الدرس الذي جلبناه من DB
     const personaPrompt = PROMPTS.chat.interactiveChat(
-        message,        // الرسالة
-        userProfile,    // بروفايل المستخدم
-        locationContext,// السياق العام
-        lessonTitle,    // بديل الـ Atomic Map (خريطة الدرس)
-        contentSnippet  // محتوى الدرس
+        message,        // رسالة الطالب
+        userProfile,    // اسمه
+        locationContext,// سياق المكان (عنوان الدرس)
+        lessonTitle,    // خريطة الدرس (العنوان أيضاً)
+        contentSnippet  // ✅ محتوى الدرس الفعلي من قاعدة البيانات
     );
 
-    // ثانياً: نضيف القواعد التقنية الصارمة للباك اند (لضمان عمل الـ Signals)
     const finalSystemPrompt = `
     ${personaPrompt}
 
     🛑 **SYSTEM OVERRIDE (TECHNICAL RULES):**
     1. You MUST output strictly valid JSON.
     2. Structure: { "reply": "...", "widgets": [], "lesson_signal": { "type": "complete", "score": 100 } }
-    3. Use 'lesson_signal' ONLY if the user proves mastery/completes the lesson goal.
+    3. Use 'lesson_signal' ONLY if the user proves mastery/completes the lesson goal based on the REFERENCE CONTENT provided.
     `;
 
     const aiResult = await generateWithFailover('chat', message, {
@@ -223,7 +241,7 @@ async function processChat(req, res) {
         history: history,
         attachments: geminiInlineParts,
         enableSearch: !!webSearch,
-        label: 'ChatBrain_v5'
+        label: 'ChatBrain_v6'
     });
     
     // استخراج النص والتنظيف
@@ -236,11 +254,14 @@ async function processChat(req, res) {
         parsedResponse = { reply: rawAiText, widgets: [] };
     }
 
-    // 7. المنطق التعليمي (Gatekeeper Rewards)
+    // ---------------------------------------------------------
+    // 8. المنطق التعليمي (المكافآت)
+    // ---------------------------------------------------------
     let finalWidgets = parsedResponse.widgets || [];
     let rewardData = {};
 
-    if (parsedResponse.lesson_signal?.type === 'complete' && lessonData) {
+    // التحقق من إشارة الاكتمال
+    if (parsedResponse.lesson_signal?.type === 'complete' && lessonId && lessonId !== 'general') {
         const gateResult = await markLessonComplete(userId, lessonId, parsedResponse.lesson_signal.score || 100);
         
         if (gateResult.reward?.coins_added > 0) {
@@ -252,7 +273,9 @@ async function processChat(req, res) {
         }
     }
 
-    // 8. حفظ الرد والانتهاء
+    // ---------------------------------------------------------
+    // 9. حفظ الرد والانتهاء
+    // ---------------------------------------------------------
     await supabase.from('chat_messages').insert({
         session_id: sessionId,
         user_id: userId,
@@ -268,7 +291,9 @@ async function processChat(req, res) {
         ...rewardData
     });
 
-    // 9. الخلفية: استخراج النصوص
+    // ---------------------------------------------------------
+    // 10. الخلفية: استخراج النصوص (للملفات المرفقة)
+    // ---------------------------------------------------------
     setImmediate(async () => {
         try {
             if (uploadedAttachments.length > 0 && savedUserMsg?.id) {
@@ -300,6 +325,7 @@ async function processChat(req, res) {
     return res.status(500).json({ reply: "نواجه ضغطاً عالياً حالياً، يرجى المحاولة بعد لحظات." });
   }
 }
+
 function initChatBrainController(dependencies) {
     console.log('🧠 ChatBrainController initialized successfully.');
 }
