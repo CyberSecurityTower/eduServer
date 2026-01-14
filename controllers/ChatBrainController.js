@@ -26,12 +26,32 @@ const PROMPTS = require('../config/ai-prompts');
 // ============================================================
 async function extractTextFromCloudinaryUrl(url, mimeType) {
     try {
-        const response = await axios.get(url, { responseType: 'arraybuffer' });
+        console.log(`📥 Downloading file from: ${url}`);
+        
+        // 1. تحميل الملف كـ ArrayBuffer
+        const response = await axios.get(url, { 
+            responseType: 'arraybuffer',
+            timeout: 10000 // مهلة 10 ثواني
+        });
+
+        // 2. تحويله إلى Buffer (ضروري لـ Node.js)
         const buffer = Buffer.from(response.data);
+        console.log(`📦 File Downloaded. Buffer Size: ${buffer.length} bytes`);
 
         if (mimeType === 'application/pdf') {
-            const data = await pdf(buffer);
-            return data.text.replace(/\n\s*\n/g, '\n').trim(); 
+            // التحقق النهائي من أن المكتبة دالة
+            if (typeof pdfParse !== 'function') {
+                throw new Error(`Critical: pdf-parse library is loaded as ${typeof pdfParse}, expected function.`);
+            }
+
+            console.log("⚙️ Parsing PDF...");
+            const data = await pdfParse(buffer);
+            
+            // تنظيف النص
+            const cleanText = data.text.replace(/\n\s*\n/g, '\n').trim();
+            console.log(`✅ PDF Parsed! Text Length: ${cleanText.length} chars`);
+            
+            return cleanText;
         } 
         else if (mimeType.includes('wordprocessingml') || mimeType.includes('msword')) {
             const result = await mammoth.extractRawText({ buffer: buffer });
@@ -43,6 +63,8 @@ async function extractTextFromCloudinaryUrl(url, mimeType) {
         return null;
     } catch (error) {
         console.error(`❌ Text Extraction Failed for ${url}:`, error.message);
+        // طباعة الخطأ كاملاً لرؤية التفاصيل
+        if (error.stack) console.error(error.stack);
         return null;
     }
 }
