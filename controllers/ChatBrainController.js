@@ -4,35 +4,23 @@ const axios = require('axios');
 const crypto = require('crypto');
 const mammoth = require('mammoth');
 
-// ============================================================
-// 🛠️ PDF LIBRARY LOADING & DEBUGGING
-// ============================================================
-let pdfParseLib = require('pdf-parse');
+// 👇 التعديل الجذري: محاولة استيراد المكتبة بطرق متعددة لضمان عملها
 let pdfParse;
-
-console.log("---------------------------------------------------");
-console.log("🛠️ PDF PARSE DEBUGGER:");
-console.log("1. Original Type:", typeof pdfParseLib);
-
-if (typeof pdfParseLib === 'function') {
-    console.log("✅ Loaded as Function directly.");
-    pdfParse = pdfParseLib;
-} else if (typeof pdfParseLib === 'object') {
-    console.log("⚠️ Loaded as Object.");
-    console.log("2. Keys inside:", Object.keys(pdfParseLib)); // لنعرف ماذا بداخلها
-    
-    if (pdfParseLib.default && typeof pdfParseLib.default === 'function') {
-        console.log("✅ Found .default function. Using it.");
-        pdfParse = pdfParseLib.default;
-    } else {
-        console.error("❌ CRITICAL: No function found in pdf-parse export.");
-        // سنحاول استخدام المكتبة كما هي كحل أخير، ربما تكون هي نفسها دالة لكن typeof يخدعنا (نادر)
-        pdfParse = pdfParseLib; 
+try {
+    // المحاولة 1: الاستدعاء الصريح لملف index
+    const lib = require('pdf-parse/index'); 
+    pdfParse = lib.default || lib;
+} catch (e) {
+    try {
+        // المحاولة 2: الاستدعاء العادي
+        const lib = require('pdf-parse');
+        pdfParse = lib.default || lib;
+    } catch (e2) {
+        console.error("🔥 PDF Library missing!");
     }
 }
-console.log("---------------------------------------------------");
 
-// ... Config & Services (بقيت الاستيرادات كما هي) ...
+// ... Config & Services ...
 const cloudinary = require('../config/cloudinary');
 const supabase = require('../services/data/supabase');
 const generateWithFailover = require('../services/ai/failover');
@@ -40,39 +28,36 @@ const { markLessonComplete } = require('../services/engines/gatekeeper');
 const PROMPTS = require('../config/ai-prompts'); 
 
 // ============================================================
-// 🛠️ Helper: استخراج النصوص (النسخة المصححة)
+// 🛠️ Helper: استخراج النصوص (النسخة النهائية)
 // ============================================================
 async function extractTextFromCloudinaryUrl(url, mimeType) {
     try {
-        console.log(`📥 Downloading file from: ${url}`);
-        
+        // 1. تحميل الملف
         const response = await axios.get(url, { 
             responseType: 'arraybuffer',
-            timeout: 15000 
+            timeout: 25000 // مهلة كافية
         });
-
         const buffer = Buffer.from(response.data);
-        console.log(`📦 File Downloaded. Buffer Size: ${buffer.length} bytes`);
 
+        // 2. معالجة PDF
         if (mimeType === 'application/pdf') {
             
-            // محاولة استخدام الدالة التي جهزناها في الأعلى
-            if (typeof pdfParse === 'function') {
-                console.log("⚙️ Parsing PDF using 'pdfParse' function...");
-                const data = await pdfParse(buffer);
-                const cleanText = data.text.replace(/\n\s*\n/g, '\n').trim();
-                console.log(`✅ PDF Parsed! Text Length: ${cleanText.length}`);
-                return cleanText;
-            } 
-            
-            // محاولة يائسة: إذا فشل كل شيء، نستخدم المكتبة الأصلية مباشرة
-            else {
-                console.warn("⚠️ pdfParse variable is not a function. Trying raw library...");
-                // بعض النسخ تتصرف بغرابة، نجرب الاستدعاء المباشر
-                const data = await require('pdf-parse')(buffer);
-                return data.text.trim();
+            // فحص أخير قبل التشغيل
+            if (typeof pdfParse !== 'function') {
+                console.error("⚠️ pdf-parse is NOT a function:", typeof pdfParse);
+                // محاولة يائسة أخيرة: إذا كانت كائناً، ربما هي module export
+                if (typeof pdfParse === 'object') {
+                    console.log("⚠️ Trying to extract from Object keys:", Object.keys(pdfParse));
+                }
+                throw new Error("PDF Library is corrupted on server.");
             }
+
+            console.log("📄 Parsing PDF...");
+            const data = await pdfParse(buffer);
+            return data.text.replace(/\n\s*\n/g, '\n').trim(); 
         } 
+        
+        // 3. معالجة Word
         else if (mimeType.includes('wordprocessingml') || mimeType.includes('msword')) {
             const result = await mammoth.extractRawText({ buffer: buffer });
             return result.value.trim();
@@ -80,13 +65,10 @@ async function extractTextFromCloudinaryUrl(url, mimeType) {
         else if (mimeType.startsWith('text/')) {
             return buffer.toString('utf-8');
         }
+        
         return null;
     } catch (error) {
-        console.error(`❌ Text Extraction Failed:`, error.message);
-        // طباعة تفاصيل الكائن إذا كان الخطأ أن pdfParse ليس دالة
-        if (error.message.includes('is not a function')) {
-            console.error("DEBUG: pdfParse value is:", pdfParse);
-        }
+        console.error(`❌ Text Extraction Failed for ${url}:`, error.message);
         return null;
     }
 }
