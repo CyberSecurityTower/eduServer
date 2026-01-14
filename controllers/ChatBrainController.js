@@ -303,4 +303,4 @@ async function processChat(req, res) {
 function initChatBrainController(dependencies) {
     console.log('🧠 ChatBrainController initialized successfully.');
 }
-module.exports = { processChat, getChatHistory };
+module.exports = { processChat, getChatHistory, initChatBrainController };
