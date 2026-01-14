@@ -205,7 +205,7 @@ async function processChat(req, res) {
     // ---------------------------------------------------------
     // 6. حفظ رسالة المستخدم
     // ---------------------------------------------------------
-    const { data: savedUserMsg } = await supabase.from('chat_messages').insert({
+     const { data: savedUserMsg, error: saveUserError } = await supabase.from('chat_messages').insert({
         session_id: sessionId,
         user_id: userId,
         role: 'user',
@@ -213,6 +213,13 @@ async function processChat(req, res) {
         attachments: uploadedAttachments,
         metadata: { context: lessonId }
     }).select().single();
+
+    if (saveUserError) {
+        console.error("❌ FAILED to save User Message:", saveUserError);
+        // لا نوقف العملية، لكن نسجل الخطأ لنعرف السبب
+    } else {
+        console.log("✅ User Message Saved:", savedUserMsg.id);
+    }
 
     // ---------------------------------------------------------
     // 7. الاتصال بالذكاء الاصطناعي 🤖
@@ -276,7 +283,7 @@ async function processChat(req, res) {
     // ---------------------------------------------------------
     // 9. حفظ الرد والانتهاء
     // ---------------------------------------------------------
-    await supabase.from('chat_messages').insert({
+    const { error: saveBotError } = await supabase.from('chat_messages').insert({
         session_id: sessionId,
         user_id: userId,
         role: 'assistant',
@@ -284,12 +291,11 @@ async function processChat(req, res) {
         metadata: { widgets: finalWidgets, lesson_signal: parsedResponse.lesson_signal }
     });
 
-    res.status(200).json({
-        reply: parsedResponse.reply,
-        widgets: finalWidgets,
-        sessionId: sessionId,
-        ...rewardData
-    });
+    if (saveBotError) {
+        console.error("❌ FAILED to save Bot Message:", saveBotError);
+    } else {
+        console.log("✅ Bot Message Saved.");
+    }
 
     // ---------------------------------------------------------
     // 10. الخلفية: استخراج النصوص (للملفات المرفقة)
