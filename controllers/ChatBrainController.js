@@ -10,15 +10,15 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 // Config & Services
 const cloudinary = require('../config/cloudinary');
 const supabase = require('../services/data/supabase');
-const { updateAtomicProgress } = require('../services/atomic/atomicManager'); // منطق التقدم القديم
-const { markLessonComplete } = require('../services/engines/gatekeeper'); // منطق البوابات والمكافآت
-const logger = require('../utils/logger'); // تأكد من وجود هذا الملف أو استبدله بـ console
+const { updateAtomicProgress } = require('../services/atomic/atomicManager');
+const { markLessonComplete } = require('../services/engines/gatekeeper');
+const logger = require('../utils/logger');
 
 // تهيئة Gemini
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // ============================================================
-// 🛠️ Helper: استخراج النصوص من الروابط (Background Worker)
+// 🛠️ Helper: استخراج النصوص
 // ============================================================
 async function extractTextFromCloudinaryUrl(url, mimeType) {
     try {
@@ -27,7 +27,6 @@ async function extractTextFromCloudinaryUrl(url, mimeType) {
 
         if (mimeType === 'application/pdf') {
             const data = await pdf(buffer);
-            // تنظيف النص من الفراغات الزائدة
             return data.text.replace(/\n\s*\n/g, '\n').trim(); 
         } 
         else if (mimeType.includes('wordprocessingml') || mimeType.includes('msword')) {
@@ -45,44 +44,50 @@ async function extractTextFromCloudinaryUrl(url, mimeType) {
 }
 
 // ============================================================
-// 📜 Get Chat History (للتحميل عند فتح الشات)
+// 📜 Get Chat History
 // ============================================================
 async function getChatHistory(req, res) {
   const { userId, lessonId, cursor } = req.query;
   const limit = 20;
 
   try {
-    // 1. البحث عن الجلسة
-    const { data: session } = await supabase
+    const { data: session, error: sessionError } = await supabase
       .from('chat_sessions')
       .select('id')
       .eq('user_id', userId)
       .eq('context_id', lessonId || 'general')
       .maybeSingle();
 
+    if (sessionError) {
+        console.error("❌ Supabase Error (Get Session):", sessionError.message);
+    }
+
     if (!session) {
       return res.json({ messages: [], nextCursor: null });
     }
 
-    // 2. جلب الرسائل
     let query = supabase
       .from('chat_messages')
       .select('*')
       .eq('session_id', session.id)
-      .order('created_at', { ascending: false }) // الأحدث أولاً
+      .order('created_at', { ascending: false })
       .limit(limit);
 
     if (cursor) {
       query = query.lt('created_at', cursor);
     }
 
-    const { data: messages, error } = await query;
-    if (error) throw error;
+    const { data: messages, error: msgsError } = await query;
+    
+    if (msgsError) {
+        console.error("❌ Supabase Error (Get Messages):", msgsError.message);
+        throw msgsError;
+    }
 
     const nextCursor = messages.length === limit ? messages[messages.length - 1].created_at : null;
 
     res.json({
-      messages: messages, // الفرونت سيتعامل مع عكس الترتيب (Inverted List)
+      messages: messages,
       nextCursor
     });
 
@@ -93,7 +98,7 @@ async function getChatHistory(req, res) {
 }
 
 // ============================================================
-// 🧠 Main Process Chat (المنطق الأساسي)
+// 🧠 Main Process Chat
 // ============================================================
 async function processChat(req, res) {
   let { 
@@ -101,59 +106,68 @@ async function processChat(req, res) {
     lessonId, lessonTitle 
   } = req.body;
 
-  // تنظيف المدخلات
   const currentContextId = lessonId || 'general';
 
   try {
     // ---------------------------------------------------------
-    // 1. إدارة الجلسة (SQL Session Management)
+    // 1. إدارة الجلسة (مع طباعة الأخطاء)
     // ---------------------------------------------------------
     let sessionId;
     
-    // محاولة العثور على جلسة مفتوحة لنفس السياق
-    const { data: existingSession } = await supabase
+    // محاولة العثور على جلسة
+    const { data: existingSession, error: findError } = await supabase
         .from('chat_sessions')
         .select('id')
         .eq('user_id', userId)
         .eq('context_id', currentContextId)
         .maybeSingle();
 
+    if (findError) {
+        console.error("❌ Supabase Error (Find Session):", findError.message);
+        // لا نوقف التنفيذ، سنحاول إنشاء واحدة جديدة
+    }
+
     if (existingSession) {
         sessionId = existingSession.id;
-        // تحديث وقت آخر ظهور
+        // تحديث الوقت
         await supabase.from('chat_sessions').update({ updated_at: new Date() }).eq('id', sessionId);
     } else {
         // إنشاء جلسة جديدة
-        const { data: newSession } = await supabase.from('chat_sessions').insert({
+        const { data: newSession, error: createError } = await supabase.from('chat_sessions').insert({
             user_id: userId,
             context_id: currentContextId,
             context_type: lessonId ? 'lesson' : 'general',
             summary: lessonTitle || 'General Chat'
         }).select().single();
-        sessionId = newSession.id;
+
+        if (createError) {
+            console.error("❌ Supabase CRITICAL Error (Create Session):", createError);
+            console.error("Hints:", createError.hint, "| Details:", createError.details);
+            return res.status(500).json({ reply: "عذراً، حدث خطأ في قاعدة البيانات أثناء بدء المحادثة." });
+        }
+
+        if (!newSession) {
+            console.error("❌ Supabase returned NULL data for new session!");
+            return res.status(500).json({ reply: "فشل إنشاء الجلسة (Null Data)." });
+        }
+
+        sessionId = newSession.id; // ✅ الآن هذا السطر آمن
     }
 
     // ---------------------------------------------------------
-    // 2. معالجة الملفات (Cloudinary + AI Prep)
+    // 2. معالجة الملفات
     // ---------------------------------------------------------
-    const uploadedAttachments = []; // للحفظ في قاعدة البيانات
-    const geminiInlineParts = [];   // للإرسال للذكاء الاصطناعي فوراً
+    const uploadedAttachments = [];
+    const geminiInlineParts = [];
 
     if (files && files.length > 0) {
         for (const file of files) {
             try {
-                // تنظيف Base64
                 const base64Data = file.data.replace(/^data:.+;base64,/, '');
-                
-                // أ. تجهيز للذكاء الاصطناعي (Multimodal)
                 geminiInlineParts.push({
-                    inlineData: {
-                        data: base64Data,
-                        mimeType: file.mime
-                    }
+                    inlineData: { data: base64Data, mimeType: file.mime }
                 });
 
-                // ب. الرفع لـ Cloudinary (للحفظ الدائم)
                 const uploadRes = await cloudinary.uploader.upload(`data:${file.mime};base64,${base64Data}`, {
                     resource_type: "auto",
                     folder: `chat_uploads/${userId}`
@@ -165,7 +179,6 @@ async function processChat(req, res) {
                     mime: file.mime,
                     type: file.mime.startsWith('image') ? 'image' : (file.mime.startsWith('audio') ? 'audio' : 'file')
                 });
-
             } catch (uploadErr) {
                 console.error('File Upload Error:', uploadErr);
             }
@@ -173,72 +186,43 @@ async function processChat(req, res) {
     }
 
     // ---------------------------------------------------------
-    // 3. بناء السياق التعليمي (Context & Lessons)
+    // 3. السياق
     // ---------------------------------------------------------
     let locationContext = "";
     let lessonData = null;
 
     if (lessonId && lessonId !== 'general') {
-        // جلب بيانات الدرس
         const { data: lesson } = await supabase.from('lessons').select('*').eq('id', lessonId).maybeSingle();
-        
         if (lesson) {
             lessonData = lesson;
-            // جلب محتوى الدرس (اختياري، نأخذ مقتطف لتقليل التكلفة)
-            const { data: contentData } = await supabase
-                .from('lessons_content')
-                .select('content')
-                .eq('lesson_id', lessonId)
-                .maybeSingle();
-
-            const snippet = contentData?.content ? contentData.content.substring(0, 2000) : "Content not found in DB, use general knowledge.";
-
-            locationContext = `
-            🚨 **ACTIVE LESSON CONTEXT:**
-            User is currently studying: "${lesson.title}".
-            
-            👇 **LESSON SOURCE MATERIAL:**
-            """
-            ${snippet}...
-            """
-            
-            **INSTRUCTIONS:**
-            1. Act as a tutor specifically for this lesson.
-            2. If the user asks specifically about the text, use the source material above.
-            `;
+            const { data: contentData } = await supabase.from('lessons_content').select('content').eq('lesson_id', lessonId).maybeSingle();
+            const snippet = contentData?.content ? contentData.content.substring(0, 2000) : "Content not found in DB.";
+            locationContext = `🚨 **ACTIVE LESSON CONTEXT:** User is studying: "${lesson.title}".\n👇 **SOURCE:**\n"""${snippet}..."""`;
         }
     }
 
     // ---------------------------------------------------------
-    // 4. بناء الذاكرة (Chat History)
+    // 4. الذاكرة
     // ---------------------------------------------------------
     const { data: historyData } = await supabase
         .from('chat_messages')
         .select('role, content, metadata')
         .eq('session_id', sessionId)
         .order('created_at', { ascending: false })
-        .limit(6); // آخر 6 رسائل للسياق
+        .limit(6);
 
-    // تحويل التاريخ لصيغة Gemini
-    // Gemini: user -> model -> user -> model
     const history = (historyData || []).reverse().map(msg => {
         const parts = [{ text: msg.content || " " }];
-        
-        // إذا كان هناك نص مستخرج من ملف سابقاً، نضيفه للسياق
         if (msg.metadata && msg.metadata.extracted_text) {
             parts.push({ text: `\n[System: Attached File Content]\n${msg.metadata.extracted_text}` });
         }
-        
-        return {
-            role: msg.role === 'user' ? 'user' : 'model',
-            parts: parts
-        };
+        return { role: msg.role === 'user' ? 'user' : 'model', parts: parts };
     });
 
     // ---------------------------------------------------------
-    // 5. حفظ رسالة المستخدم (قبل الرد)
+    // 5. حفظ رسالة المستخدم (مع طباعة الخطأ)
     // ---------------------------------------------------------
-    const { data: savedUserMsg } = await supabase.from('chat_messages').insert({
+    const { data: savedUserMsg, error: saveMsgError } = await supabase.from('chat_messages').insert({
         session_id: sessionId,
         user_id: userId,
         role: 'user',
@@ -247,106 +231,66 @@ async function processChat(req, res) {
         metadata: { context: lessonId }
     }).select().single();
 
-    // ---------------------------------------------------------
-    // 6. تنفيذ الذكاء الاصطناعي (AI Execution)
-    // ---------------------------------------------------------
-    const systemPrompt = `
-    You are 'EduAI', a smart, friendly, and engaging tutor.
-    ${locationContext}
-    
-    **OUTPUT FORMAT:**
-    You must return a raw JSON object (no markdown formatting).
-    Structure:
-    {
-      "reply": "Your explanation here...",
-      "widgets": [], // Optional UI elements like 'celebration'
-      "lesson_signal": { "type": "complete", "score": 100 } // Only if user passed a quiz/request
+    if (saveMsgError) {
+        console.error("❌ Supabase Error (Save User Message):", saveMsgError.message);
+        // لن نوقف الشات، لكننا لن نستطيع تحديث الرسالة لاحقاً بالنص المستخرج
     }
-    
-    Current Date: ${new Date().toISOString()}
-    `;
+
+    // ---------------------------------------------------------
+    // 6. الذكاء الاصطناعي
+    // ---------------------------------------------------------
+    const systemPrompt = `You are 'EduAI'. ${locationContext} OUTPUT JSON: { "reply": "...", "widgets": [], "lesson_signal": { "type": "complete", "score": 100 } }`;
 
     const model = genAI.getGenerativeModel({
         model: "gemini-2.5-flash",
         systemInstruction: { parts: [{ text: systemPrompt }] },
-        generationConfig: { responseMimeType: "application/json" } // JSON Mode
+        generationConfig: { responseMimeType: "application/json" }
     });
 
     const chatSession = model.startChat({ history: history });
-    
-    // إرسال الرسالة + الصور/الملفات
     const currentPromptParts = [{ text: message }, ...geminiInlineParts];
     const result = await chatSession.sendMessage(currentPromptParts);
     
-    // معالجة الرد
     const responseText = result.response.text();
     let parsedResponse;
     try {
         parsedResponse = JSON.parse(responseText);
     } catch (e) {
-        // Fallback if JSON fails
         parsedResponse = { reply: responseText, widgets: [] };
     }
 
     // ---------------------------------------------------------
-    // 7. المنطق التعليمي (Rewards & Signals)
+    // 7. المنطق التعليمي
     // ---------------------------------------------------------
     let finalWidgets = parsedResponse.widgets || [];
     let rewardData = {};
 
-    // أ. تحقق من إشارة إكمال الدرس
     if (parsedResponse.lesson_signal?.type === 'complete' && lessonData) {
-        // استدعاء محرك البوابات (Gatekeeper)
-        const gateResult = await markLessonComplete(
-            userId, 
-            lessonId, 
-            parsedResponse.lesson_signal.score || 100
-        );
-
-        // إضافة ويدجت الاحتفال إذا كان هناك عملات
+        const gateResult = await markLessonComplete(userId, lessonId, parsedResponse.lesson_signal.score || 100);
         if (gateResult.reward?.coins_added > 0) {
             finalWidgets.push({ 
                 type: 'celebration', 
-                data: { 
-                    message: `أحسنت! 🪙 +${gateResult.reward.coins_added}`, 
-                    coins: gateResult.reward.coins_added 
-                } 
+                data: { message: `أحسنت! 🪙 +${gateResult.reward.coins_added}`, coins: gateResult.reward.coins_added } 
             });
-            rewardData = { 
-                reward: gateResult.reward, 
-                new_total_coins: gateResult.new_total_coins 
-            };
+            rewardData = { reward: gateResult.reward, new_total_coins: gateResult.new_total_coins };
         }
     }
 
-    // ب. تحديث التقدم الذري (Atomic Progress) إذا كان هذا درساً
     if (lessonId && lessonId !== 'general') {
-        // نطلب من النظام الذري تحديث الفهم بناءً على تفاعل الشات
-        // هنا نفترض أن التفاعل زاد الفهم بنسبة بسيطة افتراضياً
-        await updateAtomicProgress(userId, lessonId, { 
-            element_id: 'chat_interaction', 
-            new_score: 10, // زيادة تدريجية
-            increment: true 
-        });
+        updateAtomicProgress(userId, lessonId, { element_id: 'chat_interaction', new_score: 10, increment: true }).catch(e => console.error("Atomic Error:", e));
     }
 
     // ---------------------------------------------------------
-    // 8. إرسال الرد للعميل وحفظ الرد في القاعدة
+    // 8. حفظ الرد والإرسال
     // ---------------------------------------------------------
-    
-    // حفظ رد المساعد
     await supabase.from('chat_messages').insert({
         session_id: sessionId,
         user_id: userId,
         role: 'assistant',
         content: parsedResponse.reply,
-        metadata: { 
-            widgets: finalWidgets,
-            lesson_signal: parsedResponse.lesson_signal 
-        }
+        metadata: { widgets: finalWidgets, lesson_signal: parsedResponse.lesson_signal }
     });
 
-    // الرد على API
     res.status(200).json({
         reply: parsedResponse.reply,
         widgets: finalWidgets,
@@ -354,21 +298,16 @@ async function processChat(req, res) {
         ...rewardData
     });
 
-    // ---------------------------------------------------------
-    // 9. الخلفية: استخراج النصوص (Background Task)
-    // ---------------------------------------------------------
-    // يتم تنفيذه بعد إرسال الرد للعميل لتسريع الاستجابة
+    // 9. الخلفية: استخراج النصوص
     setImmediate(async () => {
         try {
-            if (uploadedAttachments.length > 0 && savedUserMsg) {
+            // ✅ التحقق من وجود savedUserMsg قبل استخدامه
+            if (uploadedAttachments.length > 0 && savedUserMsg && savedUserMsg.id) {
                 let extractedTextCombined = "";
                 let hasUpdates = false;
 
                 for (const att of uploadedAttachments) {
-                    // تجاهل الصور والصوتيات (Gemini يراها، لا داعي لاستخراج نص منها هنا)
-                    // نركز على الـ PDF والـ Word
                     const isDoc = !att.mime.startsWith('image/') && !att.mime.startsWith('audio/');
-                    
                     if (isDoc) {
                         const text = await extractTextFromCloudinaryUrl(att.url, att.mime);
                         if (text) {
@@ -379,24 +318,15 @@ async function processChat(req, res) {
                 }
 
                 if (hasUpdates) {
-                    // تحديث رسالة المستخدم الأصلية بالنص المستخرج
-                    // هذا يسمح لنا بإرسال محتوى الملف في الـ History في الرسائل القادمة
                     await supabase
                         .from('chat_messages')
                         .update({
-                            metadata: { 
-                                ...savedUserMsg.metadata,
-                                extracted_text: extractedTextCombined 
-                            }
+                            metadata: { ...savedUserMsg.metadata, extracted_text: extractedTextCombined }
                         })
                         .eq('id', savedUserMsg.id);
-                        
-                    console.log(`✅ Background: Text extracted and saved for Msg ${savedUserMsg.id}`);
                 }
             }
-        } catch (e) { 
-            console.error('❌ Background Task Error:', e); 
-        }
+        } catch (e) { console.error('Background Task Error:', e); }
     });
 
   } catch (err) {
@@ -404,10 +334,13 @@ async function processChat(req, res) {
     return res.status(500).json({ reply: "واجهنا مشكلة تقنية بسيطة، حاول مرة أخرى." });
   }
 }
-// 👇 أضف هذه الدالة في نهاية الملف قبل module.exports
+
 function initChatBrainController(dependencies) {
-    // هذه الدالة ضرورية لأن index.js يقوم بمناداتها عند الإقلاع.
-    // يمكننا استخدامها مستقبلاً لحقن التبعيات (Dependency Injection).
     console.log('🧠 ChatBrainController initialized successfully.');
 }
-module.exports = { processChat, getChatHistory, initChatBrainController  };
+
+module.exports = { 
+    processChat, 
+    getChatHistory, 
+    initChatBrainController 
+};
