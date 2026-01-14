@@ -8,17 +8,13 @@ const mammoth = require('mammoth');
 // Config & Services
 const cloudinary = require('../config/cloudinary');
 const supabase = require('../services/data/supabase');
-const generateWithFailover = require('../services/ai/failover'); // ✅ الاستيراد الجديد
+const generateWithFailover = require('../services/ai/failover');
 const { markLessonComplete } = require('../services/engines/gatekeeper');
-// ❌ تم حذف updateAtomicProgress
-// ❌ تم حذف GoogleGenerativeAI المباشر
-
-function initChatBrainController(dependencies) {
-    console.log('🧠 ChatBrainController initialized successfully.');
-}
+// ✅ استيراد ملفات البرومبت الجديدة
+const PROMPTS = require('../config/ai-prompts'); 
 
 // ============================================================
-// 🛠️ Helper: استخراج النصوص (لم يتغير)
+// 🛠️ Helper: استخراج النصوص (كما هو)
 // ============================================================
 async function extractTextFromCloudinaryUrl(url, mimeType) {
     try {
@@ -44,7 +40,7 @@ async function extractTextFromCloudinaryUrl(url, mimeType) {
 }
 
 // ============================================================
-// 📜 Get Chat History (لم يتغير)
+// 📜 Get Chat History (كما هو)
 // ============================================================
 async function getChatHistory(req, res) {
   const { userId, lessonId, cursor } = req.query;
@@ -83,7 +79,7 @@ async function getChatHistory(req, res) {
 }
 
 // ============================================================
-// 🧠 Main Process Chat (محدث)
+// 🧠 Main Process Chat (محدث بالبرومبتات الجديدة)
 // ============================================================
 async function processChat(req, res) {
   let { 
@@ -105,7 +101,6 @@ async function processChat(req, res) {
 
     if (existingSession) {
         sessionId = existingSession.id;
-        // تحديث طفيف للوقت (Fire & Forget)
         supabase.from('chat_sessions').update({ updated_at: new Date() }).eq('id', sessionId).then();
     } else {
         const { data: newSession, error: createError } = await supabase.from('chat_sessions').insert({
@@ -122,20 +117,18 @@ async function processChat(req, res) {
         sessionId = newSession.id;
     }
 
-    // 2. معالجة الملفات (Cloudinary + Base64 للـ AI)
+    // 2. معالجة الملفات
     const uploadedAttachments = [];
     const geminiInlineParts = [];
 
     if (files && files.length > 0) {
         for (const file of files) {
             try {
-                // إعداد للـ AI
                 const base64Data = file.data.replace(/^data:.+;base64,/, '');
                 geminiInlineParts.push({
                     inlineData: { data: base64Data, mimeType: file.mime }
                 });
 
-                // رفع للتخزين
                 const uploadRes = await cloudinary.uploader.upload(`data:${file.mime};base64,${base64Data}`, {
                     resource_type: "auto",
                     folder: `chat_uploads/${userId}`
@@ -151,23 +144,29 @@ async function processChat(req, res) {
         }
     }
 
-    // 3. السياق (Context Override)
-    let locationContext = "";
+    // 3. تحضير البيانات للبرومبت (Profile & Context)
+    // أ) جلب اسم الطالب لإعطاء طابع شخصي
+    // سنفترض وجود جدول profiles أو auth.users، سنحاول جلبه بسرعة
+    // إذا لم نجد، نستخدم "Student"
+    let userProfile = { firstName: 'Student' };
+    try {
+        // حاول جلب الاسم من الميتاداتا الخاصة بالمستخدم أو جدول بروفايل
+        const { data: profile } = await supabase.from('ai_memory_profiles').select('user_name').eq('user_id', userId).maybeSingle();
+        if (profile?.user_name) userProfile.firstName = profile.user_name;
+    } catch(e) {}
+
+    // ب) سياق الدرس والمحتوى
+    let locationContext = `Currently in: ${lessonTitle || 'General Chat'}`;
+    let contentSnippet = "";
     let lessonData = null;
 
     if (lessonId && lessonId !== 'general') {
         const { data: lesson } = await supabase.from('lessons').select('*').eq('id', lessonId).maybeSingle();
         if (lesson) {
             lessonData = lesson;
-            // نجلب مقتطف سريع من المحتوى إذا وجد
             const { data: c } = await supabase.from('lessons_content').select('content').eq('lesson_id', lessonId).maybeSingle();
-            const snippet = c?.content ? c.content.substring(0, 1500) : "No text content.";
-            locationContext = `
-            🚨 **ACTIVE LESSON:** "${lesson.title}"
-            👇 **SOURCE MATERIAL:**
-            """${snippet}..."""
-            Act as a focused tutor for this lesson.
-            `;
+            contentSnippet = c?.content ? c.content : "";
+            locationContext = `Active Lesson: "${lesson.title}"`;
         }
     }
 
@@ -177,11 +176,10 @@ async function processChat(req, res) {
         .select('role, content, metadata')
         .eq('session_id', sessionId)
         .order('created_at', { ascending: false })
-        .limit(8); // زيادة السياق قليلاً
+        .limit(8);
 
     const history = (historyData || []).reverse().map(msg => {
         const parts = [{ text: msg.content || " " }];
-        // دمج النصوص المستخرجة سابقاً (الذاكرة طويلة المدى للملفات)
         if (msg.metadata && msg.metadata.extracted_text) {
             parts.push({ text: `\n[System: Previous File Content]\n${msg.metadata.extracted_text}` });
         }
@@ -198,43 +196,51 @@ async function processChat(req, res) {
         metadata: { context: lessonId }
     }).select().single();
 
-    // 6. الاتصال بالذكاء الاصطناعي (عبر Failover Manager) 🚀
-    const systemPrompt = `You are 'EduAI'. ${locationContext}
-    RULES:
-    1. Output strictly valid JSON.
-    2. Format: { "reply": "...", "widgets": []}
+    // 6. الاتصال بالذكاء الاصطناعي 🤖
+    // ✅ استخدام ملفات الـ Config الجديدة
+    
+    // أولاً: نولد برومبت الشخصية والسياق
+    const personaPrompt = PROMPTS.chat.interactiveChat(
+        message,        // الرسالة
+        userProfile,    // بروفايل المستخدم
+        locationContext,// السياق العام
+        lessonTitle,    // بديل الـ Atomic Map (خريطة الدرس)
+        contentSnippet  // محتوى الدرس
+    );
+
+    // ثانياً: نضيف القواعد التقنية الصارمة للباك اند (لضمان عمل الـ Signals)
+    const finalSystemPrompt = `
+    ${personaPrompt}
+
+    🛑 **SYSTEM OVERRIDE (TECHNICAL RULES):**
+    1. You MUST output strictly valid JSON.
+    2. Structure: { "reply": "...", "widgets": [], "lesson_signal": { "type": "complete", "score": 100 } }
+    3. Use 'lesson_signal' ONLY if the user proves mastery/completes the lesson goal.
     `;
 
-    // استدعاء الدالة
     const aiResult = await generateWithFailover('chat', message, {
-        systemInstruction: { parts: [{ text: systemPrompt }] },
+        systemInstruction: { parts: [{ text: finalSystemPrompt }] },
         history: history,
         attachments: geminiInlineParts,
         enableSearch: !!webSearch,
-        label: 'ChatBrain_v4'
+        label: 'ChatBrain_v5'
     });
     
-    // ✅ تصحيح: استخراج النص سواء عاد كـ String أو Object
+    // استخراج النص والتنظيف
     const rawAiText = typeof aiResult === 'object' ? aiResult.text : aiResult;
-    const usedSources = typeof aiResult === 'object' ? (aiResult.sources || []) : [];
-
-    // معالجة الـ JSON
     let parsedResponse;
     try {
-        // تنظيف النص من علامات الـ Markdown
         const cleanText = rawAiText.replace(/```json/g, '').replace(/```/g, '').trim();
         parsedResponse = JSON.parse(cleanText);
     } catch (e) {
-        console.warn("⚠️ JSON Parse Failed, falling back to raw text.");
-        // Fallback: نستخدم النص الخام كـ reply
         parsedResponse = { reply: rawAiText, widgets: [] };
     }
-    // 7. المنطق التعليمي (Gatekeeper Rewards Only) - ❌ بدون Atomic
+
+    // 7. المنطق التعليمي (Gatekeeper Rewards)
     let finalWidgets = parsedResponse.widgets || [];
     let rewardData = {};
 
     if (parsedResponse.lesson_signal?.type === 'complete' && lessonData) {
-        // نتحقق من البوابات والمكافآت فقط
         const gateResult = await markLessonComplete(userId, lessonId, parsedResponse.lesson_signal.score || 100);
         
         if (gateResult.reward?.coins_added > 0) {
@@ -262,7 +268,7 @@ async function processChat(req, res) {
         ...rewardData
     });
 
-    // 9. الخلفية: استخراج النصوص (للمستقبل)
+    // 9. الخلفية: استخراج النصوص
     setImmediate(async () => {
         try {
             if (uploadedAttachments.length > 0 && savedUserMsg?.id) {
@@ -270,7 +276,6 @@ async function processChat(req, res) {
                 let hasUpdates = false;
 
                 for (const att of uploadedAttachments) {
-                    // نتجاهل الصور والصوت لأنها ترسل Multimodal
                     if (!att.mime.startsWith('image/') && !att.mime.startsWith('audio/')) {
                         const text = await extractTextFromCloudinaryUrl(att.url, att.mime);
                         if (text) {
@@ -295,5 +300,7 @@ async function processChat(req, res) {
     return res.status(500).json({ reply: "نواجه ضغطاً عالياً حالياً، يرجى المحاولة بعد لحظات." });
   }
 }
-
-module.exports = { processChat, getChatHistory, initChatBrainController  };
+function initChatBrainController(dependencies) {
+    console.log('🧠 ChatBrainController initialized successfully.');
+}
+module.exports = { processChat, getChatHistory };
