@@ -195,10 +195,11 @@ router.post('/sources/:sourceId/retry', requireAuth, sourceController.retryProce
 
 
 // المسار الجديد لجلب التاريخ (للـ MiniChatPanel)
-router.get('/chat/history', chatController.getChatHistory);
+router.get('/chat/history', chatBrainController.getChatHistory);
 
 // ✅ المسار الجديد (الأقوى والأشمل)
 // يدعم: Web Search, Files, Context Awareness
 // مسار الشات الرئيسي (استبدل القديم بهذا)
-router.post('/chat/process', chatController.processChat);
+
+router.post('/chat/process', chatBrainController.processChat);
 module.exports = router;
