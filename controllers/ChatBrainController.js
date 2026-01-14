@@ -2,7 +2,15 @@
 
 const axios = require('axios');
 const crypto = require('crypto');
-const pdf = require('pdf-parse');
+let pdfParse = require('pdf-parse');
+
+// تصحيح في حال تم تحميل المكتبة بشكل غير مباشر (Default Export fix)
+if (typeof pdfParse !== 'function' && pdfParse.default) {
+    pdfParse = pdfParse.default;
+}
+
+// طباعة للتحقق عند تشغيل السيرفر
+console.log("🛠️ PDF Library Status:", typeof pdfParse); // يجب أن يطبع 'function'
 const mammoth = require('mammoth');
 
 // Config & Services
