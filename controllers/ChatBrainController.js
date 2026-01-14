@@ -404,5 +404,10 @@ async function processChat(req, res) {
     return res.status(500).json({ reply: "واجهنا مشكلة تقنية بسيطة، حاول مرة أخرى." });
   }
 }
-
-module.exports = { processChat, getChatHistory };
+// 👇 أضف هذه الدالة في نهاية الملف قبل module.exports
+function initChatBrainController(dependencies) {
+    // هذه الدالة ضرورية لأن index.js يقوم بمناداتها عند الإقلاع.
+    // يمكننا استخدامها مستقبلاً لحقن التبعيات (Dependency Injection).
+    console.log('🧠 ChatBrainController initialized successfully.');
+}
+module.exports = { processChat, getChatHistory, initChatBrainController  };
