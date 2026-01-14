@@ -282,7 +282,7 @@ async function processChat(req, res) {
         }
     }
 
-    // ---------------------------------------------------------
+ // ---------------------------------------------------------
     // 9. حفظ الرد والانتهاء
     // ---------------------------------------------------------
     const { error: saveBotError } = await supabase.from('chat_messages').insert({
@@ -298,14 +298,16 @@ async function processChat(req, res) {
     } else {
         console.log("✅ Bot Message Saved.");
     }
-  // يجب إرسال الرد للعميل ليظهر في الشات
+
+    // 🚀 إرسال الرد للتطبيق (بدون هذا السطر التطبيق سيبقى معلقاً)
     res.status(200).json({
         reply: parsedResponse.reply,
         widgets: finalWidgets,
         sessionId: sessionId,
-        sources: typeof aiResult === 'object' ? (aiResult.sources || []) : [], // نرسل المصادر إذا وجدت
+        sources: typeof aiResult === 'object' ? (aiResult.sources || []) : [],
         ...rewardData
     });
+
     // ---------------------------------------------------------
     // 10. الخلفية: استخراج النصوص (للملفات المرفقة)
     // ---------------------------------------------------------
@@ -316,6 +318,7 @@ async function processChat(req, res) {
                 let hasUpdates = false;
 
                 for (const att of uploadedAttachments) {
+                    // نتجاهل الصور والصوت لأننا لا نستخرج نصاً منها حالياً بهذه الطريقة
                     if (!att.mime.startsWith('image/') && !att.mime.startsWith('audio/')) {
                         const text = await extractTextFromCloudinaryUrl(att.url, att.mime);
                         if (text) {
@@ -330,9 +333,10 @@ async function processChat(req, res) {
                         .from('chat_messages')
                         .update({ metadata: { ...savedUserMsg.metadata, extracted_text: extractedText } })
                         .eq('id', savedUserMsg.id);
+                    console.log("📝 Background Text Extraction Completed.");
                 }
             }
-        } catch (e) { console.error('Bg Extraction Error:', e); }
+        } catch (e) { console.error('Bg Extraction Error:', e.message); }
     });
 
   } catch (err) {
