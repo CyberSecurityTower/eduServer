@@ -8,7 +8,7 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.1.3", 
+    "@google/generative-ai": "^0.1.3",
     "@supabase/supabase-js": "^2.39.0",
     "axios": "^1.6.7",
     "cli-progress": "^3.12.0",
