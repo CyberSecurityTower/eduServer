@@ -298,7 +298,14 @@ async function processChat(req, res) {
     } else {
         console.log("✅ Bot Message Saved.");
     }
-
+  // يجب إرسال الرد للعميل ليظهر في الشات
+    res.status(200).json({
+        reply: parsedResponse.reply,
+        widgets: finalWidgets,
+        sessionId: sessionId,
+        sources: typeof aiResult === 'object' ? (aiResult.sources || []) : [], // نرسل المصادر إذا وجدت
+        ...rewardData
+    });
     // ---------------------------------------------------------
     // 10. الخلفية: استخراج النصوص (للملفات المرفقة)
     // ---------------------------------------------------------
