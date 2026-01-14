@@ -13,6 +13,10 @@ const { markLessonComplete } = require('../services/engines/gatekeeper');
 // ❌ تم حذف updateAtomicProgress
 // ❌ تم حذف GoogleGenerativeAI المباشر
 
+function initChatBrainController(dependencies) {
+    console.log('🧠 ChatBrainController initialized successfully.');
+}
+
 // ============================================================
 // 🛠️ Helper: استخراج النصوص (لم يتغير)
 // ============================================================
@@ -289,4 +293,4 @@ async function processChat(req, res) {
   }
 }
 
-module.exports = { processChat, getChatHistory };
+module.exports = { processChat, getChatHistory, initChatBrainController  };
