@@ -138,14 +138,35 @@ async function processChat(req, res) {
         for (const file of files) {
             try {
                 const base64Data = file.data.replace(/^data:.+;base64,/, '');
+                
+                // 1. إضافة للمصفوفة التي تذهب لـ Gemini مباشرة (لا علاقة لها بـ Cloudinary)
                 geminiInlineParts.push({
                     inlineData: { data: base64Data, mimeType: file.mime }
                 });
 
-                const uploadRes = await cloudinary.uploader.upload(`data:${file.mime};base64,${base64Data}`, {
-                    resource_type: "auto",
+                // 2. إعداد خيارات الرفع لـ Cloudinary
+                let uploadOptions = {
+                    resource_type: "auto", // نتركه auto مبدئياً
                     folder: `chat_uploads/${userId}`
-                });
+                };
+
+                // 🔥 التصحيح: إجبار Cloudinary على احترام صيغة PDF
+                if (file.mime === 'application/pdf') {
+                    // هذا يجبر الرابط الناتج أن ينتهي بـ .pdf
+                    uploadOptions.format = 'pdf'; 
+                } 
+                // للملفات الأخرى مثل Word، يفضل استخدام raw لضمان عدم تلف الملف
+                else if (file.mime.includes('word') || file.mime.includes('document')) {
+                    uploadOptions.resource_type = 'raw';
+                    // إضافة الامتداد للاسم ليتم تحميله بشكل صحيح
+                    uploadOptions.public_id = `${Date.now()}_doc.docx`; 
+                }
+
+                // 3. التنفيذ
+                const uploadRes = await cloudinary.uploader.upload(`data:${file.mime};base64,${base64Data}`, uploadOptions);
+
+                // التأكد من الرابط (إذا كان raw أحياناً لا يضيف الامتداد، لكن مع pdf والـ format سيعمل)
+                console.log(`📤 Uploaded: ${file.mime} -> URL: ${uploadRes.secure_url}`);
 
                 uploadedAttachments.push({
                     url: uploadRes.secure_url,
@@ -156,7 +177,6 @@ async function processChat(req, res) {
             } catch (e) { console.error('File process error:', e.message); }
         }
     }
-
     // ---------------------------------------------------------
     // 4. جلب محتوى الدرس (Context Fetching)
     // ---------------------------------------------------------
