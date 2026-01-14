@@ -226,7 +226,7 @@ async function processChat(req, res) {
     // ---------------------------------------------------------
     // 7. الاتصال بالذكاء الاصطناعي 🤖
     // ---------------------------------------------------------
-    
+    /*
     // استخدام البرومبت الجديد وتمرير محتوى الدرس الذي جلبناه من DB
     const personaPrompt = PROMPTS.chat.interactiveChat(
         message,        // رسالة الطالب
@@ -262,7 +262,14 @@ async function processChat(req, res) {
     } catch (e) {
         parsedResponse = { reply: rawAiText, widgets: [] };
     }
-
+*/
+         // 🟢 الكود البديل (Mock Response) للاختبار فقط
+    console.log("⚠️ TEST MODE: AI Bypassed. Processing files only.");
+    let parsedResponse = {
+        reply: "أنا في وضع الاختبار. لقد استلمت ملفك، وسأقوم باستخراج النص منه وحفظه في قاعدة البيانات الآن.",
+        widgets: [],
+        lesson_signal: null
+    };
     // ---------------------------------------------------------
     // 8. المنطق التعليمي (المكافآت)
     // ---------------------------------------------------------
@@ -302,43 +309,53 @@ async function processChat(req, res) {
     // 🚀 إرسال الرد للتطبيق (بدون هذا السطر التطبيق سيبقى معلقاً)
     res.status(200).json({
         reply: parsedResponse.reply,
-        widgets: finalWidgets,
-        sessionId: sessionId,
-        sources: typeof aiResult === 'object' ? (aiResult.sources || []) : [],
-        ...rewardData
+        widgets: parsedResponse.widgets || [],
+        sessionId: sessionId
     });
 
     // ---------------------------------------------------------
-    // 10. الخلفية: استخراج النصوص (للملفات المرفقة)
+    // 10. الخلفية: استخراج النصوص (هذا هو ما نريد اختباره!)
     // ---------------------------------------------------------
     setImmediate(async () => {
         try {
+            console.log("🔄 Starting Background Extraction..."); // تأكدنا من بدء العملية
+            
             if (uploadedAttachments.length > 0 && savedUserMsg?.id) {
                 let extractedText = "";
                 let hasUpdates = false;
 
                 for (const att of uploadedAttachments) {
-                    // نتجاهل الصور والصوت لأننا لا نستخرج نصاً منها حالياً بهذه الطريقة
+                    console.log(`📄 Processing file: ${att.mime}`); // طباعة نوع الملف
+                    
+                    // PDF أو Word أو Text
                     if (!att.mime.startsWith('image/') && !att.mime.startsWith('audio/')) {
                         const text = await extractTextFromCloudinaryUrl(att.url, att.mime);
                         if (text) {
-                            console.log(`✅ SUCCESS: Text extracted from ${att.mime}, Length: ${text.length} chars`); 
+                            console.log(`✅ SUCCESS: Extracted ${text.length} chars from PDF!`);
+                            console.log(`📝 Preview: ${text.substring(0, 50)}...`); // طباعة أول 50 حرف
+                            
                             extractedText += `\n--- Extracted Content (${att.mime}) ---\n${text}\n`;
                             hasUpdates = true;
+                        } else {
+                            console.log("❌ FAILED to extract text (Text is null/empty)");
                         }
                     }
                 }
 
                 if (hasUpdates) {
-                    await supabase
+                    const updateRes = await supabase
                         .from('chat_messages')
                         .update({ metadata: { ...savedUserMsg.metadata, extracted_text: extractedText } })
                         .eq('id', savedUserMsg.id);
-                    console.log("📝 Background Text Extraction Completed.");
+                        
+                    console.log("💾 Database Updated with Text:", updateRes.status);
                 }
+            } else {
+                console.log("ℹ️ No files to extract.");
             }
-        } catch (e) { console.error('Bg Extraction Error:', e.message); }
+        } catch (e) { console.error('🔥 Bg Extraction Error:', e); }
     });
+
 
   } catch (err) {
     console.error('🔥 ChatBrain Fatal:', err);
