@@ -202,30 +202,33 @@ async function processChat(req, res) {
     const systemPrompt = `You are 'EduAI'. ${locationContext}
     RULES:
     1. Output strictly valid JSON.
-    2. Format: { "reply": "...", "widgets": [], "lesson_signal": { "type": "complete", "score": 100 } }
-    3. If user answers correctly, use lesson_signal.
+    2. Format: { "reply": "...", "widgets": []}
     `;
 
-    // ✅ استخدام generateWithFailover بدلاً من الاستدعاء المباشر
-    const aiResponseText = await generateWithFailover('chat', message, {
+    // استدعاء الدالة
+    const aiResult = await generateWithFailover('chat', message, {
         systemInstruction: { parts: [{ text: systemPrompt }] },
         history: history,
-        attachments: geminiInlineParts, // الصور/الصوت الحالية
+        attachments: geminiInlineParts,
         enableSearch: !!webSearch,
         label: 'ChatBrain_v4'
     });
     
+    // ✅ تصحيح: استخراج النص سواء عاد كـ String أو Object
+    const rawAiText = typeof aiResult === 'object' ? aiResult.text : aiResult;
+    const usedSources = typeof aiResult === 'object' ? (aiResult.sources || []) : [];
+
     // معالجة الـ JSON
     let parsedResponse;
     try {
-        // تنظيف النص في حال وجود Markdown blocks
-        const cleanText = aiResponseText.replace(/```json/g, '').replace(/```/g, '').trim();
+        // تنظيف النص من علامات الـ Markdown
+        const cleanText = rawAiText.replace(/```json/g, '').replace(/```/g, '').trim();
         parsedResponse = JSON.parse(cleanText);
     } catch (e) {
-        // Fallback في حال فشل الـ JSON
-        parsedResponse = { reply: aiResponseText, widgets: [] };
+        console.warn("⚠️ JSON Parse Failed, falling back to raw text.");
+        // Fallback: نستخدم النص الخام كـ reply
+        parsedResponse = { reply: rawAiText, widgets: [] };
     }
-
     // 7. المنطق التعليمي (Gatekeeper Rewards Only) - ❌ بدون Atomic
     let finalWidgets = parsedResponse.widgets || [];
     let rewardData = {};
