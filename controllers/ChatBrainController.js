@@ -322,6 +322,7 @@ async function processChat(req, res) {
                     if (!att.mime.startsWith('image/') && !att.mime.startsWith('audio/')) {
                         const text = await extractTextFromCloudinaryUrl(att.url, att.mime);
                         if (text) {
+                            console.log(`✅ SUCCESS: Text extracted from ${att.mime}, Length: ${text.length} chars`); 
                             extractedText += `\n--- Extracted Content (${att.mime}) ---\n${text}\n`;
                             hasUpdates = true;
                         }
