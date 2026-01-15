@@ -35,31 +35,40 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
 
         // 2. التصحيح وحساب التغييرات الذرية
         let totalScore = 0;
+        // 2. التصحيح وحساب النتيجة
         let correctCount = 0;
-        const atomUpdates = {}; // { 'atom_id': { delta: +20 } }
+        const atomUpdates = {}; 
+        
+        // ثابتات النظام الجديد
+        const TOTAL_QUESTIONS = 10; // أو نستخدم userSubmission.length لمرونة أكثر
+        const POINTS_PER_QUESTION = 2; // 10 أسئلة * 2 نقاط = 20
 
         for (const sub of userSubmission) {
             const dbQuestion = questionMap.get(sub.questionId);
-            if (!dbQuestion) continue; // سؤال غير موجود (تجاهل)
+            if (!dbQuestion) continue;
 
             const isCorrect = checkAnswer(dbQuestion, sub.answer);
             const atomId = dbQuestion.atom_id;
 
-            // منطق التحديث الذري
             if (!atomUpdates[atomId]) atomUpdates[atomId] = 0;
 
             if (isCorrect) {
                 correctCount++;
-                totalScore += 1; // نقطة لكل سؤال
-                // إذا أجاب صح، نزيد قوة الذرة
+                // تحديث الذرات يبقى كما هو (مستقل عن علامة الامتحان)
                 atomUpdates[atomId] += 20; 
             } else {
-                // إذا أخطأ، نخفض قوة الذرة (عقاب تعليمي)
                 atomUpdates[atomId] -= 10;
             }
         }
 
-        const finalPercentage = Math.round((correctCount / userSubmission.length) * 100);
+        // --- الحسابات الجديدة ---
+        // العلامة النهائية من 20
+        const finalScoreOutOf20 = correctCount * POINTS_PER_QUESTION; 
+        
+        // النسبة المئوية (نحتاجها للواجهة وقواعد البيانات التي تعتمد على %)
+        // المعادلة: (العلامة / 20) * 100
+        const finalPercentage = Math.round((finalScoreOutOf20 / 20) * 100);
+
 
         // 3. تطبيق التحديثات الذرية (Atomic Commit)
         // نحتاج لجلب السكورات الحالية أولاً لتعديلها
@@ -111,13 +120,20 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
             });
         }
 
-        return {
+      return {
             success: true,
-            score: finalPercentage,
+            
+            score: finalScoreOutOf20,      // مثال: 16
+            maxScore: 20,                  // السقف: 20
+            percentage: finalPercentage,   // مثال: 80
+            
+            // حساب XP مقترح (مثلاً: العلامة * 10 = 160 XP)
+            xpEarned: finalScoreOutOf20 * 10, 
+            
             correctCount,
             totalQuestions: userSubmission.length,
-            coinsEarned,
-            atomUpdates // نرجع التحديثات للفرونت ليقوم بأنيميشن المهارات
+            coinsEarned, // الكوينز محسوبة سابقاً بناءً على النسبة
+            atomUpdates
         };
 
     } catch (error) {
