@@ -18,7 +18,7 @@ const sourceController = require('../controllers/sourceController');
 const uploadMiddleware = require('../middleware/upload');
 const smartQueueMiddleware = require('../middleware/smartQueue'); // استيراد الجديد
 const chatBrainController = require('../controllers/ChatBrainController'); 
-
+const arenaController = require('../controllers/arenaController'); 
 /*
 // ⏰ تشغيل منقذ الستريك كل ساعة (60 دقيقة)
 setInterval(() => {
@@ -205,4 +205,17 @@ router.get('/chat/history', chatBrainController.getChatHistory);
 // مسار الشات الرئيسي 
 
 router.post('/chat/process', chatBrainController.processChat);
+
+
+
+// ==========================================
+// 9. Arena (Exam System) ⚔️
+// ==========================================
+// توليد امتحان لدرس معين
+router.get('/arena/generate/:lessonId', requireAuth, arenaController.generateExam);
+
+// تقديم الإجابات وتصحيحها
+router.post('/arena/submit', requireAuth, arenaController.submitExam);
+
+
 module.exports = router;
