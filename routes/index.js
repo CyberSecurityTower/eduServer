@@ -194,12 +194,15 @@ router.get('/sources/:sourceId/status', requireAuth, sourceController.checkSourc
 router.post('/sources/:sourceId/retry', requireAuth, sourceController.retryProcessing);
 
 
+//   جلب مكتبة ملفات المستخدم كاملة
+router.get('/sources/all', requireAuth, sourceController.getAllUserSources);
+
 // المسار الجديد لجلب التاريخ (للـ MiniChatPanel)
 router.get('/chat/history', chatBrainController.getChatHistory);
 
-// ✅ المسار الجديد (الأقوى والأشمل)
+//  المسار الجديد (الأقوى والأشمل)
 // يدعم: Web Search, Files, Context Awareness
-// مسار الشات الرئيسي (استبدل القديم بهذا)
+// مسار الشات الرئيسي 
 
 router.post('/chat/process', chatBrainController.processChat);
 module.exports = router;
