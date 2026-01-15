@@ -33,8 +33,8 @@ async function generateArenaExam(lessonId, mode = 'practice') {
     const { data: allQuestions, error: qError } = await supabase
       .from('question_bank')
       .select('id, atom_id, widget_type, content, difficulty, lesson_id') // أضفت lesson_id للتأكد
-      .eq('lesson_id', cleanLessonId);
-      .neq('widget_type', 'FILL_BLANKS'); // 👈 🔥 أضف هذا السطر هنا
+      .eq('lesson_id', cleanLessonId)
+      .neq('widget_type', 'FILL_BLANKS');
   let filteredQuestions = allQuestions;
 
     // تصفية الأسئلة لاستبعاد ملء الفراغات
