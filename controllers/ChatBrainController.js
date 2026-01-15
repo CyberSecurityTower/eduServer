@@ -1,48 +1,48 @@
 'use strict';
 
 const axios = require('axios');
-// لا حاجة لمكتبات PDF/Word المحلية بعد الآن! 🎉
-
-// Config & Services
 const cloudinary = require('../config/cloudinary');
 const supabase = require('../services/data/supabase');
 const generateWithFailover = require('../services/ai/failover');
 const { markLessonComplete } = require('../services/engines/gatekeeper');
 const PROMPTS = require('../config/ai-prompts'); 
-const { getProfile } = require('../services/data/helpers'); // لجلب بيانات الطالب
+const { getProfile } = require('../services/data/helpers');
 
 // ============================================================
-// 📜 Get Chat History
+// 🛠️ Helper: Download File & Convert to Base64
 // ============================================================
+async function fetchFileAsBase64(url) {
+    try {
+        const response = await axios.get(url, { responseType: 'arraybuffer' });
+        return Buffer.from(response.data, 'binary').toString('base64');
+    } catch (error) {
+        console.error(`Failed to fetch file from history: ${url}`, error.message);
+        return null; // في حال فشل التحميل، نتجاهل الملف لتجنب توقف الشات
+    }
+}
+
+// ... (getChatHistory function remains same) ...
 async function getChatHistory(req, res) {
   const { userId, lessonId, cursor } = req.query;
   const limit = 20;
-
   try {
     const { data: session } = await supabase
       .from('chat_sessions').select('id')
       .eq('user_id', userId).eq('context_id', lessonId || 'general').maybeSingle();
-
     if (!session) return res.json({ messages: [], nextCursor: null });
-
     let query = supabase.from('chat_messages').select('*').eq('session_id', session.id)
       .order('created_at', { ascending: false }).limit(limit);
-
     if (cursor) query = query.lt('created_at', cursor);
-
     const { data: messages } = await query;
     const nextCursor = messages && messages.length === limit ? messages[messages.length - 1].created_at : null;
-    
-    // نرسل الرسائل كما هي، والفرونت إند سيعالج عرض المرفقات بناءً على حقل attachments
     res.json({ messages: messages || [], nextCursor });
-
   } catch (error) {
     res.status(500).json({ error: "Failed to fetch history" });
   }
 }
 
 // ============================================================
-// 🧠 Main Process Chat (AI Vision Mode 👁️)
+// 🧠 Main Process Chat (Full Visual Memory Mode 👁️📸)
 // ============================================================
 async function processChat(req, res) {
   let { userId, message, files = [], currentContext, webSearch } = req.body;
@@ -67,100 +67,126 @@ async function processChat(req, res) {
         sessionId = newSession.id;
     }
 
-    // 2. تجهيز الملفات (مسارين: مسار للـ AI ومسار للداتابايز)
-    const geminiAttachments = []; // يذهب للـ AI فوراً (Base64)
-    const dbAttachments = [];     // يذهب للتخزين (URL)
+    // 2. تجهيز الملفات الحالية (Base64 جاهز من الفرونت إند)
+    const geminiAttachments = []; 
+    const dbAttachments = [];     
 
     if (files && files.length > 0) {
         for (const file of files) {
             try {
-                // أ. تجهيز للـ AI (بدون تحميل، نستخدم البيانات القادمة من الفرونت مباشرة)
                 const base64Data = file.data.replace(/^data:.+;base64,/, '');
                 geminiAttachments.push({
                     inlineData: { data: base64Data, mimeType: file.mime }
                 });
 
-                // ب. الرفع لـ Cloudinary (للحفظ والعرض لاحقاً)
                 let uploadOptions = { resource_type: "auto", folder: `chat_uploads/${userId}` };
-                // تحسينات بسيطة للصيغ
                 if (file.mime === 'application/pdf') uploadOptions.format = 'pdf'; 
 
-                // نرفع في الخلفية لعدم تعطيل الـ AI (أو ننتظر إذا أردنا الرابط فوراً)
-                // سننتظر هنا لضمان وجود الرابط في قاعدة البيانات
                 const uploadRes = await cloudinary.uploader.upload(`data:${file.mime};base64,${base64Data}`, uploadOptions);
-                
                 dbAttachments.push({
                     url: uploadRes.secure_url,
                     public_id: uploadRes.public_id,
                     mime: file.mime,
                     type: file.mime.startsWith('image') ? 'image' : (file.mime.startsWith('audio') ? 'audio' : 'file')
                 });
-
             } catch (e) { console.error('File Processing Error:', e.message); }
         }
     }
 
-    // 3. جلب السياق الكامل (البروفايل + الدرس)
+    // 3. جلب السياق
     let contentSnippet = "";
     let locationContext = `Context: ${lessonTitle || 'General Discussion'}`;
-    
-    // جلب محتوى الدرس إذا وجد
     if (lessonId && lessonId !== 'general') {
         const { data: contentData } = await supabase.from('lessons_content').select('content').eq('lesson_id', lessonId).maybeSingle();
-        if (contentData?.content) contentSnippet = contentData.content.substring(0, 15000); // 15K chars context
+        if (contentData?.content) contentSnippet = contentData.content.substring(0, 15000);
     }
-
-    // جلب بيانات الطالب
     const userProfile = await getProfile(userId);
 
-    // 4. بناء الذاكرة (آخر 6 رسائل)
+    // ==================================================================================
+    // 4. بناء الذاكرة "الحية" (استرجاع الصور القديمة وتحويلها لـ Base64)
+    // ==================================================================================
     const { data: historyData } = await supabase
-        .from('chat_messages').select('role, content')
-        .eq('session_id', sessionId).order('created_at', { ascending: false }).limit(6);
+        .from('chat_messages')
+        .select('role, content, attachments')
+        .eq('session_id', sessionId)
+        .order('created_at', { ascending: false })
+        .limit(10); 
 
-    const history = (historyData || []).reverse().map(msg => ({
-        role: msg.role === 'user' ? 'user' : 'model',
-        parts: [{ text: msg.content || " " }]
+    // نعكس المصفوفة لتكون بالترتيب الزمني الصحيح
+    const orderedHistory = (historyData || []).reverse();
+
+    // نستخدم Promise.all لمعالجة الرسائل بشكل متوازي لتسريع التحميل
+    const history = await Promise.all(orderedHistory.map(async (msg) => {
+        const parts = [];
+        
+        // أ. النص
+        if (msg.content) parts.push({ text: msg.content });
+
+        // ب. المرفقات (هنا السحر ✨: نحمل الملف من الرابط ونحوله لـ Base64)
+        if (msg.attachments && Array.isArray(msg.attachments) && msg.attachments.length > 0) {
+            // معالجة كل المرفقات في الرسالة الواحدة بشكل متوازي
+            const attachmentParts = await Promise.all(msg.attachments.map(async (att) => {
+                // ملاحظة: نتأكد أن الملف مدعوم من Gemini (صور/PDF)
+                if (att.url) {
+                    const base64 = await fetchFileAsBase64(att.url);
+                    if (base64) {
+                        return {
+                            inlineData: {
+                                data: base64,
+                                mimeType: att.mime || 'image/jpeg' 
+                            }
+                        };
+                    }
+                }
+                return null;
+            }));
+
+            // تصفية الملفات التي فشل تحميلها
+            attachmentParts.filter(p => p !== null).forEach(p => parts.push(p));
+        }
+
+        // إذا كانت الرسالة فارغة تماماً (نادر الحدوث)، نضع مسافة
+        if (parts.length === 0) parts.push({ text: " " });
+
+        return {
+            role: msg.role === 'user' ? 'user' : 'model',
+            parts: parts
+        };
     }));
+    // ==================================================================================
 
-    // 5. حفظ رسالة المستخدم
+    // 5. حفظ الرسالة الجديدة
     await supabase.from('chat_messages').insert({
         session_id: sessionId, user_id: userId, role: 'user', content: message,
-        attachments: dbAttachments, // نحفظ الروابط
+        attachments: dbAttachments, 
         metadata: { context: lessonId }
     });
 
-    // 6. 🧠 استدعاء الذكاء الاصطناعي (مع الملفات والسياق الكامل)
-    
-    // نستخدم البرومبت الأساسي المبني سابقاً
+    // 6. استدعاء الذكاء الاصطناعي
     const personaPrompt = PROMPTS.chat.interactiveChat(
-        message, 
-        userProfile, 
-        locationContext, // System Context
-        null, // Atomic (Optional)
-        contentSnippet // Lesson Content
+        message, userProfile, locationContext, null, contentSnippet
     );
 
     const finalSystemPrompt = `
     ${personaPrompt}
 
-    🛑 **VISION INSTRUCTIONS (If files are attached):**
-    1. The user has attached ${geminiAttachments.length} file(s).
-    2. Read them carefully (Images, PDFs, Audio). 
-    3. If it's a question image, solve it. If it's a PDF summary, summarize it.
-    4. Answer in **Algerian Derja**.
+    🛑 **VISION INSTRUCTIONS:**
+    1. You have access to the ACTUAL files from the last 10 messages (Images/PDFs).
+    2. Analyze them directly if the user refers to them (e.g., "what about the previous image?").
+    3. Answer in **Algerian Derja**.
     
     **OUTPUT JSON:** { "reply": "...", "widgets": [], "lesson_signal": ... }
     `;
 
-    console.log(`🚀 Sending to AI (${geminiAttachments.length} files attached)...`);
+    console.log(`🚀 Sending to AI (History Size: ${history.length}, Current Attachments: ${geminiAttachments.length})...`);
 
+    // ملاحظة: geminiAttachments هي ملفات الرسالة الحالية، والملفات القديمة موجودة الآن داخل history
     const aiResult = await generateWithFailover('chat', message || "Analyze attached file", {
         systemInstruction: { parts: [{ text: finalSystemPrompt }] },
-        history: history,
-        attachments: geminiAttachments, // 👈 إرسال الملفات للموديل مباشرة
+        history: history,               // ✅ يحتوي الآن على الصور الفعلية للرسائل السابقة
+        attachments: geminiAttachments, // ✅ الصور الحالية
         enableSearch: !!webSearch,
-        label: 'ChatBrain_Vision'
+        label: 'ChatBrain_FullVision'
     });
 
     // 7. تنظيف الرد
@@ -173,7 +199,7 @@ async function processChat(req, res) {
         parsedResponse = { reply: typeof aiResult === 'object' ? aiResult.text : aiResult, widgets: [] };
     }
 
-    // 8. معالجة الإشارات (إكمال الدرس)
+    // 8. معالجة الإشارات
     let finalWidgets = parsedResponse.widgets || [];
     if (parsedResponse.lesson_signal?.type === 'complete' && lessonId) {
         const gateResult = await markLessonComplete(userId, lessonId, parsedResponse.lesson_signal.score || 100);
@@ -205,7 +231,7 @@ async function processChat(req, res) {
 }
 
 function initChatBrainController(dependencies) {
-    console.log('🧠 ChatBrainController initialized (Vision Mode).');
+    console.log('🧠 ChatBrainController initialized (FULL VISION MODE).');
 }
 
 module.exports = { processChat, getChatHistory, initChatBrainController };
