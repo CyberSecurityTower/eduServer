@@ -34,6 +34,7 @@ async function generateArenaExam(lessonId, mode = 'practice') {
       .from('question_bank')
       .select('id, atom_id, widget_type, content, difficulty, lesson_id') // أضفت lesson_id للتأكد
       .eq('lesson_id', cleanLessonId);
+      .neq('widget_type', 'FILL_BLANKS'); // 👈 🔥 أضف هذا السطر هنا
 
     // 🔥 طباعة نتيجة الاستعلام
     console.log(`🔍 [DEBUG] Query Result Length: ${allQuestions?.length}`);
