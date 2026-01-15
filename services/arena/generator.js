@@ -7,42 +7,50 @@ const { shuffled } = require('../../utils');
 const logger = require('../../utils/logger');
 
 async function generateArenaExam(lessonId, mode = 'practice') {
+  // 1. تنظيف المعرف من أي مسافات زائدة
+  const cleanLessonId = lessonId.trim();
+
+  // 🔥 طباعة للتشخيص (انظر للتيرمينال بعد تشغيل هذا)
+  console.log(`🔍 [DEBUG] Searching for lessonId: '${cleanLessonId}'`);
+
   try {
-    // 1. جلب الهيكل الذري للدرس
+    // 1. جلب الهيكل الذري
     const { data: structureData, error: structError } = await supabase
       .from('atomic_lesson_structures')
       .select('structure_data')
-      .eq('lesson_id', lessonId)
+      .eq('lesson_id', cleanLessonId) // استخدام المعرف النظيف
       .single();
 
     if (structError || !structureData) {
-      logger.warn(`Arena: No atomic structure found for lesson ${lessonId}. Falling back to random questions.`);
+      console.log(`⚠️ [DEBUG] No structure found for '${cleanLessonId}'`);
     }
 
     const atoms = structureData?.structure_data?.elements || [];
     const atomIds = atoms.map(el => el.id); 
 
-    // 2. جلب الأسئلة من بنك الأسئلة
-    // 🔥 التعديل هنا: تم إزالة شرط .eq('is_verified', true) ليقبل كل الأسئلة
+    // 2. جلب الأسئلة
+    // 🚨 انتبه: لقد أزلت شرط التوثيق تماماً هنا
     const { data: allQuestions, error: qError } = await supabase
       .from('question_bank')
-      .select('id, atom_id, widget_type, content, difficulty')
-      .eq('lesson_id', lessonId);
-      // .eq('is_verified', true); <--- تم تعطيل هذا الشرط مؤقتاً للتجربة
+      .select('id, atom_id, widget_type, content, difficulty, lesson_id') // أضفت lesson_id للتأكد
+      .eq('lesson_id', cleanLessonId);
+
+    // 🔥 طباعة نتيجة الاستعلام
+    console.log(`🔍 [DEBUG] Query Result Length: ${allQuestions?.length}`);
+    if (qError) console.error("❌ [DEBUG] Supabase Error:", qError);
 
     if (qError || !allQuestions || allQuestions.length === 0) {
+        // هذا السطر هو الذي يسبب الخطأ عندك، اللوج أعلاه سيخبرنا لماذا وصلنا هنا
         throw new Error('No questions found for this lesson.');
     }
 
-    // 3. خوارزمية التوزيع (10 أسئلة بالضبط)
+    // ... باقي الكود كما هو (منطق الـ 10 أسئلة) ...
     const TARGET_QUESTION_COUNT = 10;
     let selectedQuestions = [];
     const usedQuestionIds = new Set();
 
-    // أ. محاولة إيجاد سؤال واحد لكل ذرة
     for (const atomId of atomIds) {
         if (selectedQuestions.length >= TARGET_QUESTION_COUNT) break;
-
         const candidates = allQuestions.filter(q => q.atom_id === atomId);
         if (candidates.length > 0) {
             const picked = candidates[Math.floor(Math.random() * candidates.length)];
@@ -51,40 +59,35 @@ async function generateArenaExam(lessonId, mode = 'practice') {
         }
     }
 
-    // ب. ملء الباقي للوصول إلى 10 أسئلة
     if (selectedQuestions.length < TARGET_QUESTION_COUNT) {
         const remainingQuestions = shuffled(allQuestions.filter(q => !usedQuestionIds.has(q.id)));
         const needed = TARGET_QUESTION_COUNT - selectedQuestions.length;
         selectedQuestions.push(...remainingQuestions.slice(0, needed));
     }
 
-    // ج. التأكد من العدد النهائي
     selectedQuestions = selectedQuestions.slice(0, TARGET_QUESTION_COUNT);
 
-    // 4. التنسيق النهائي
     const examPayload = selectedQuestions.map(q => {
         const clientContent = JSON.parse(JSON.stringify(q.content));
-        
         if (q.widget_type === 'MCQ') {
             delete clientContent.correctAnswer;
             clientContent.options = shuffled(clientContent.options); 
         } else if (q.widget_type === 'TRUE_FALSE' || q.widget_type === 'YES_NO') {
              delete clientContent.correctAnswer;
         }
-        
         return {
             id: q.id,
             type: q.widget_type,
             atom_id: q.atom_id, 
             content: clientContent,
             difficulty: q.difficulty,
-            points: 2 // نقطتان لكل سؤال
+            points: 2 
         };
     });
 
     return {
         examId: crypto.randomUUID(), 
-        lessonId,
+        lessonId: cleanLessonId,
         questions: shuffled(examPayload) 
     };
 
