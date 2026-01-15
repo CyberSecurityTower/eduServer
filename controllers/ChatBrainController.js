@@ -79,7 +79,7 @@ async function getChatHistory(req, res) {
 // ============================================================
 async function processChat(req, res) {
   // نستخرج البيانات بدقة
-  let { userId, message, files = [], currentContext, webSearch } = req.body;
+  let { userId, message, files = [], currentContext, webSearch, location  } = req.body;
   
   // 1. استخراج معرف الدرس (الأولوية لما بداخل currentContext)
   // الفرونت يرسل: currentContext: { lessonId: "...", ... }
@@ -241,9 +241,14 @@ async function processChat(req, res) {
     });
 
     // 6. استدعاء الذكاء الاصطناعي
-    const personaPrompt = PROMPTS.chat.interactiveChat(
-        message, userProfile, locationContext, null, contentSnippet
+     const personaPrompt = PROMPTS.chat.interactiveChat(
+        message, 
+        userProfile, 
+        locationContext, // ✅ الآن هذا المتغير أصبح معرفاً ولن يسبب خطأ
+        null, 
+        contentSnippet
     );
+
 
     const finalSystemPrompt = `
     ${personaPrompt}
