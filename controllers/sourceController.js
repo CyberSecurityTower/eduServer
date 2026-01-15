@@ -378,9 +378,50 @@ async function triggerSystemRetry(sourceId) {
     }
 }
 
+// ✅ دالة جديدة: جلب كل المصادر الخاصة بالمستخدم (الأرشيف الشخصي)
+async function getAllUserSources(req, res) {
+    try {
+        const userId = req.user?.id;
+        
+        // جلب المصادر مرتبة من الأحدث للأقدم
+        const { data: sources, error } = await supabase
+            .from('lesson_sources')
+            .select(`
+                *,
+                lessons ( title ) 
+            `) // نجلب اسم الدرس المرتبط أيضاً للمرجعية
+            .eq('user_id', userId)
+            .order('created_at', { ascending: false });
+
+        if (error) throw error;
+
+        // تنسيق البيانات لتكون واضحة
+        const formattedSources = sources.map(s => ({
+            id: s.id,
+            fileName: s.file_name,
+            originalName: s.original_file_name,
+            type: s.file_type,
+            url: s.file_url,
+            status: s.status,
+            lessonTitle: s.lessons?.title || 'General Upload', // اسم الدرس أو عام
+            uploadedAt: s.created_at
+        }));
+
+        res.status(200).json({ 
+            success: true, 
+            count: formattedSources.length,
+            sources: formattedSources 
+        });
+
+    } catch (err) {
+        logger.error('Get All Sources Error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+}
 module.exports = { 
     uploadFile, 
     getLessonFiles, 
+    getAllUserSources,
     deleteFile, 
     checkSourceStatus, 
     retryProcessing,
