@@ -4,6 +4,7 @@
 const supabase = require('../data/supabase');
 const { shuffled } = require('../../utils');
 const logger = require('../../utils/logger');
+const { encryptAnswer } = require('../../utils/cryptoHelper');
 
 async function generateArenaExam(lessonId, mode = 'practice') {
   const cleanLessonId = lessonId.trim();
@@ -71,32 +72,48 @@ async function generateArenaExam(lessonId, mode = 'practice') {
      const examPayload = selectedQuestions.map(q => {
         const clientContent = JSON.parse(JSON.stringify(q.content));
         
-        // حذف الإجابات الصحيحة لمنع الغش
+        // 1. استخراج الإجابة الصحيحة الخام قبل الحذف
+        let rawAnswer = null;
+        
         switch (q.widget_type) {
             case 'MCQ':
-                clientContent.options = shuffled(clientContent.options); 
-                delete clientContent.correctAnswer;
-                break;
             case 'TRUE_FALSE':
             case 'YES_NO':
             case 'MCM':
-                delete clientContent.correctAnswer;
+                rawAnswer = clientContent.correct_answer;
                 break;
             case 'ORDERING':
-                delete clientContent.correct_order;
+                rawAnswer = clientContent.correct_order;
                 break;
             case 'MATCHING':
-                delete clientContent.correct_matches;
+                rawAnswer = clientContent.correct_matches;
                 break;
         }
+
+        // 2. تشفير الإجابة ووضعها في حقل جديد
+        // سنسميه 'secure_hash' ليبدو وكأنه هاش للمستخدم العادي
+        const secureHash = encryptAnswer(rawAnswer);
+
+        // 3. تنظيف البيانات الخام (Anti-Cheat)
+        if (q.widget_type === 'MCQ') {
+            clientContent.options = shuffled(clientContent.options);
+        }
         
+        delete clientContent.correctAnswer;
+        delete clientContent.correct_answer;
+        delete clientContent.correct_order;
+        delete clientContent.correct_matches;
+
         return {
             id: q.id,
             type: q.widget_type,
             atom_id: q.atom_id, 
-            content: clientContent,
+            content: {
+                ...clientContent,
+                secure_hash: secureHash // 🛡️ الإجابة المشفرة هنا
+            },
             difficulty: q.difficulty,
-            points: 2 // توحيد النقاط لتبسيط الحساب / 20 درجة المجموع
+            points: 2 
         };
     });
 
@@ -107,7 +124,7 @@ async function generateArenaExam(lessonId, mode = 'practice') {
     };
 
   } catch (error) {
-    logger.error(`Arena Generator Error [${lessonId}]:`, error.message);
+    logger.error(`Generator Error:`, error.message);
     throw error;
   }
 }
