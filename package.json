@@ -22,7 +22,10 @@
     "node-fetch": "^2.7.0",
     "office-text-extractor": "^3.0.3",
     "https-proxy-agent": "^7.0.0",
-    "socks-proxy-agent": "^8.0.0"
+    "socks-proxy-agent": "^8.0.0",
+    "pdfjs-dist": "^3.11.174",
+    "axios": "^1.6.7"
+
   },
   "engines": {
     "node": "20"
