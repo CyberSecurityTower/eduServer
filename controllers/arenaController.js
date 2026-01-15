@@ -6,22 +6,26 @@ const { generateArenaExam } = require('../services/arena/generator');
 const { gradeArenaExam } = require('../services/arena/grader');
 const logger = require('../utils/logger');
 
-// 1. توليد الامتحان (GET /arena/generate/:lessonId)
+// 1. توليد الامتحان
 async function generateExam(req, res) {
     const { lessonId } = req.params;
-    const { mode } = req.query; // 'practice' or 'exam'
+    const { mode } = req.query;
 
     if (!lessonId) return res.status(400).json({ error: 'lessonId is required' });
 
     try {
         const examData = await generateArenaExam(lessonId, mode);
+        
+        // 🔥 التعديل الجوهري هنا:
+        // بدلاً من وضع البيانات داخل "data"، قمنا بنشرها (...) لتكون في الجذر مباشرة
+        // هذا يجعل الفرونت إند يجد data.questions فوراً
         res.status(200).json({
             success: true,
-            data: examData
+            ...examData // ينشر { questions: [...], examId: "..." }
         });
+
     } catch (err) {
         logger.error('Generate Exam Controller Error:', err.message);
-        // إذا لم توجد أسئلة، نرسل 404 ليعرف الفرونت
         if (err.message.includes('No questions')) {
             return res.status(404).json({ error: 'No questions available for this lesson yet.' });
         }
@@ -29,7 +33,7 @@ async function generateExam(req, res) {
     }
 }
 
-// 2. تصحيح الامتحان (POST /arena/submit)
+// 2. تصحيح الامتحان (كما هو بدون تغيير)
 async function submitExam(req, res) {
     const userId = req.user?.id;
     const { lessonId, answers } = req.body;
@@ -40,7 +44,6 @@ async function submitExam(req, res) {
 
     try {
         const result = await gradeArenaExam(userId, lessonId, answers);
-        
         res.status(200).json({
             success: true,
             result: result
