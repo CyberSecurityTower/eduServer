@@ -25,18 +25,43 @@ async function fetchFileAsBase64(url) {
 async function getChatHistory(req, res) {
   const { userId, lessonId, cursor } = req.query;
   const limit = 20;
+
   try {
+    // ✅ الخطوة الحاسمة: تحديد سياق الجلسة بصرامة
+    // إذا وجد lessonId نستخدمه كـ context_id، وإلا نستخدم 'general'
+    const contextId = (lessonId && lessonId !== 'undefined' && lessonId !== 'null') 
+                      ? lessonId 
+                      : 'general';
+
+    // البحث عن الجلسة الخاصة بهذا الدرس تحديداً
     const { data: session } = await supabase
-      .from('chat_sessions').select('id')
-      .eq('user_id', userId).eq('context_id', lessonId || 'general').maybeSingle();
-    if (!session) return res.json({ messages: [], nextCursor: null });
-    let query = supabase.from('chat_messages').select('*').eq('session_id', session.id)
-      .order('created_at', { ascending: false }).limit(limit);
+      .from('chat_sessions')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('context_id', contextId) // 👈 هنا يتم الفصل
+      .maybeSingle();
+
+    // إذا لم توجد جلسة لهذا الدرس، نرجع مصفوفة فارغة (شات جديد)
+    if (!session) {
+        return res.json({ messages: [], nextCursor: null });
+    }
+
+    // جلب الرسائل التابعة لهذا الـ session_id فقط
+    let query = supabase
+      .from('chat_messages')
+      .select('*')
+      .eq('session_id', session.id) // 👈 جلب رسائل هذه الجلسة فقط
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
     if (cursor) query = query.lt('created_at', cursor);
+
     const { data: messages } = await query;
     const nextCursor = messages && messages.length === limit ? messages[messages.length - 1].created_at : null;
+
     res.json({ messages: messages || [], nextCursor });
   } catch (error) {
+    console.error("Error fetching history:", error);
     res.status(500).json({ error: "Failed to fetch history" });
   }
 }
@@ -47,22 +72,36 @@ async function getChatHistory(req, res) {
 async function processChat(req, res) {
   let { userId, message, files = [], currentContext, webSearch } = req.body;
   
+  // استخراج معرف الدرس بدقة
   const lessonId = currentContext?.lessonId || req.body.lessonId;
   const lessonTitle = currentContext?.lessonTitle || req.body.lessonTitle;
-  const currentContextId = (lessonId && lessonId !== 'undefined') ? lessonId : 'general';
+
+  // ✅ تحديد الـ Context ID بصرامة
+  const currentContextId = (lessonId && lessonId !== 'undefined' && lessonId !== 'null') 
+                           ? lessonId 
+                           : 'general';
 
   try {
-    // 1. إدارة الجلسة (Session)
+    // 1. البحث عن أو إنشاء جلسة خاصة لهذا الدرس
     let sessionId;
     const { data: existingSession } = await supabase
-        .from('chat_sessions').select('id').eq('user_id', userId).eq('context_id', currentContextId).maybeSingle();
+        .from('chat_sessions')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('context_id', currentContextId) // 👈 البحث عن جلسة هذا الدرس
+        .maybeSingle();
 
     if (existingSession) {
         sessionId = existingSession.id;
-        supabase.from('chat_sessions').update({ updated_at: new Date() }).eq('id', sessionId).then();
+        // تحديث وقت آخر ظهور
+        await supabase.from('chat_sessions').update({ updated_at: new Date() }).eq('id', sessionId);
     } else {
+        // إنشاء جلسة جديدة مربوطة بهذا الدرس
         const { data: newSession } = await supabase.from('chat_sessions').insert({
-            user_id: userId, context_id: currentContextId, context_type: 'general', summary: lessonTitle || 'Chat'
+            user_id: userId,
+            context_id: currentContextId, // 👈 ربط الجلسة بالدرس
+            context_type: currentContextId === 'general' ? 'general' : 'lesson',
+            summary: lessonTitle || 'General Chat'
         }).select().single();
         sessionId = newSession.id;
     }
