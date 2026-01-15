@@ -21,36 +21,44 @@ async function fetchFileAsBase64(url) {
     }
 }
 
-// ... (getChatHistory function remains same) ...
+// ============================================================
+// 1. استرجاع التاريخ (Strict Lesson Mode)
+// ============================================================
 async function getChatHistory(req, res) {
   const { userId, lessonId, cursor } = req.query;
   const limit = 20;
 
   try {
-    // ✅ الخطوة الحاسمة: تحديد سياق الجلسة بصرامة
-    // إذا وجد lessonId نستخدمه كـ context_id، وإلا نستخدم 'general'
-    const contextId = (lessonId && lessonId !== 'undefined' && lessonId !== 'null') 
-                      ? lessonId 
-                      : 'general';
+    // 🛑 طباعة للتأكد مما يصل من الفرونت اند
+    console.log(`🔍 Fetching History for User: ${userId}, Lesson: ${lessonId}`);
 
-    // البحث عن الجلسة الخاصة بهذا الدرس تحديداً
+    // ✅ المنطق الصارم: نعتمد الدرس القادم فقط
+    // إذا كان lessonId غير موجود أو يساوي نص "undefined" نعتبره خطأ في الفرونت لكن لن نحوله لـ general
+    // إلا إذا كان "general" صراحةً.
+    let contextId = lessonId;
+
+    if (!contextId || contextId === 'undefined' || contextId === 'null') {
+        // بما أن التطبيق لا يعمل إلا داخل دروس، فهذا يعني أن هناك خطأ في الإرسال
+        // لكن كحل أخير سنبقيه general لتجنب كراش، ولكن الأصل أن يصل ID
+        contextId = 'general';
+    }
+
     const { data: session } = await supabase
       .from('chat_sessions')
       .select('id')
       .eq('user_id', userId)
-      .eq('context_id', contextId) // 👈 هنا يتم الفصل
+      .eq('context_id', contextId) // 👈 البحث عن هذا الدرس حصراً
       .maybeSingle();
 
-    // إذا لم توجد جلسة لهذا الدرس، نرجع مصفوفة فارغة (شات جديد)
     if (!session) {
+        console.log(`ℹ️ No session found for context: ${contextId}`);
         return res.json({ messages: [], nextCursor: null });
     }
 
-    // جلب الرسائل التابعة لهذا الـ session_id فقط
     let query = supabase
       .from('chat_messages')
       .select('*')
-      .eq('session_id', session.id) // 👈 جلب رسائل هذه الجلسة فقط
+      .eq('session_id', session.id)
       .order('created_at', { ascending: false })
       .limit(limit);
 
@@ -67,41 +75,51 @@ async function getChatHistory(req, res) {
 }
 
 // ============================================================
-// 🧠 Main Process Chat (Full Visual Memory Mode 👁️📸)
+// 2. معالجة الشات (Strict Lesson Mode)
 // ============================================================
 async function processChat(req, res) {
+  // نستخرج البيانات بدقة
   let { userId, message, files = [], currentContext, webSearch } = req.body;
   
-  // استخراج معرف الدرس بدقة
-  const lessonId = currentContext?.lessonId || req.body.lessonId;
+  // 1. استخراج معرف الدرس (الأولوية لما بداخل currentContext)
+  // الفرونت يرسل: currentContext: { lessonId: "...", ... }
+  const rawLessonId = currentContext?.lessonId || req.body.lessonId;
   const lessonTitle = currentContext?.lessonTitle || req.body.lessonTitle;
 
-  // ✅ تحديد الـ Context ID بصرامة
-  const currentContextId = (lessonId && lessonId !== 'undefined' && lessonId !== 'null') 
-                           ? lessonId 
-                           : 'general';
+  console.log(`🚀 Processing Chat | Lesson ID Received: [${rawLessonId}]`);
+
+  // 2. تحديد المعرف النهائي بصرامة
+  let contextId = rawLessonId;
+
+  // تنظيف القيم النصية الخاطئة التي قد تأتي من الـ JSON
+  if (contextId === 'undefined' || contextId === 'null' || !contextId) {
+      console.warn("⚠️ Warning: No valid Lesson ID provided! Defaulting to 'general' (Check Frontend).");
+      contextId = 'general'; 
+  }
 
   try {
-    // 1. البحث عن أو إنشاء جلسة خاصة لهذا الدرس
+    // 3. البحث عن الجلسة أو إنشاؤها
     let sessionId;
+    
+    // محاولة العثور على جلسة لهذا الدرس
     const { data: existingSession } = await supabase
         .from('chat_sessions')
         .select('id')
         .eq('user_id', userId)
-        .eq('context_id', currentContextId) // 👈 البحث عن جلسة هذا الدرس
+        .eq('context_id', contextId) // 👈 يجب أن يطابق معرف الدرس
         .maybeSingle();
 
     if (existingSession) {
         sessionId = existingSession.id;
-        // تحديث وقت آخر ظهور
         await supabase.from('chat_sessions').update({ updated_at: new Date() }).eq('id', sessionId);
     } else {
-        // إنشاء جلسة جديدة مربوطة بهذا الدرس
+        // إنشاء جلسة جديدة لهذا الدرس
+        console.log(`✨ Creating NEW session for context: ${contextId}`);
         const { data: newSession } = await supabase.from('chat_sessions').insert({
             user_id: userId,
-            context_id: currentContextId, // 👈 ربط الجلسة بالدرس
-            context_type: currentContextId === 'general' ? 'general' : 'lesson',
-            summary: lessonTitle || 'General Chat'
+            context_id: contextId, // 👈 الحفظ بمعرف الدرس
+            context_type: contextId === 'general' ? 'general' : 'lesson',
+            summary: lessonTitle || `Lesson ${contextId}`
         }).select().single();
         sessionId = newSession.id;
     }
@@ -146,10 +164,14 @@ async function processChat(req, res) {
     }
 
     // 3. جلب السياق
-    let contentSnippet = "";
-    let locationContext = `Context: ${lessonTitle || 'General Discussion'}`;
-    if (lessonId && lessonId !== 'general') {
-        const { data: contentData } = await supabase.from('lessons_content').select('content').eq('lesson_id', lessonId).maybeSingle();
+     let contentSnippet = "";
+    if (contextId !== 'general') {
+        // جلب محتوى الدرس من قاعدة البيانات ليكون الـ AI عارفاً عما يتحدث
+        const { data: contentData } = await supabase
+            .from('lessons_content')
+            .select('content')
+            .eq('lesson_id', contextId)
+            .maybeSingle();
         if (contentData?.content) contentSnippet = contentData.content.substring(0, 15000);
     }
     const userProfile = await getProfile(userId);
@@ -157,13 +179,12 @@ async function processChat(req, res) {
     // ==================================================================================
     // 4. بناء الذاكرة "الحية" (استرجاع الصور القديمة وتحويلها لـ Base64)
     // ==================================================================================
-    const { data: historyData } = await supabase
+  const { data: historyData } = await supabase
         .from('chat_messages')
         .select('role, content, attachments')
-        .eq('session_id', sessionId)
+        .eq('session_id', sessionId) // ✅ جلب رسائل هذا الدرس فقط
         .order('created_at', { ascending: false })
         .limit(10); 
-
     // نعكس المصفوفة لتكون بالترتيب الزمني الصحيح
     const orderedHistory = (historyData || []).reverse();
 
@@ -208,10 +229,13 @@ async function processChat(req, res) {
     // ==================================================================================
 
     // 5. حفظ الرسالة الجديدة
-    await supabase.from('chat_messages').insert({
-        session_id: sessionId, user_id: userId, role: 'user', content: message,
+ await supabase.from('chat_messages').insert({
+        session_id: sessionId, // ✅ حفظ في جلسة الدرس
+        user_id: userId, 
+        role: 'user', 
+        content: message,
         attachments: dbAttachments, 
-        metadata: { context: lessonId }
+        metadata: { context: contextId }
     });
 
     // 6. استدعاء الذكاء الاصطناعي
@@ -264,15 +288,17 @@ async function processChat(req, res) {
     }
 
     // 9. حفظ رد البوت
-    await supabase.from('chat_messages').insert({
-        session_id: sessionId, user_id: userId, role: 'assistant', content: parsedResponse.reply,
-        metadata: { widgets: finalWidgets, lesson_signal: parsedResponse.lesson_signal }
+   await supabase.from('chat_messages').insert({
+        session_id: sessionId, // ✅ حفظ في جلسة الدرس
+        user_id: userId, 
+        role: 'assistant', 
+        content: parsedResponse.reply,
+        metadata: { widgets: parsedResponse.widgets || [] }
     });
 
-    // 10. إرسال النتيجة
     res.status(200).json({
         reply: parsedResponse.reply,
-        widgets: finalWidgets,
+        widgets: parsedResponse.widgets || [],
         sessionId: sessionId
     });
 
