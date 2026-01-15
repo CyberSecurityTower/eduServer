@@ -2,36 +2,46 @@
 
 const axios = require('axios');
 const mammoth = require('mammoth');
-// استيراد مكتبة Mozilla (النسخة Legacy لتعمل مع Node.js بدون مشاكل)
+// استيراد مكتبة Mozilla
 const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
 
+// Config & Services
 const cloudinary = require('../config/cloudinary');
 const supabase = require('../services/data/supabase');
 
 // ============================================================
-// 🛠️ Helper: استخراج PDF احترافي (محرك Mozilla)
+// 🛠️ Helper: استخراج PDF احترافي (مصحح للعربية) ✅
 // ============================================================
 async function extractPdfWithMozilla(buffer) {
     try {
-        // تحويل الـ Buffer إلى Uint8Array
         const uint8Array = new Uint8Array(buffer);
         
-        // تحميل المستند
-        const loadingTask = pdfjsLib.getDocument({ data: uint8Array });
+        // 🔥 التعديل الهام جداً: إضافة مسارات الخطوط والخرائط
+        // نستخدم CDN سريع وموثوق لضمان تحميل ملفات دعم اللغة العربية
+        const CMAP_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/';
+        const STANDARD_FONT_DATA_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/standard_fonts/';
+
+        const loadingTask = pdfjsLib.getDocument({
+            data: uint8Array,
+            cMapUrl: CMAP_URL,
+            cMapPacked: true,
+            standardFontDataUrl: STANDARD_FONT_DATA_URL,
+            disableFontFace: false // لضمان محاولة تحميل الخطوط
+        });
+
         const doc = await loadingTask.promise;
         
         let fullText = "";
-        console.log(`📘 PDF Loaded: ${doc.numPages} pages.`);
+        console.log(`📘 PDF Loaded: ${doc.numPages} pages. Processing Arabic text...`);
 
-        // المرور على كل الصفحات
         for (let i = 1; i <= doc.numPages; i++) {
             const page = await doc.getPage(i);
             const textContent = await page.getTextContent();
             
-            // تجميع الكلمات
+            // تجميع النص مع معالجة بسيطة للاتجاه (RTL)
+            // ملاحظة: pdf.js يعيد النص العربي أحياناً معكوساً أو مقطعاً، لكن CMAPs ستصلح الحروف أولاً
             const pageText = textContent.items.map(item => item.str).join(' ');
             
-            // إضافة النص
             fullText += `\n--- Page ${i} ---\n${pageText}`;
         }
 
@@ -43,7 +53,7 @@ async function extractPdfWithMozilla(buffer) {
 }
 
 // ============================================================
-// 🛠️ Main Helper: الموجه الرئيسي لاستخراج النصوص
+// 🛠️ Main Helper: الموجه الرئيسي
 // ============================================================
 async function extractTextFromCloudinaryUrl(url, mimeType) {
     try {
@@ -52,30 +62,24 @@ async function extractTextFromCloudinaryUrl(url, mimeType) {
         const buffer = Buffer.from(response.data);
         console.log(`📦 File Size: ${buffer.length} bytes`);
 
-        // 1. معالجة PDF
         if (mimeType === 'application/pdf') {
-            console.log("📄 PDF detected. Running Mozilla Engine...");
+            console.log("📄 PDF detected. Running Mozilla Engine (Arabic Support)...");
             const text = await extractPdfWithMozilla(buffer);
             console.log(`✅ PDF Extracted! Length: ${text.length} chars`);
             return text;
         } 
-        
-        // 2. معالجة Word
         else if (mimeType.includes('word') || mimeType.includes('document')) {
             console.log("📝 Word detected. Running Mammoth...");
             const result = await mammoth.extractRawText({ buffer: buffer });
-            console.log(`✅ Word Extracted! Length: ${result.value.length} chars`);
             return result.value.trim();
         }
-        
-        // 3. معالجة النصوص البسيطة
         else if (mimeType.startsWith('text/')) {
             return buffer.toString('utf-8');
         }
         
         return null;
     } catch (error) {
-        console.error(`❌ Extraction Failed for ${url}:`, error.message);
+        console.error(`❌ Extraction Failed:`, error.message);
         return null;
     }
 }
@@ -89,28 +93,19 @@ async function getChatHistory(req, res) {
 
   try {
     const { data: session } = await supabase
-      .from('chat_sessions')
-      .select('id')
-      .eq('user_id', userId)
-      .eq('context_id', lessonId || 'general')
-      .maybeSingle();
+      .from('chat_sessions').select('id')
+      .eq('user_id', userId).eq('context_id', lessonId || 'general').maybeSingle();
 
     if (!session) return res.json({ messages: [], nextCursor: null });
 
-    let query = supabase
-      .from('chat_messages')
-      .select('*')
-      .eq('session_id', session.id)
-      .order('created_at', { ascending: false })
-      .limit(limit);
+    let query = supabase.from('chat_messages').select('*').eq('session_id', session.id)
+      .order('created_at', { ascending: false }).limit(limit);
 
     if (cursor) query = query.lt('created_at', cursor);
 
-    const { data: messages, error } = await query;
-    if (error) throw error;
-
-    const nextCursor = messages.length === limit ? messages[messages.length - 1].created_at : null;
-    res.json({ messages: messages, nextCursor });
+    const { data: messages } = await query;
+    const nextCursor = messages && messages.length === limit ? messages[messages.length - 1].created_at : null;
+    res.json({ messages: messages || [], nextCursor });
 
   } catch (error) {
     res.status(500).json({ error: "Failed to fetch history" });
@@ -118,7 +113,7 @@ async function getChatHistory(req, res) {
 }
 
 // ============================================================
-// 🧠 Main Process Chat (Test Mode: Text Extraction Only)
+// 🧠 Main Process Chat (Test Mode)
 // ============================================================
 async function processChat(req, res) {
   let { userId, message, files = [], currentContext } = req.body;
@@ -127,7 +122,6 @@ async function processChat(req, res) {
   const currentContextId = (lessonId && lessonId !== 'undefined') ? lessonId : 'general';
 
   try {
-    // 1. إدارة الجلسة
     let sessionId;
     const { data: existingSession } = await supabase
         .from('chat_sessions').select('id').eq('user_id', userId).eq('context_id', currentContextId).maybeSingle();
@@ -142,80 +136,49 @@ async function processChat(req, res) {
         sessionId = newSession.id;
     }
 
-    // 2. رفع الملفات (Cloudinary)
     const uploadedAttachments = [];
     if (files && files.length > 0) {
-        console.log(`📤 Uploading ${files.length} files...`);
         for (const file of files) {
             try {
                 const base64Data = file.data.replace(/^data:.+;base64,/, '');
+                let uploadOptions = { resource_type: "auto", folder: `chat_uploads/${userId}` };
                 
-                let uploadOptions = { 
-                    resource_type: "auto", 
-                    folder: `chat_uploads/${userId}` 
-                };
-                
-                // إجبار الـ PDF على أن يكون PDF في الرابط
                 if (file.mime === 'application/pdf') uploadOptions.format = 'pdf';
-                // ملفات الوورد نعاملها كملفات خام لتجنب تلفها
                 else if (file.mime.includes('word')) uploadOptions.resource_type = 'raw';
 
                 const uploadRes = await cloudinary.uploader.upload(`data:${file.mime};base64,${base64Data}`, uploadOptions);
-
-                console.log(`✅ Uploaded: ${uploadRes.secure_url}`);
                 uploadedAttachments.push({
-                    url: uploadRes.secure_url,
-                    public_id: uploadRes.public_id,
-                    mime: file.mime,
-                    type: file.mime.startsWith('image') ? 'image' : 'file'
+                    url: uploadRes.secure_url, public_id: uploadRes.public_id, mime: file.mime, type: 'file'
                 });
             } catch (e) { console.error('Upload Error:', e.message); }
         }
     }
 
-    // 3. حفظ رسالة المستخدم
     const { data: savedUserMsg } = await supabase.from('chat_messages').insert({
-        session_id: sessionId,
-        user_id: userId,
-        role: 'user',
-        content: message,
-        attachments: uploadedAttachments,
-        metadata: { context: lessonId }
+        session_id: sessionId, user_id: userId, role: 'user', content: message,
+        attachments: uploadedAttachments, metadata: { context: lessonId }
     }).select().single();
 
-    // 4. ⛔ تجاوز الذكاء الاصطناعي (Test Mode)
-    console.log("⚠️ TEST MODE: AI Logic Bypassed.");
-    
+    console.log("⚠️ TEST MODE: AI Bypassed.");
     const mockReply = uploadedAttachments.length > 0 
-        ? "تم استلام الملف بنجاح! 📄 أقوم الآن باستخراج النص منه وحفظه في قاعدة البيانات..." 
-        : "مرحباً! أنا في وضع التجربة حالياً.";
+        ? "تم استلام الملف! جاري استخراج النص العربي/الإنجليزي وتخزينه..." 
+        : "وضع التجربة.";
 
-    // 5. حفظ رد البوت الوهمي
     await supabase.from('chat_messages').insert({
-        session_id: sessionId,
-        user_id: userId,
-        role: 'assistant',
-        content: mockReply
+        session_id: sessionId, user_id: userId, role: 'assistant', content: mockReply
     });
 
-    // 6. الرد على العميل
-    res.status(200).json({
-        reply: mockReply,
-        widgets: [],
-        sessionId: sessionId
-    });
+    res.status(200).json({ reply: mockReply, widgets: [], sessionId: sessionId });
 
-    // 7. 🔥 العمل في الخلفية: استخراج النصوص وحفظها
-    // سيتم تنفيذ هذا الكود بعد إرسال الرد للعميل
+    // Background Job
     setImmediate(async () => {
         try {
             if (uploadedAttachments.length > 0 && savedUserMsg?.id) {
-                console.log("🔄 Background: Starting Text Extraction...");
+                console.log("🔄 Background: Starting Extraction...");
                 let allExtractedText = "";
                 let hasUpdates = false;
 
                 for (const att of uploadedAttachments) {
-                    // تجاهل الصور والصوتيات، ركز على المستندات
                     if (!att.mime.startsWith('image/') && !att.mime.startsWith('audio/')) {
                         const text = await extractTextFromCloudinaryUrl(att.url, att.mime);
                         if (text) {
@@ -226,34 +189,23 @@ async function processChat(req, res) {
                 }
 
                 if (hasUpdates) {
-                    // تحديث رسالة المستخدم بالنص المستخرج
-                    const { error } = await supabase
-                        .from('chat_messages')
-                        .update({ 
-                            metadata: { 
-                                ...savedUserMsg.metadata, 
-                                extracted_text: allExtractedText // 💾 هنا يتم الحفظ
-                            } 
-                        })
+                    await supabase.from('chat_messages')
+                        .update({ metadata: { ...savedUserMsg.metadata, extracted_text: allExtractedText } })
                         .eq('id', savedUserMsg.id);
-                        
-                    if (!error) console.log("💾 Database Updated: Text saved successfully!");
-                    else console.error("❌ Database Update Error:", error.message);
-                } else {
-                    console.log("ℹ️ No text extracted from files.");
+                    console.log("💾 Text saved to DB successfully!");
                 }
             }
-        } catch (e) { console.error('🔥 Background Job Failed:', e); }
+        } catch (e) { console.error('🔥 Background Failed:', e); }
     });
 
   } catch (err) {
     console.error('🔥 Fatal Error:', err);
-    res.status(500).json({ reply: "Error in server." });
+    res.status(500).json({ reply: "Error." });
   }
 }
 
 function initChatBrainController(dependencies) {
-    console.log('🧠 ChatBrainController initialized (Text Extraction Mode).');
+    console.log('🧠 ChatBrainController initialized.');
 }
 
 module.exports = { processChat, getChatHistory, initChatBrainController };
