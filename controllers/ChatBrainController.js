@@ -68,21 +68,34 @@ async function processChat(req, res) {
     }
 
     // 2. تجهيز الملفات الحالية (Base64 جاهز من الفرونت إند)
-    const geminiAttachments = []; 
+   const geminiAttachments = []; 
     const dbAttachments = [];     
 
     if (files && files.length > 0) {
         for (const file of files) {
             try {
                 const base64Data = file.data.replace(/^data:.+;base64,/, '');
+                
+                // إضافة للمودل (Gemini)
                 geminiAttachments.push({
                     inlineData: { data: base64Data, mimeType: file.mime }
                 });
 
-                let uploadOptions = { resource_type: "auto", folder: `chat_uploads/${userId}` };
+                // إعدادات الرفع لـ Cloudinary
+                let uploadOptions = { 
+                    resource_type: "auto", 
+                    folder: `chat_uploads/${userId}` 
+                };
+                
                 if (file.mime === 'application/pdf') uploadOptions.format = 'pdf'; 
+                
+                // 🔴 بالإضافة: الصوت يفضل رفعه كـ video في Cloudinary ليعمل المشغل
+                if (file.mime.startsWith('audio')) {
+                    uploadOptions.resource_type = "video"; 
+                }
 
                 const uploadRes = await cloudinary.uploader.upload(`data:${file.mime};base64,${base64Data}`, uploadOptions);
+                
                 dbAttachments.push({
                     url: uploadRes.secure_url,
                     public_id: uploadRes.public_id,
