@@ -2,6 +2,8 @@
 
 const axios = require('axios');
 const mammoth = require('mammoth');
+const path = require('path'); // ✅ نحتاج هذا لتحديد المسار المحلي
+
 // استيراد مكتبة Mozilla
 const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
 
@@ -16,33 +18,41 @@ async function extractPdfWithMozilla(buffer) {
     try {
         const uint8Array = new Uint8Array(buffer);
         
-        // 🔥 التعديل الهام جداً: إضافة مسارات الخطوط والخرائط
-        // نستخدم CDN سريع وموثوق لضمان تحميل ملفات دعم اللغة العربية
-        const CMAP_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/';
-        const STANDARD_FONT_DATA_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/standard_fonts/';
+        // 🔥 الحل الجذري: تحديد مسار الملفات محلياً من node_modules
+        // نستخدم require.resolve للعثور على مكان المكتبة بدقة داخل السيرفر
+        const pdfLibPath = require.resolve('pdfjs-dist/legacy/build/pdf.js');
+        // نرجع للخلف 3 خطوات للوصول للمجلد الرئيسي: build -> legacy -> pdfjs-dist -> cmaps
+        const pdfDistDir = path.dirname(path.dirname(path.dirname(pdfLibPath)));
+        
+        const CMAP_URL = path.join(pdfDistDir, 'cmaps/');
+        const STANDARD_FONT_DATA_URL = path.join(pdfDistDir, 'standard_fonts/');
+
+        console.log(`📂 Loading fonts from: ${CMAP_URL}`);
 
         const loadingTask = pdfjsLib.getDocument({
             data: uint8Array,
-            cMapUrl: CMAP_URL,
+            cMapUrl: CMAP_URL, // ✅ مسار محلي
             cMapPacked: true,
-            standardFontDataUrl: STANDARD_FONT_DATA_URL,
-            disableFontFace: false // لضمان محاولة تحميل الخطوط
+            standardFontDataUrl: STANDARD_FONT_DATA_URL, // ✅ مسار محلي
+            disableFontFace: true, // تعطيل تحميل الخطوط الخارجية لتسريع العملية والاعتماد على المحلي
         });
 
         const doc = await loadingTask.promise;
         
         let fullText = "";
-        console.log(`📘 PDF Loaded: ${doc.numPages} pages. Processing Arabic text...`);
+        console.log(`📘 PDF Loaded: ${doc.numPages} pages. Parsing Arabic...`);
 
         for (let i = 1; i <= doc.numPages; i++) {
             const page = await doc.getPage(i);
             const textContent = await page.getTextContent();
             
-            // تجميع النص مع معالجة بسيطة للاتجاه (RTL)
-            // ملاحظة: pdf.js يعيد النص العربي أحياناً معكوساً أو مقطعاً، لكن CMAPs ستصلح الحروف أولاً
+            // تجميع النص
             const pageText = textContent.items.map(item => item.str).join(' ');
             
-            fullText += `\n--- Page ${i} ---\n${pageText}`;
+            // تنظيف النص (إزالة الفراغات الزائدة)
+            const cleanPageText = pageText.replace(/\s+/g, ' ').trim();
+            
+            fullText += `\n--- Page ${i} ---\n${cleanPageText}`;
         }
 
         return fullText.trim();
@@ -51,7 +61,6 @@ async function extractPdfWithMozilla(buffer) {
         throw e;
     }
 }
-
 // ============================================================
 // 🛠️ Main Helper: الموجه الرئيسي
 // ============================================================
@@ -63,7 +72,7 @@ async function extractTextFromCloudinaryUrl(url, mimeType) {
         console.log(`📦 File Size: ${buffer.length} bytes`);
 
         if (mimeType === 'application/pdf') {
-            console.log("📄 PDF detected. Running Mozilla Engine (Arabic Support)...");
+            console.log("📄 PDF detected. Running Local Engine...");
             const text = await extractPdfWithMozilla(buffer);
             console.log(`✅ PDF Extracted! Length: ${text.length} chars`);
             return text;
@@ -83,7 +92,6 @@ async function extractTextFromCloudinaryUrl(url, mimeType) {
         return null;
     }
 }
-
 // ============================================================
 // 📜 Get Chat History
 // ============================================================
