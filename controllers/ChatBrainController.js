@@ -24,8 +24,15 @@ async function fetchFileAsBase64(url) {
 // ============================================================
 // 1. استرجاع التاريخ (Strict Lesson Mode)
 // ============================================================
+
 async function getChatHistory(req, res) {
-  const { userId, lessonId, cursor } = req.query;
+  const { userId, lessonId, cursor } = req.query; 
+  console.log(`🔍 SERVER Fetching History for Lesson: ${lessonId}`);
+
+  let contextId = lessonId;
+  if (!contextId || contextId === 'undefined' || contextId === 'null') {
+      contextId = 'general';
+  }
   const limit = 20;
 
   try {
