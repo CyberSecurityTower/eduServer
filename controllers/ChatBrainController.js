@@ -34,7 +34,8 @@ async function extractPdfWithMozilla(buffer) {
             cMapUrl: CMAP_URL, // ✅ مسار محلي
             cMapPacked: true,
             standardFontDataUrl: STANDARD_FONT_DATA_URL, // ✅ مسار محلي
-            disableFontFace: true, // تعطيل تحميل الخطوط الخارجية لتسريع العملية والاعتماد على المحلي
+            disableFontFace: false,
+            fontExtraProperties: true
         });
 
         const doc = await loadingTask.promise;
