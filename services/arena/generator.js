@@ -1,5 +1,4 @@
 
-// services/arena/generator.js
 'use strict';
 
 const supabase = require('../data/supabase');
@@ -7,18 +6,15 @@ const { shuffled } = require('../../utils');
 const logger = require('../../utils/logger');
 
 async function generateArenaExam(lessonId, mode = 'practice') {
-  // 1. تنظيف المعرف من أي مسافات زائدة
   const cleanLessonId = lessonId.trim();
-
-  // 🔥 طباعة للتشخيص (انظر للتيرمينال بعد تشغيل هذا)
   console.log(`🔍 [DEBUG] Searching for lessonId: '${cleanLessonId}'`);
 
   try {
-    // 1. جلب الهيكل الذري
+    // 1. جلب الهيكل
     const { data: structureData, error: structError } = await supabase
       .from('atomic_lesson_structures')
       .select('structure_data')
-      .eq('lesson_id', cleanLessonId) // استخدام المعرف النظيف
+      .eq('lesson_id', cleanLessonId)
       .single();
 
     if (structError || !structureData) {
@@ -28,29 +24,28 @@ async function generateArenaExam(lessonId, mode = 'practice') {
     const atoms = structureData?.structure_data?.elements || [];
     const atomIds = atoms.map(el => el.id); 
 
-    // 2. جلب الأسئلة
-    // 🚨 انتبه: لقد أزلت شرط التوثيق تماماً هنا
+    // 2. جلب الأسئلة (مع استثناء FILL_BLANKS من قاعدة البيانات مباشرة إذا أمكن، أو الفلترة لاحقاً)
     const { data: allQuestions, error: qError } = await supabase
       .from('question_bank')
-      .select('id, atom_id, widget_type, content, difficulty, lesson_id') // أضفت lesson_id للتأكد
+      .select('id, atom_id, widget_type, content, difficulty, lesson_id')
       .eq('lesson_id', cleanLessonId)
-      .neq('widget_type', 'FILL_BLANKS');
-  let filteredQuestions = allQuestions;
+      .neq('widget_type', 'FILL_BLANKS'); // استبعاد مباشر
 
-    // تصفية الأسئلة لاستبعاد ملء الفراغات
+    let filteredQuestions = allQuestions;
+
+    // طبقة أمان إضافية للفلترة
     if (allQuestions && allQuestions.length > 0) {
         filteredQuestions = allQuestions.filter(q => q.widget_type !== 'FILL_BLANKS');
     }
-    // 🔥 طباعة نتيجة الاستعلام
-    console.log(`🔍 [DEBUG] Query Result Length: ${filteredQuestions?.length}`);
+
+    console.log(`🔍 [DEBUG] Query Result Length after filter: ${filteredQuestions?.length}`);
     if (qError) console.error("❌ [DEBUG] Supabase Error:", qError);
 
     if (qError || !filteredQuestions || filteredQuestions.length === 0) {
-        // هذا السطر هو الذي يسبب الخطأ عندك، اللوج أعلاه سيخبرنا لماذا وصلنا هنا
         throw new Error('No questions found for this lesson.');
     }
 
-    // ... باقي الكود كما هو (منطق الـ 10 أسئلة) ...
+    // منطق اختيار الـ 10 أسئلة
     const TARGET_QUESTION_COUNT = 10;
     let selectedQuestions = [];
     const usedQuestionIds = new Set();
@@ -74,10 +69,9 @@ async function generateArenaExam(lessonId, mode = 'practice') {
     selectedQuestions = selectedQuestions.slice(0, TARGET_QUESTION_COUNT);
 
      const examPayload = selectedQuestions.map(q => {
-        // استنساخ المحتوى
         const clientContent = JSON.parse(JSON.stringify(q.content));
         
-        //  حذف مفاتيح الإجابات بناءً على نوع السؤال
+        // حذف الإجابات الصحيحة لمنع الغش
         switch (q.widget_type) {
             case 'MCQ':
                 clientContent.options = shuffled(clientContent.options); 
@@ -86,7 +80,6 @@ async function generateArenaExam(lessonId, mode = 'practice') {
             case 'TRUE_FALSE':
             case 'YES_NO':
             case 'MCM':
-            case 'FILL_BLANKS':
                 delete clientContent.correctAnswer;
                 break;
             case 'ORDERING':
@@ -101,9 +94,9 @@ async function generateArenaExam(lessonId, mode = 'practice') {
             id: q.id,
             type: q.widget_type,
             atom_id: q.atom_id, 
-            content: clientContent, // الآن المحتوى نظيف تماماً
+            content: clientContent,
             difficulty: q.difficulty,
-            points: 2 
+            points: 2 // توحيد النقاط لتبسيط الحساب / 20 درجة المجموع
         };
     });
 
