@@ -176,6 +176,7 @@ async function processChat(req, res) {
         if (contentData?.content) contentSnippet = contentData.content.substring(0, 15000);
     }
     const userProfile = await getProfile(userId);
+          const locationContext = location || "Algeria"; 
 
     // ==================================================================================
     // 4. بناء الذاكرة "الحية" (استرجاع الصور القديمة وتحويلها لـ Base64)
