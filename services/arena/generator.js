@@ -67,19 +67,35 @@ async function generateArenaExam(lessonId, mode = 'practice') {
 
     selectedQuestions = selectedQuestions.slice(0, TARGET_QUESTION_COUNT);
 
-    const examPayload = selectedQuestions.map(q => {
+     const examPayload = selectedQuestions.map(q => {
+        // استنساخ المحتوى
         const clientContent = JSON.parse(JSON.stringify(q.content));
-        if (q.widget_type === 'MCQ') {
-            delete clientContent.correctAnswer;
-            clientContent.options = shuffled(clientContent.options); 
-        } else if (q.widget_type === 'TRUE_FALSE' || q.widget_type === 'YES_NO') {
-             delete clientContent.correctAnswer;
+        
+        //  حذف مفاتيح الإجابات بناءً على نوع السؤال
+        switch (q.widget_type) {
+            case 'MCQ':
+                clientContent.options = shuffled(clientContent.options); 
+                delete clientContent.correctAnswer;
+                break;
+            case 'TRUE_FALSE':
+            case 'YES_NO':
+            case 'MCM':
+            case 'FILL_BLANKS':
+                delete clientContent.correctAnswer;
+                break;
+            case 'ORDERING':
+                delete clientContent.correct_order;
+                break;
+            case 'MATCHING':
+                delete clientContent.correct_matches;
+                break;
         }
+        
         return {
             id: q.id,
             type: q.widget_type,
             atom_id: q.atom_id, 
-            content: clientContent,
+            content: clientContent, // الآن المحتوى نظيف تماماً
             difficulty: q.difficulty,
             points: 2 
         };
