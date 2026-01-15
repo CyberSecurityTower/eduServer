@@ -124,6 +124,7 @@ async function processChat(req, res) {
         sessionId = newSession.id;
     }
 
+
     // 2. تجهيز الملفات الحالية (Base64 جاهز من الفرونت إند)
    const geminiAttachments = []; 
     const dbAttachments = [];     
