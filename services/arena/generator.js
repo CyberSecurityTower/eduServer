@@ -9,8 +9,8 @@ const logger = require('../../utils/logger');
 /**
  * خدمة توليد الامتحان (The Arena Generator)
  * 1. تجلب هيكل الدرس (الذرات).
- * 2. تحاول إيجاد سؤال لكل ذرة لضمان تغطية شاملة.
- * 3. تملأ الفراغات بأسئلة عشوائية من نفس الدرس إذا نقصت الأسئلة.
+ * 2. تحاول إيجاد سؤال لكل ذرة لضمان تغطية شاملة بحد أقصى 10 أسئلة.
+ * 3. تملأ الفراغات بأسئلة عشوائية لتكمل العدد إلى 10 بالضبط.
  */
 async function generateArenaExam(lessonId, mode = 'practice') {
   try {
@@ -27,27 +27,29 @@ async function generateArenaExam(lessonId, mode = 'practice') {
 
     // استخراج معرفات الذرات (Atom IDs)
     const atoms = structureData?.structure_data?.elements || [];
-    const atomIds = atoms.map(el => el.id); // ['intro', 'concept_1', 'concept_2'...]
+    const atomIds = atoms.map(el => el.id); 
 
     // 2. جلب الأسئلة من بنك الأسئلة
-    // سنجلب كل الأسئلة المتاحة لهذا الدرس (أو عينة كبيرة) ثم نصفيها برمجياً لضمان التوزيع
     const { data: allQuestions, error: qError } = await supabase
       .from('question_bank')
       .select('id, atom_id, widget_type, content, difficulty')
       .eq('lesson_id', lessonId)
-      .eq('is_verified', true); // فقط الأسئلة الموثقة
+      .eq('is_verified', true); 
 
     if (qError || !allQuestions || allQuestions.length === 0) {
         throw new Error('No questions found for this lesson.');
     }
 
-    // 3. خوارزمية التوزيع الذكي (Atom Coverage)
+    // 3. خوارزمية التوزيع (10 أسئلة بالضبط)
+    const TARGET_QUESTION_COUNT = 10;
     let selectedQuestions = [];
     const usedQuestionIds = new Set();
 
     // أ. محاولة إيجاد سؤال واحد لكل ذرة (Concept)
     for (const atomId of atomIds) {
-        // نخلط الأسئلة المتاحة لهذه الذرة ونأخذ واحداً
+        // إذا وصلنا للعدد المستهدف (10)، نتوقف فوراً حتى لو بقيت ذرات
+        if (selectedQuestions.length >= TARGET_QUESTION_COUNT) break;
+
         const candidates = allQuestions.filter(q => q.atom_id === atomId);
         if (candidates.length > 0) {
             const picked = candidates[Math.floor(Math.random() * candidates.length)];
@@ -56,41 +58,51 @@ async function generateArenaExam(lessonId, mode = 'practice') {
         }
     }
 
-    // ب. إذا كان عدد الأسئلة قليلاً (أقل من 5 مثلاً)، نملأ الباقي عشوائياً من نفس الدرس
-    const MIN_QUESTIONS = 5;
-    if (selectedQuestions.length < MIN_QUESTIONS) {
+    // ب. ملء الباقي للوصول إلى 10 أسئلة بالضبط
+    if (selectedQuestions.length < TARGET_QUESTION_COUNT) {
+        // نأخذ الأسئلة التي لم نستخدمها بعد
         const remainingQuestions = shuffled(allQuestions.filter(q => !usedQuestionIds.has(q.id)));
-        const needed = MIN_QUESTIONS - selectedQuestions.length;
+        
+        // نحسب كم سؤالاً ناقصاً
+        const needed = TARGET_QUESTION_COUNT - selectedQuestions.length;
+        
+        // نضيف العدد المطلوب (أو المتاح إذا كان المخزون قليلاً)
         selectedQuestions.push(...remainingQuestions.slice(0, needed));
     }
 
-    // 4. التنسيق النهائي (تنظيف البيانات)
-    // لا نرسل الإجابة الصحيحة للفرونت أند لمنع الغش!
+    // ج. إجراء احترازي: التأكد من أن المصفوفة لا تتجاوز 10 أبداً
+    // (قد يحدث هذا إذا كان هناك خلل منطقي، لذا الـ slice هو صمام الأمان)
+    selectedQuestions = selectedQuestions.slice(0, TARGET_QUESTION_COUNT);
+
+    // 4. التنسيق النهائي (تنظيف البيانات من الإجابات)
     const examPayload = selectedQuestions.map(q => {
-        // استنساخ المحتوى لعدم تعديل الأصل
+        // استنساخ المحتوى
         const clientContent = JSON.parse(JSON.stringify(q.content));
         
-        // حذف حقل الإجابة الصحيحة بناءً على نوع السؤال
+        // حذف الإجابات لمنع الغش
         if (q.widget_type === 'MCQ') {
-            delete clientContent.correctAnswer; // نحذف الإجابة
-            clientContent.options = shuffled(clientContent.options); // خلط الخيارات
-        } else if (q.widget_type === 'TRUE_FALSE') {
+            delete clientContent.correctAnswer;
+            clientContent.options = shuffled(clientContent.options); 
+        } else if (q.widget_type === 'TRUE_FALSE' || q.widget_type === 'YES_NO') {
              delete clientContent.correctAnswer;
         }
+        // يمكن إضافة المزيد من التنظيف لباقي الأنواع (MCM, Ordering) هنا حسب هيكلة بياناتك
         
         return {
             id: q.id,
             type: q.widget_type,
-            atom_id: q.atom_id, // مفيد للفرونت ليعرف أي مفهوم يختبر
+            atom_id: q.atom_id, 
             content: clientContent,
-            difficulty: q.difficulty
+            difficulty: q.difficulty,
+            points: 2 // نقطتان لكل سؤال ليكون المجموع 20
         };
     });
 
     return {
-        examId: crypto.randomUUID(), // معرف مؤقت للجلسة
+        examId: crypto.randomUUID(), 
         lessonId,
-        questions: shuffled(examPayload) // خلط ترتيب الأسئلة النهائي
+        // خلط الترتيب النهائي للأسئلة لكي لا تظهر أسئلة الذرات متتالية دائماً
+        questions: shuffled(examPayload) 
     };
 
   } catch (error) {
