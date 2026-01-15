@@ -1,80 +1,87 @@
 'use strict';
 
 const axios = require('axios');
-const crypto = require('crypto');
 const mammoth = require('mammoth');
+// استيراد مكتبة Mozilla (النسخة Legacy لتعمل مع Node.js بدون مشاكل)
+const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
 
-// 👇 التعديل الجذري: محاولة استيراد المكتبة بطرق متعددة لضمان عملها
-let pdfParse;
-try {
-    // المحاولة 1: الاستدعاء الصريح لملف index
-    const lib = require('pdf-parse/index'); 
-    pdfParse = lib.default || lib;
-} catch (e) {
+const cloudinary = require('../config/cloudinary');
+const supabase = require('../services/data/supabase');
+
+// ============================================================
+// 🛠️ Helper: استخراج PDF احترافي (محرك Mozilla)
+// ============================================================
+async function extractPdfWithMozilla(buffer) {
     try {
-        // المحاولة 2: الاستدعاء العادي
-        const lib = require('pdf-parse');
-        pdfParse = lib.default || lib;
-    } catch (e2) {
-        console.error("🔥 PDF Library missing!");
+        // تحويل الـ Buffer إلى Uint8Array
+        const uint8Array = new Uint8Array(buffer);
+        
+        // تحميل المستند
+        const loadingTask = pdfjsLib.getDocument({ data: uint8Array });
+        const doc = await loadingTask.promise;
+        
+        let fullText = "";
+        console.log(`📘 PDF Loaded: ${doc.numPages} pages.`);
+
+        // المرور على كل الصفحات
+        for (let i = 1; i <= doc.numPages; i++) {
+            const page = await doc.getPage(i);
+            const textContent = await page.getTextContent();
+            
+            // تجميع الكلمات
+            const pageText = textContent.items.map(item => item.str).join(' ');
+            
+            // إضافة النص
+            fullText += `\n--- Page ${i} ---\n${pageText}`;
+        }
+
+        return fullText.trim();
+    } catch (e) {
+        console.error("❌ Mozilla PDF Extract Error:", e.message);
+        throw e;
     }
 }
 
-// ... Config & Services ...
-const cloudinary = require('../config/cloudinary');
-const supabase = require('../services/data/supabase');
-const generateWithFailover = require('../services/ai/failover');
-const { markLessonComplete } = require('../services/engines/gatekeeper');
-const PROMPTS = require('../config/ai-prompts'); 
-
 // ============================================================
-// 🛠️ Helper: استخراج النصوص (النسخة النهائية)
+// 🛠️ Main Helper: الموجه الرئيسي لاستخراج النصوص
 // ============================================================
 async function extractTextFromCloudinaryUrl(url, mimeType) {
     try {
-        // 1. تحميل الملف
-        const response = await axios.get(url, { 
-            responseType: 'arraybuffer',
-            timeout: 25000 // مهلة كافية
-        });
+        console.log(`📥 Downloading: ${url}`);
+        const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 25000 });
         const buffer = Buffer.from(response.data);
+        console.log(`📦 File Size: ${buffer.length} bytes`);
 
-        // 2. معالجة PDF
+        // 1. معالجة PDF
         if (mimeType === 'application/pdf') {
-            
-            // فحص أخير قبل التشغيل
-            if (typeof pdfParse !== 'function') {
-                console.error("⚠️ pdf-parse is NOT a function:", typeof pdfParse);
-                // محاولة يائسة أخيرة: إذا كانت كائناً، ربما هي module export
-                if (typeof pdfParse === 'object') {
-                    console.log("⚠️ Trying to extract from Object keys:", Object.keys(pdfParse));
-                }
-                throw new Error("PDF Library is corrupted on server.");
-            }
-
-            console.log("📄 Parsing PDF...");
-            const data = await pdfParse(buffer);
-            return data.text.replace(/\n\s*\n/g, '\n').trim(); 
+            console.log("📄 PDF detected. Running Mozilla Engine...");
+            const text = await extractPdfWithMozilla(buffer);
+            console.log(`✅ PDF Extracted! Length: ${text.length} chars`);
+            return text;
         } 
         
-        // 3. معالجة Word
-        else if (mimeType.includes('wordprocessingml') || mimeType.includes('msword')) {
+        // 2. معالجة Word
+        else if (mimeType.includes('word') || mimeType.includes('document')) {
+            console.log("📝 Word detected. Running Mammoth...");
             const result = await mammoth.extractRawText({ buffer: buffer });
+            console.log(`✅ Word Extracted! Length: ${result.value.length} chars`);
             return result.value.trim();
         }
+        
+        // 3. معالجة النصوص البسيطة
         else if (mimeType.startsWith('text/')) {
             return buffer.toString('utf-8');
         }
         
         return null;
     } catch (error) {
-        console.error(`❌ Text Extraction Failed for ${url}:`, error.message);
+        console.error(`❌ Extraction Failed for ${url}:`, error.message);
         return null;
     }
 }
 
 // ============================================================
-// 📜 Get Chat History (كما هو)
+// 📜 Get Chat History
 // ============================================================
 async function getChatHistory(req, res) {
   const { userId, lessonId, cursor } = req.query;
@@ -103,165 +110,71 @@ async function getChatHistory(req, res) {
     if (error) throw error;
 
     const nextCursor = messages.length === limit ? messages[messages.length - 1].created_at : null;
-
     res.json({ messages: messages, nextCursor });
 
   } catch (error) {
-    console.error("Fetch History Error:", error);
     res.status(500).json({ error: "Failed to fetch history" });
   }
 }
 
-const keyPart = process.env.SUPABASE_SERVICE_ROLE_KEY ? process.env.SUPABASE_SERVICE_ROLE_KEY.substring(0, 20) : "NO_KEY";
-console.log("🔑 KEY BEING USED:", keyPart, "...");
 // ============================================================
-// 🧠 Main Process Chat (Final Version)
+// 🧠 Main Process Chat (Test Mode: Text Extraction Only)
 // ============================================================
 async function processChat(req, res) {
-  // 1. استخراج البيانات (ندعم currentContext أو القيم المباشرة)
-  let { 
-    userId, message, files = [], webSearch, 
-    currentContext 
-  } = req.body;
-
-  // استخراج معرف وعنوان الدرس بدقة
+  let { userId, message, files = [], currentContext } = req.body;
   const lessonId = currentContext?.lessonId || req.body.lessonId;
   const lessonTitle = currentContext?.lessonTitle || req.body.lessonTitle;
-
-  // تحديد سياق الجلسة (إذا لم يوجد درس، نعتبره general)
   const currentContextId = (lessonId && lessonId !== 'undefined') ? lessonId : 'general';
 
   try {
-    // ---------------------------------------------------------
-    // 2. إدارة الجلسة (Session Management)
-    // ---------------------------------------------------------
+    // 1. إدارة الجلسة
     let sessionId;
     const { data: existingSession } = await supabase
-        .from('chat_sessions')
-        .select('id')
-        .eq('user_id', userId)
-        .eq('context_id', currentContextId)
-        .maybeSingle();
+        .from('chat_sessions').select('id').eq('user_id', userId).eq('context_id', currentContextId).maybeSingle();
 
     if (existingSession) {
         sessionId = existingSession.id;
-        // تحديث "آخر ظهور" للجلسة
         supabase.from('chat_sessions').update({ updated_at: new Date() }).eq('id', sessionId).then();
     } else {
-        const { data: newSession, error: createError } = await supabase.from('chat_sessions').insert({
-            user_id: userId,
-            context_id: currentContextId,
-            context_type: (lessonId && lessonId !== 'general') ? 'lesson' : 'general',
-            summary: lessonTitle || 'General Chat'
+        const { data: newSession } = await supabase.from('chat_sessions').insert({
+            user_id: userId, context_id: currentContextId, context_type: 'general', summary: lessonTitle || 'Chat'
         }).select().single();
-
-        if (createError || !newSession) {
-            console.error("❌ Session Creation Failed:", createError);
-            return res.status(500).json({ reply: "عذراً، فشل بدء المحادثة." });
-        }
         sessionId = newSession.id;
     }
 
-    // ---------------------------------------------------------
-    // 3. معالجة الملفات (Cloudinary)
-    // ---------------------------------------------------------
+    // 2. رفع الملفات (Cloudinary)
     const uploadedAttachments = [];
-    const geminiInlineParts = [];
-
     if (files && files.length > 0) {
+        console.log(`📤 Uploading ${files.length} files...`);
         for (const file of files) {
             try {
                 const base64Data = file.data.replace(/^data:.+;base64,/, '');
                 
-                // 1. إضافة للمصفوفة التي تذهب لـ Gemini مباشرة (لا علاقة لها بـ Cloudinary)
-                geminiInlineParts.push({
-                    inlineData: { data: base64Data, mimeType: file.mime }
-                });
-
-                // 2. إعداد خيارات الرفع لـ Cloudinary
-                let uploadOptions = {
-                    resource_type: "auto", // نتركه auto مبدئياً
-                    folder: `chat_uploads/${userId}`
+                let uploadOptions = { 
+                    resource_type: "auto", 
+                    folder: `chat_uploads/${userId}` 
                 };
+                
+                // إجبار الـ PDF على أن يكون PDF في الرابط
+                if (file.mime === 'application/pdf') uploadOptions.format = 'pdf';
+                // ملفات الوورد نعاملها كملفات خام لتجنب تلفها
+                else if (file.mime.includes('word')) uploadOptions.resource_type = 'raw';
 
-                // 🔥 التصحيح: إجبار Cloudinary على احترام صيغة PDF
-                if (file.mime === 'application/pdf') {
-                    // هذا يجبر الرابط الناتج أن ينتهي بـ .pdf
-                    uploadOptions.format = 'pdf'; 
-                } 
-                // للملفات الأخرى مثل Word، يفضل استخدام raw لضمان عدم تلف الملف
-                else if (file.mime.includes('word') || file.mime.includes('document')) {
-                    uploadOptions.resource_type = 'raw';
-                    // إضافة الامتداد للاسم ليتم تحميله بشكل صحيح
-                    uploadOptions.public_id = `${Date.now()}_doc.docx`; 
-                }
-
-                // 3. التنفيذ
                 const uploadRes = await cloudinary.uploader.upload(`data:${file.mime};base64,${base64Data}`, uploadOptions);
 
-                // التأكد من الرابط (إذا كان raw أحياناً لا يضيف الامتداد، لكن مع pdf والـ format سيعمل)
-                console.log(`📤 Uploaded: ${file.mime} -> URL: ${uploadRes.secure_url}`);
-
+                console.log(`✅ Uploaded: ${uploadRes.secure_url}`);
                 uploadedAttachments.push({
                     url: uploadRes.secure_url,
                     public_id: uploadRes.public_id,
                     mime: file.mime,
-                    type: file.mime.startsWith('image') ? 'image' : (file.mime.startsWith('audio') ? 'audio' : 'file')
+                    type: file.mime.startsWith('image') ? 'image' : 'file'
                 });
-            } catch (e) { console.error('File process error:', e.message); }
-        }
-    }
-    // ---------------------------------------------------------
-    // 4. جلب محتوى الدرس (Context Fetching)
-    // ---------------------------------------------------------
-    let contentSnippet = "";
-    let locationContext = `Currently in: ${lessonTitle || 'General Chat'}`;
-    
-    // إذا كان المستخدم داخل درس فعلي
-    if (lessonId && lessonId !== 'general') {
-        // أ) جلب النص من جدول المحتوى (عملية منفصلة كما طلبت)
-        const { data: contentData } = await supabase
-            .from('lessons_content')
-            .select('content')
-            .eq('lesson_id', lessonId)
-            .maybeSingle();
-
-        if (contentData && contentData.content) {
-            // نأخذ النص كاملاً أو جزءاً كبيراً منه (Gemini Pro/Flash يقبل سياقاً كبيراً)
-            contentSnippet = contentData.content.substring(0, 25000); 
-            locationContext = `Active Lesson: "${lessonTitle}"`;
+            } catch (e) { console.error('Upload Error:', e.message); }
         }
     }
 
-    // جلب اسم الطالب (اختياري للتحسين)
-    let userProfile = { firstName: 'Student' };
-    try {
-        const { data: profile } = await supabase.from('ai_memory_profiles').select('user_name').eq('user_id', userId).maybeSingle();
-        if (profile?.user_name) userProfile.firstName = profile.user_name;
-    } catch(e) {}
-
-    // ---------------------------------------------------------
-    // 5. بناء الذاكرة (History)
-    // ---------------------------------------------------------
-    const { data: historyData } = await supabase
-        .from('chat_messages')
-        .select('role, content, metadata')
-        .eq('session_id', sessionId)
-        .order('created_at', { ascending: false })
-        .limit(8);
-
-    const history = (historyData || []).reverse().map(msg => {
-        const parts = [{ text: msg.content || " " }];
-        if (msg.metadata && msg.metadata.extracted_text) {
-            parts.push({ text: `\n[System: Previous File Content]\n${msg.metadata.extracted_text}` });
-        }
-        return { role: msg.role === 'user' ? 'user' : 'model', parts };
-    });
-
-    // ---------------------------------------------------------
-    // 6. حفظ رسالة المستخدم
-    // ---------------------------------------------------------
-     const { data: savedUserMsg, error: saveUserError } = await supabase.from('chat_messages').insert({
+    // 3. حفظ رسالة المستخدم
+    const { data: savedUserMsg } = await supabase.from('chat_messages').insert({
         session_id: sessionId,
         user_id: userId,
         role: 'user',
@@ -270,154 +183,77 @@ async function processChat(req, res) {
         metadata: { context: lessonId }
     }).select().single();
 
-    if (saveUserError) {
-        console.error("❌ FAILED to save User Message:", saveUserError);
-        // لا نوقف العملية، لكن نسجل الخطأ لنعرف السبب
-    } else {
-        console.log("✅ User Message Saved:", savedUserMsg.id);
-    }
-
-    // ---------------------------------------------------------
-    // 7. الاتصال بالذكاء الاصطناعي 🤖
-    // ---------------------------------------------------------
-    /*
-    // استخدام البرومبت الجديد وتمرير محتوى الدرس الذي جلبناه من DB
-    const personaPrompt = PROMPTS.chat.interactiveChat(
-        message,        // رسالة الطالب
-        userProfile,    // اسمه
-        locationContext,// سياق المكان (عنوان الدرس)
-        lessonTitle,    // خريطة الدرس (العنوان أيضاً)
-        contentSnippet  // ✅ محتوى الدرس الفعلي من قاعدة البيانات
-    );
-
-    const finalSystemPrompt = `
-    ${personaPrompt}
-
-    🛑 **SYSTEM OVERRIDE (TECHNICAL RULES):**
-    1. You MUST output strictly valid JSON.
-    2. Structure: { "reply": "...", "widgets": [], "lesson_signal": { "type": "complete", "score": 100 } }
-    3. Use 'lesson_signal' ONLY if the user proves mastery/completes the lesson goal based on the REFERENCE CONTENT provided.
-    `;
-
-    const aiResult = await generateWithFailover('chat', message, {
-        systemInstruction: { parts: [{ text: finalSystemPrompt }] },
-        history: history,
-        attachments: geminiInlineParts,
-        enableSearch: !!webSearch,
-        label: 'ChatBrain_v6'
-    });
+    // 4. ⛔ تجاوز الذكاء الاصطناعي (Test Mode)
+    console.log("⚠️ TEST MODE: AI Logic Bypassed.");
     
-    // استخراج النص والتنظيف
-    const rawAiText = typeof aiResult === 'object' ? aiResult.text : aiResult;
-    let parsedResponse;
-    try {
-        const cleanText = rawAiText.replace(/```json/g, '').replace(/```/g, '').trim();
-        parsedResponse = JSON.parse(cleanText);
-    } catch (e) {
-        parsedResponse = { reply: rawAiText, widgets: [] };
-    }
-*/
-         // 🟢 الكود البديل (Mock Response) للاختبار فقط
-    console.log("⚠️ TEST MODE: AI Bypassed. Processing files only.");
-    let parsedResponse = {
-        reply: "أنا في وضع الاختبار. لقد استلمت ملفك، وسأقوم باستخراج النص منه وحفظه في قاعدة البيانات الآن.",
-        widgets: [],
-        lesson_signal: null
-    };
-    // ---------------------------------------------------------
-    // 8. المنطق التعليمي (المكافآت)
-    // ---------------------------------------------------------
-    let finalWidgets = parsedResponse.widgets || [];
-    let rewardData = {};
+    const mockReply = uploadedAttachments.length > 0 
+        ? "تم استلام الملف بنجاح! 📄 أقوم الآن باستخراج النص منه وحفظه في قاعدة البيانات..." 
+        : "مرحباً! أنا في وضع التجربة حالياً.";
 
-    // التحقق من إشارة الاكتمال
-    if (parsedResponse.lesson_signal?.type === 'complete' && lessonId && lessonId !== 'general') {
-        const gateResult = await markLessonComplete(userId, lessonId, parsedResponse.lesson_signal.score || 100);
-        
-        if (gateResult.reward?.coins_added > 0) {
-            finalWidgets.push({ 
-                type: 'celebration', 
-                data: { message: `أحسنت! 🪙 +${gateResult.reward.coins_added}`, coins: gateResult.reward.coins_added } 
-            });
-            rewardData = { reward: gateResult.reward, new_total_coins: gateResult.new_total_coins };
-        }
-    }
-
- // ---------------------------------------------------------
-    // 9. حفظ الرد والانتهاء
-    // ---------------------------------------------------------
-    const { error: saveBotError } = await supabase.from('chat_messages').insert({
+    // 5. حفظ رد البوت الوهمي
+    await supabase.from('chat_messages').insert({
         session_id: sessionId,
         user_id: userId,
         role: 'assistant',
-        content: parsedResponse.reply,
-        metadata: { widgets: finalWidgets, lesson_signal: parsedResponse.lesson_signal }
+        content: mockReply
     });
 
-    if (saveBotError) {
-        console.error("❌ FAILED to save Bot Message:", saveBotError);
-    } else {
-        console.log("✅ Bot Message Saved.");
-    }
-
-    // 🚀 إرسال الرد للتطبيق (بدون هذا السطر التطبيق سيبقى معلقاً)
+    // 6. الرد على العميل
     res.status(200).json({
-        reply: parsedResponse.reply,
-        widgets: parsedResponse.widgets || [],
+        reply: mockReply,
+        widgets: [],
         sessionId: sessionId
     });
 
-    // ---------------------------------------------------------
-    // 10. الخلفية: استخراج النصوص (هذا هو ما نريد اختباره!)
-    // ---------------------------------------------------------
+    // 7. 🔥 العمل في الخلفية: استخراج النصوص وحفظها
+    // سيتم تنفيذ هذا الكود بعد إرسال الرد للعميل
     setImmediate(async () => {
         try {
-            console.log("🔄 Starting Background Extraction..."); // تأكدنا من بدء العملية
-            
             if (uploadedAttachments.length > 0 && savedUserMsg?.id) {
-                let extractedText = "";
+                console.log("🔄 Background: Starting Text Extraction...");
+                let allExtractedText = "";
                 let hasUpdates = false;
 
                 for (const att of uploadedAttachments) {
-                    console.log(`📄 Processing file: ${att.mime}`); // طباعة نوع الملف
-                    
-                    // PDF أو Word أو Text
+                    // تجاهل الصور والصوتيات، ركز على المستندات
                     if (!att.mime.startsWith('image/') && !att.mime.startsWith('audio/')) {
                         const text = await extractTextFromCloudinaryUrl(att.url, att.mime);
                         if (text) {
-                            console.log(`✅ SUCCESS: Extracted ${text.length} chars from PDF!`);
-                            console.log(`📝 Preview: ${text.substring(0, 50)}...`); // طباعة أول 50 حرف
-                            
-                            extractedText += `\n--- Extracted Content (${att.mime}) ---\n${text}\n`;
+                            allExtractedText += `\n\n=== FILE: ${att.mime} ===\n${text}\n`;
                             hasUpdates = true;
-                        } else {
-                            console.log("❌ FAILED to extract text (Text is null/empty)");
                         }
                     }
                 }
 
                 if (hasUpdates) {
-                    const updateRes = await supabase
+                    // تحديث رسالة المستخدم بالنص المستخرج
+                    const { error } = await supabase
                         .from('chat_messages')
-                        .update({ metadata: { ...savedUserMsg.metadata, extracted_text: extractedText } })
+                        .update({ 
+                            metadata: { 
+                                ...savedUserMsg.metadata, 
+                                extracted_text: allExtractedText // 💾 هنا يتم الحفظ
+                            } 
+                        })
                         .eq('id', savedUserMsg.id);
                         
-                    console.log("💾 Database Updated with Text:", updateRes.status);
+                    if (!error) console.log("💾 Database Updated: Text saved successfully!");
+                    else console.error("❌ Database Update Error:", error.message);
+                } else {
+                    console.log("ℹ️ No text extracted from files.");
                 }
-            } else {
-                console.log("ℹ️ No files to extract.");
             }
-        } catch (e) { console.error('🔥 Bg Extraction Error:', e); }
+        } catch (e) { console.error('🔥 Background Job Failed:', e); }
     });
 
-
   } catch (err) {
-    console.error('🔥 ChatBrain Fatal:', err);
-    return res.status(500).json({ reply: "نواجه ضغطاً عالياً حالياً، يرجى المحاولة بعد لحظات." });
+    console.error('🔥 Fatal Error:', err);
+    res.status(500).json({ reply: "Error in server." });
   }
 }
 
 function initChatBrainController(dependencies) {
-    console.log('🧠 ChatBrainController initialized successfully.');
+    console.log('🧠 ChatBrainController initialized (Text Extraction Mode).');
 }
+
 module.exports = { processChat, getChatHistory, initChatBrainController };
