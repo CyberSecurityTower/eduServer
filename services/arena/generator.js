@@ -35,12 +35,17 @@ async function generateArenaExam(lessonId, mode = 'practice') {
       .select('id, atom_id, widget_type, content, difficulty, lesson_id') // أضفت lesson_id للتأكد
       .eq('lesson_id', cleanLessonId);
       .neq('widget_type', 'FILL_BLANKS'); // 👈 🔥 أضف هذا السطر هنا
+  let filteredQuestions = allQuestions;
 
+    // تصفية الأسئلة لاستبعاد ملء الفراغات
+    if (allQuestions && allQuestions.length > 0) {
+        filteredQuestions = allQuestions.filter(q => q.widget_type !== 'FILL_BLANKS');
+    }
     // 🔥 طباعة نتيجة الاستعلام
-    console.log(`🔍 [DEBUG] Query Result Length: ${allQuestions?.length}`);
+    console.log(`🔍 [DEBUG] Query Result Length: ${filteredQuestions?.length}`);
     if (qError) console.error("❌ [DEBUG] Supabase Error:", qError);
 
-    if (qError || !allQuestions || allQuestions.length === 0) {
+    if (qError || !filteredQuestions || filteredQuestions.length === 0) {
         // هذا السطر هو الذي يسبب الخطأ عندك، اللوج أعلاه سيخبرنا لماذا وصلنا هنا
         throw new Error('No questions found for this lesson.');
     }
@@ -52,7 +57,7 @@ async function generateArenaExam(lessonId, mode = 'practice') {
 
     for (const atomId of atomIds) {
         if (selectedQuestions.length >= TARGET_QUESTION_COUNT) break;
-        const candidates = allQuestions.filter(q => q.atom_id === atomId);
+        const candidates = filteredQuestions.filter(q => q.atom_id === atomId);
         if (candidates.length > 0) {
             const picked = candidates[Math.floor(Math.random() * candidates.length)];
             selectedQuestions.push(picked);
@@ -61,7 +66,7 @@ async function generateArenaExam(lessonId, mode = 'practice') {
     }
 
     if (selectedQuestions.length < TARGET_QUESTION_COUNT) {
-        const remainingQuestions = shuffled(allQuestions.filter(q => !usedQuestionIds.has(q.id)));
+        const remainingQuestions = shuffled(filteredQuestions.filter(q => !usedQuestionIds.has(q.id)));
         const needed = TARGET_QUESTION_COUNT - selectedQuestions.length;
         selectedQuestions.push(...remainingQuestions.slice(0, needed));
     }
