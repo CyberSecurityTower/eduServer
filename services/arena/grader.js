@@ -7,20 +7,96 @@ const { updateAtomicProgress } = require('../atomic/atomicManager');
 const logger = require('../../utils/logger');
 
 /**
- * خدمة المصحح الذري (The Atomic Grader)
- * 1. تتحقق من الإجابات مقابل قاعدة البيانات.
- * 2. تحسب النتيجة.
- * 3. تقوم بتحديث ذري (Atomic Update) لكل مفهوم (Atom) على حدة.
+ * 🛠️ دالة مساعدة لمقارنة المصفوفات والكائنات بعمق (Deep Equality)
+ */
+function isEqual(a, b) {
+    // 1. إذا كانت القيم بسيطة (نصوص، أرقام)
+    if (a === b) return true;
+    
+    // 2. إذا كانت مصفوفات (Arrays)
+    if (Array.isArray(a) && Array.isArray(b)) {
+        if (a.length !== b.length) return false;
+        for (let i = 0; i < a.length; i++) {
+            if (!isEqual(a[i], b[i])) return false;
+        }
+        return true;
+    }
+    
+    // 3. إذا كانت كائنات (Objects)
+    if (a && b && typeof a === 'object' && typeof b === 'object') {
+        const keysA = Object.keys(a);
+        const keysB = Object.keys(b);
+        if (keysA.length !== keysB.length) return false;
+        for (const key of keysA) {
+            if (!Object.prototype.hasOwnProperty.call(b, key) || !isEqual(a[key], b[key])) return false;
+        }
+        return true;
+    }
+    
+    return false;
+}
+
+/**
+ * 🧠 الدالة الذكية للتحقق من الإجابات حسب نوع السؤال
+ */
+function checkAnswer(dbQuestion, userAnswer) {
+    const type = dbQuestion.widget_type;
+    const content = dbQuestion.content;
+
+    try {
+        // 1. MCQ, TRUE_FALSE, YES_NO (مقارنة نصوص)
+        if (['MCQ', 'TRUE_FALSE', 'YES_NO'].includes(type)) {
+            return String(content.correct_answer).trim() === String(userAnswer).trim();
+        }
+
+        // 2. MCM (ترتيب غير مهم)
+        if (type === 'MCM') {
+            if (!Array.isArray(userAnswer)) return false;
+            const correct = content.correct_answer || [];
+            
+            // نفرز المصفوفتين ثم نقارنهما كنصوص لضمان تطابق المحتوى بغض النظر عن الترتيب
+            const sortedCorrect = [...correct].sort().join('|');
+            const sortedUser = [...userAnswer].sort().join('|');
+            return sortedCorrect === sortedUser;
+        }
+
+        // 3. ORDERING (ترتيب مهم)
+        // المفتاح هنا هو correct_order
+        if (type === 'ORDERING') {
+            const correct = content.correct_order || [];
+            return isEqual(correct, userAnswer);
+        }
+
+        // 4. FILL_BLANKS (ترتيب مهم)
+        if (type === 'FILL_BLANKS') {
+            const correct = content.correct_answer || [];
+            return isEqual(correct, userAnswer);
+        }
+
+        // 5. MATCHING (كائنات)
+        // المفتاح هنا هو correct_matches
+        if (type === 'MATCHING') {
+            const correct = content.correct_matches || {};
+            return isEqual(correct, userAnswer);
+        }
+
+        return false;
+    } catch (e) {
+        console.error("Error checking answer:", e);
+        return false;
+    }
+}
+
+/**
+ * 🎓 خدمة المصحح الرئيسي
  */
 async function gradeArenaExam(userId, lessonId, userSubmission) {
-    // userSubmission = [{ questionId: "...", answer: "..." }, ...]
-    
     try {
         if (!userSubmission || userSubmission.length === 0) {
             throw new Error("Empty submission");
         }
 
-        // 1. جلب الإجابات الصحيحة من قاعدة البيانات
+        // 1. جلب الإجابات الصحيحة
         const questionIds = userSubmission.map(s => s.questionId);
         const { data: correctData, error } = await supabase
             .from('question_bank')
@@ -29,24 +105,20 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
 
         if (error) throw error;
 
-        // تحويل المصفوفة إلى Map لسهولة البحث
         const questionMap = new Map();
         correctData.forEach(q => questionMap.set(q.id, q));
 
-        // 2. التصحيح وحساب التغييرات الذرية
-        let totalScore = 0;
-        // 2. التصحيح وحساب النتيجة
+        // 2. التصحيح
         let correctCount = 0;
         const atomUpdates = {}; 
         
-        // ثابتات النظام الجديد
-        const TOTAL_QUESTIONS = 10; // أو نستخدم userSubmission.length لمرونة أكثر
-        const POINTS_PER_QUESTION = 2; // 10 أسئلة * 2 نقاط = 20
+        const POINTS_PER_QUESTION = 2; // للحصول على 20 درجة
 
         for (const sub of userSubmission) {
             const dbQuestion = questionMap.get(sub.questionId);
             if (!dbQuestion) continue;
 
+            // 🔥 استخدام دالة التحقق الذكية الجديدة
             const isCorrect = checkAnswer(dbQuestion, sub.answer);
             const atomId = dbQuestion.atom_id;
 
@@ -54,24 +126,17 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
 
             if (isCorrect) {
                 correctCount++;
-                // تحديث الذرات يبقى كما هو (مستقل عن علامة الامتحان)
                 atomUpdates[atomId] += 20; 
             } else {
                 atomUpdates[atomId] -= 10;
             }
         }
 
-        // --- الحسابات الجديدة ---
-        // العلامة النهائية من 20
+        // 3. الحسابات النهائية
         const finalScoreOutOf20 = correctCount * POINTS_PER_QUESTION; 
-        
-        // النسبة المئوية (نحتاجها للواجهة وقواعد البيانات التي تعتمد على %)
-        // المعادلة: (العلامة / 20) * 100
         const finalPercentage = Math.round((finalScoreOutOf20 / 20) * 100);
 
-
-        // 3. تطبيق التحديثات الذرية (Atomic Commit)
-        // نحتاج لجلب السكورات الحالية أولاً لتعديلها
+        // 4. تحديث الـ Mastery في قاعدة البيانات
         const { data: currentProgress } = await supabase
             .from('atomic_user_mastery')
             .select('elements_scores')
@@ -81,12 +146,9 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
 
         let newScores = currentProgress?.elements_scores || {};
 
-        // تطبيق الدلتا (Deltas)
         Object.keys(atomUpdates).forEach(atomId => {
             const currentVal = newScores[atomId]?.score || 0;
             const delta = atomUpdates[atomId];
-            
-            // معادلة بسيطة: Score الجديد = القديم + التغيير (بين 0 و 100)
             let nextVal = Math.max(0, Math.min(100, currentVal + delta));
             
             newScores[atomId] = {
@@ -95,7 +157,6 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
             };
         });
 
-        // حفظ JSON المحدث (هذا سيشغل الـ Trigger في الداتابايز لتحديث المتوسطات)
         await supabase
             .from('atomic_user_mastery')
             .upsert({
@@ -105,13 +166,11 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
                 last_updated: new Date().toISOString()
             }, { onConflict: 'user_id, lesson_id' });
 
-
-        // 4. المكافأة (Coins)
+        // 5. المكافأة (Coins)
         let coinsEarned = 0;
         if (finalPercentage >= 50) {
-            coinsEarned = Math.floor(finalPercentage / 2); // 50% = 25 coins, 100% = 50 coins
+            coinsEarned = Math.floor(finalPercentage / 2); 
             
-            // إضافة الكوينز
             await supabase.rpc('process_coin_transaction', {
                 p_user_id: userId,
                 p_amount: coinsEarned,
@@ -120,19 +179,16 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
             });
         }
 
-      return {
+        // 6. الرد النهائي
+        return {
             success: true,
-            
-            score: finalScoreOutOf20,      // مثال: 16
-            maxScore: 20,                  // السقف: 20
-            percentage: finalPercentage,   // مثال: 80
-            
-            // حساب XP مقترح (مثلاً: العلامة * 10 = 160 XP)
-            xpEarned: finalScoreOutOf20 * 10, 
-            
+            score: finalScoreOutOf20,
+            maxScore: 20,
+            percentage: finalPercentage,
+            xpEarned: finalScoreOutOf20 * 10,
             correctCount,
             totalQuestions: userSubmission.length,
-            coinsEarned, // الكوينز محسوبة سابقاً بناءً على النسبة
+            coinsEarned,
             atomUpdates
         };
 
@@ -140,19 +196,6 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
         logger.error(`Arena Grader Error [${userId}]:`, error.message);
         throw error;
     }
-}
-
-// دالة مساعدة لمقارنة الإجابات حسب النوع
-function checkAnswer(dbQuestion, userAnswer) {
-    const type = dbQuestion.widget_type;
-    const correct = dbQuestion.content.correctAnswer;
-
-    if (type === 'MCQ' || type === 'TRUE_FALSE') {
-        return String(correct) === String(userAnswer);
-    }
-    
-    // يمكن إضافة منطق لأنواع أخرى (ترتيب، ملء فراغات) هنا
-    return false;
 }
 
 module.exports = { gradeArenaExam };
