@@ -2,8 +2,8 @@
 
 const axios = require('axios');
 const mammoth = require('mammoth');
-const path = require('path'); // ✅ نحتاج هذا لتحديد المسار المحلي
-
+const path = require('path');
+const fs = require('fs'); // ✅ ضروري لقراءة الخطوط
 // استيراد مكتبة Mozilla
 const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
 
@@ -12,36 +12,65 @@ const cloudinary = require('../config/cloudinary');
 const supabase = require('../services/data/supabase');
 
 // ============================================================
-// 🛠️ Helper: استخراج PDF احترافي (مصحح للعربية) ✅
+// 🛠️ Custom CMap Reader (السر لحل مشكلة الرموز الغريبة) 🔑
+// ============================================================
+// هذا الكلاس يعلم pdf.js كيف يقرأ ملفات الخطوط من السيرفر مباشرة
+class NodeCMapReaderFactory {
+    constructor({ baseUrl = null, isCompressed = false }) {
+        this.baseUrl = baseUrl;
+        this.isCompressed = isCompressed;
+    }
+
+    fetch({ name }) {
+        return new Promise((resolve, reject) => {
+            if (!this.baseUrl) return resolve({ cMapData: [], compressionType: 0 });
+            
+            const url = this.baseUrl + name + (this.isCompressed ? '.bcmap' : '');
+            
+            fs.readFile(url, (err, data) => {
+                if (err) return reject(new Error(err.message));
+                return resolve({
+                    cMapData: new Uint8Array(data),
+                    compressionType: this.isCompressed ? 1 : 0,
+                });
+            });
+        });
+    }
+}
+
+// ============================================================
+// 🛠️ Helper: استخراج PDF
 // ============================================================
 async function extractPdfWithMozilla(buffer) {
     try {
         const uint8Array = new Uint8Array(buffer);
         
-        // 🔥 الحل الجذري: تحديد مسار الملفات محلياً من node_modules
-        // نستخدم require.resolve للعثور على مكان المكتبة بدقة داخل السيرفر
+        // تحديد مسار مجلد الخطوط (CMaps) داخل node_modules بدقة
         const pdfLibPath = require.resolve('pdfjs-dist/legacy/build/pdf.js');
-        // نرجع للخلف 3 خطوات للوصول للمجلد الرئيسي: build -> legacy -> pdfjs-dist -> cmaps
         const pdfDistDir = path.dirname(path.dirname(path.dirname(pdfLibPath)));
-        
         const CMAP_URL = path.join(pdfDistDir, 'cmaps/');
         const STANDARD_FONT_DATA_URL = path.join(pdfDistDir, 'standard_fonts/');
 
-        console.log(`📂 Loading fonts from: ${CMAP_URL}`);
+        console.log(`📂 Fonts Path: ${CMAP_URL}`);
 
         const loadingTask = pdfjsLib.getDocument({
             data: uint8Array,
-            cMapUrl: CMAP_URL, // ✅ مسار محلي
+            cMapUrl: CMAP_URL,
             cMapPacked: true,
-            standardFontDataUrl: STANDARD_FONT_DATA_URL, // ✅ مسار محلي
-            disableFontFace: false,
-            fontExtraProperties: true
+            standardFontDataUrl: STANDARD_FONT_DATA_URL,
+            
+            // 🔥 استخدام القارئ المخصص الذي أنشأناه بالأعلى
+            CMapReaderFactory: NodeCMapReaderFactory, 
+            
+            // تفعيل قراءة الخطوط المدمجة
+            disableFontFace: false, 
+            verbosity: 0 // إخفاء التحذيرات غير المهمة
         });
 
         const doc = await loadingTask.promise;
         
         let fullText = "";
-        console.log(`📘 PDF Loaded: ${doc.numPages} pages. Parsing Arabic...`);
+        console.log(`📘 PDF Loaded: ${doc.numPages} pages. Decoding Arabic...`);
 
         for (let i = 1; i <= doc.numPages; i++) {
             const page = await doc.getPage(i);
@@ -50,7 +79,7 @@ async function extractPdfWithMozilla(buffer) {
             // تجميع النص
             const pageText = textContent.items.map(item => item.str).join(' ');
             
-            // تنظيف النص (إزالة الفراغات الزائدة)
+            // تنظيف النص من الرموز الزائدة
             const cleanPageText = pageText.replace(/\s+/g, ' ').trim();
             
             fullText += `\n--- Page ${i} ---\n${cleanPageText}`;
@@ -62,6 +91,7 @@ async function extractPdfWithMozilla(buffer) {
         throw e;
     }
 }
+
 // ============================================================
 // 🛠️ Main Helper: الموجه الرئيسي
 // ============================================================
@@ -73,7 +103,7 @@ async function extractTextFromCloudinaryUrl(url, mimeType) {
         console.log(`📦 File Size: ${buffer.length} bytes`);
 
         if (mimeType === 'application/pdf') {
-            console.log("📄 PDF detected. Running Local Engine...");
+            console.log("📄 PDF detected. Running Node CMap Engine...");
             const text = await extractPdfWithMozilla(buffer);
             console.log(`✅ PDF Extracted! Length: ${text.length} chars`);
             return text;
@@ -93,8 +123,12 @@ async function extractTextFromCloudinaryUrl(url, mimeType) {
         return null;
     }
 }
+
+// ... (بقية الملف getChatHistory و processChat تبقى كما هي تماماً من الرد السابق)
+// ... (لا تنس نسخها أو تركها كما هي إذا لم تمسحها)
+
 // ============================================================
-// 📜 Get Chat History
+// 📜 Get Chat History (كما هو)
 // ============================================================
 async function getChatHistory(req, res) {
   const { userId, lessonId, cursor } = req.query;
@@ -170,7 +204,7 @@ async function processChat(req, res) {
 
     console.log("⚠️ TEST MODE: AI Bypassed.");
     const mockReply = uploadedAttachments.length > 0 
-        ? "تم استلام الملف! جاري استخراج النص العربي/الإنجليزي وتخزينه..." 
+        ? "تم استلام الملف! جاري استخراج النص وتخزينه..." 
         : "وضع التجربة.";
 
     await supabase.from('chat_messages').insert({
