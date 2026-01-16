@@ -87,7 +87,7 @@ Use these exact structures inside the "content" field. All text must be in **Ara
    - **1** (Easy) -> **10** points.
    - **2** (Medium) -> **15** points.
    - **3** (Hard) -> **20** points.
-   - *Mix:* 2 Easy, 5 Medium, 3 Hard.
+   - *Mix:* 1 Easy, 5 Medium, 4 Hard.
 4. **Verification:** Set "is_verified": true.
 5. **IDs:** Generate unique IDs for options (e.g., "opt1", "L1") as shown in schemas. Do not use generic "A, B, C".
 
