@@ -1,17 +1,31 @@
-
+// arena/generator.js
 'use strict';
 
 const supabase = require('../data/supabase');
 const { shuffled } = require('../../utils');
 const logger = require('../../utils/logger');
 const { encryptAnswer } = require('../../utils/cryptoHelper');
+const crypto = require('crypto'); 
 
 async function generateArenaExam(lessonId, mode = 'practice') {
   const cleanLessonId = lessonId.trim();
   console.log(`🔍 [DEBUG] Searching for lessonId: '${cleanLessonId}'`);
 
   try {
-    // 1. جلب الهيكل
+    // 🆕 1. جلب معرف المادة (subject_id) من جدول الدروس
+    const { data: lessonMeta, error: metaError } = await supabase
+      .from('lessons')
+      .select('subject_id')
+      .eq('id', cleanLessonId)
+      .single();
+
+    if (metaError) {
+       console.log(`⚠️ [DEBUG] Could not fetch subject_id for '${cleanLessonId}'`);
+    }
+
+    const subjectId = lessonMeta?.subject_id;
+
+    // 2. جلب الهيكل (Structure)
     const { data: structureData, error: structError } = await supabase
       .from('atomic_lesson_structures')
       .select('structure_data')
@@ -25,12 +39,12 @@ async function generateArenaExam(lessonId, mode = 'practice') {
     const atoms = structureData?.structure_data?.elements || [];
     const atomIds = atoms.map(el => el.id); 
 
-    // 2. جلب الأسئلة (مع استثناء FILL_BLANKS من قاعدة البيانات مباشرة إذا أمكن، أو الفلترة لاحقاً)
+    // 3. جلب الأسئلة
     const { data: allQuestions, error: qError } = await supabase
       .from('question_bank')
       .select('id, atom_id, widget_type, content, difficulty, lesson_id')
       .eq('lesson_id', cleanLessonId)
-      .neq('widget_type', 'FILL_BLANKS'); // استبعاد مباشر
+      .neq('widget_type', 'FILL_BLANKS'); 
 
     let filteredQuestions = allQuestions;
 
@@ -72,7 +86,7 @@ async function generateArenaExam(lessonId, mode = 'practice') {
      const examPayload = selectedQuestions.map(q => {
         const clientContent = JSON.parse(JSON.stringify(q.content));
         
-        // 1. استخراج الإجابة الصحيحة الخام قبل الحذف
+        // استخراج الإجابة الصحيحة الخام قبل الحذف
         let rawAnswer = null;
         
         switch (q.widget_type) {
@@ -90,11 +104,10 @@ async function generateArenaExam(lessonId, mode = 'practice') {
                 break;
         }
 
-        // 2. تشفير الإجابة ووضعها في حقل جديد
-        // سنسميه 'secure_hash' ليبدو وكأنه هاش للمستخدم العادي
+        // تشفير الإجابة
         const secureHash = encryptAnswer(rawAnswer);
 
-        // 3. تنظيف البيانات الخام (Anti-Cheat)
+        // تنظيف البيانات الخام (Anti-Cheat)
         if (q.widget_type === 'MCQ') {
             clientContent.options = shuffled(clientContent.options);
         }
@@ -110,7 +123,7 @@ async function generateArenaExam(lessonId, mode = 'practice') {
             atom_id: q.atom_id, 
             content: {
                 ...clientContent,
-                secure_hash: secureHash // 🛡️ الإجابة المشفرة هنا
+                secure_hash: secureHash 
             },
             difficulty: q.difficulty,
             points: 2 
@@ -120,6 +133,7 @@ async function generateArenaExam(lessonId, mode = 'practice') {
     return {
         examId: crypto.randomUUID(), 
         lessonId: cleanLessonId,
+        subjectId: subjectId, 
         questions: shuffled(examPayload) 
     };
 
