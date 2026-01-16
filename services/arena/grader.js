@@ -136,6 +136,7 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
         const finalScoreOutOf20 = correctCount * POINTS_PER_QUESTION; 
         const finalPercentage = Math.round((finalScoreOutOf20 / 20) * 100);
 
+
         // 4. تحديث الـ Mastery في قاعدة البيانات
         const { data: currentProgress } = await supabase
             .from('atomic_user_mastery')
@@ -167,9 +168,9 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
             }, { onConflict: 'user_id, lesson_id' });
 
         // 5. المكافأة (Coins)
-        let coinsEarned = 0;
+         let coinsEarned = 0;
         if (finalPercentage >= 50) {
-            coinsEarned = Math.floor(finalPercentage / 2); 
+            coinsEarned = Math.floor(finalPercentage / 2); // مثال: 100% = 50 كوينز
             
             await supabase.rpc('process_coin_transaction', {
                 p_user_id: userId,
@@ -185,7 +186,7 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
             score: finalScoreOutOf20,
             maxScore: 20,
             percentage: finalPercentage,
-            xpEarned: finalScoreOutOf20 * 10,
+            // 🔥 تعديل: تم حذف xpEarned من هنا
             correctCount,
             totalQuestions: userSubmission.length,
             coinsEarned,
