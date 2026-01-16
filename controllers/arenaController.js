@@ -26,6 +26,7 @@ async function generateExam(req, res) {
 }
 
 async function submitExam(req, res) {
+    console.log("Submit Request from User:", req.user); 
     const userId = req.user?.id;
     const { lessonId, answers } = req.body;
 
