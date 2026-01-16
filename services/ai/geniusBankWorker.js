@@ -7,11 +7,13 @@ const { extractTextFromResult, ensureJsonOrRepair, sleep } = require('../../util
 const { QUESTION_GENERATION_PROMPT } = require('../../config/bank-prompts');
 const logger = require('../../utils/logger');
 const systemHealth = require('../monitoring/systemHealth');
+const keyManager = require('./keyManager'); // 👈 استيراد مدير المفاتيح
 
 // 🛡️ لمنع تضارب العاملين
 const activeProcessingIds = new Set();
 
-// ⏳ جدول إعادة المحاولة (بالمللي ثانية)
+// ⏳ جدول الصبر (Exponential Backoff)
+// يتم تفعيله فقط بعد فشل جميع المفاتيح المتاحة
 const RETRY_SCHEDULE = [
     60 * 1000,           // 1 دقيقة
     2 * 60 * 1000,       // 2 دقيقة
@@ -27,16 +29,12 @@ class GeniusBankWorker {
     constructor() {
         this.STOP_SIGNAL = false;
         this.isWorking = false;
-        // 🗑️ ذاكرة مؤقتة لتجاهل الدروس التالفة/الفارغة خلال هذه الجلسة فقط
         this.failedSessionIds = new Set(); 
     }
 
-    /**
-     * 🛑 زر الطوارئ (Emergency Stop)
-     */
     stop() {
         if (this.isWorking) {
-            logger.warn('🛑 STOP SIGNAL RECEIVED. Aborting operations after current step...');
+            logger.warn('🛑 STOP SIGNAL RECEIVED. Aborting operations...');
             this.STOP_SIGNAL = true;
             return true;
         }
@@ -49,15 +47,14 @@ class GeniusBankWorker {
             return;
         }
 
-        logger.info('🚀 Genius Bank Mission Started (Scan All Lessons Mode).');
+        logger.info('🚀 Genius Bank Mission Started (Full Key Exhaustion Mode).');
         
         systemHealth.setMaintenanceMode(true);
         this.STOP_SIGNAL = false;
         this.isWorking = true;
-        this.failedSessionIds.clear(); // تصفير قائمة الفشل عند بدء مهمة جديدة
+        this.failedSessionIds.clear();
 
         try {
-            // تشغيل محركين
             const worker1 = this._workerLoop(1);
             const worker2 = this._workerLoop(2);
 
@@ -82,10 +79,10 @@ class GeniusBankWorker {
         logger.info(`👷 Worker #${workerId} online.`);
 
         while (!this.STOP_SIGNAL) {
-            const lesson = await this._findNextTarget();
+            const lesson = await this._findNextTarget(workerId);
 
             if (!lesson) {
-                logger.info(`💤 Worker #${workerId}: Queue empty (or all remaining lessons are invalid).`);
+                logger.info(`💤 Worker #${workerId}: No eligible lessons found (Queue empty).`);
                 break;
             }
 
@@ -95,111 +92,101 @@ class GeniusBankWorker {
         }
     }
 
-  async _findNextTarget() {
+    async _findNextTarget(workerId) {
+        // نوسع البحث لضمان عدم توقف العمل
         const { data: candidates, error } = await supabase
             .from('lessons')
-            .select('id, title, subject_id') 
-            .order('created_at', { ascending: false })
-            .limit(50);
+            .select('id, title, subject_id')
+            .limit(100); 
 
         if (error) {
-            logger.error('❌ DB Error in _findNextTarget:', error.message);
+            logger.error(`❌ Worker #${workerId} DB Error:`, error.message);
             return null;
         }
 
-     
-        if (!candidates || candidates.length === 0) {
-            logger.warn('⚠️ No lessons found in DB at all.');
-            return null;
-        }
-
-        logger.info(`🔍 Scanning batch of ${candidates.length} lessons...`);
+        if (!candidates) return null;
 
         for (const lesson of candidates) {
-            const logPrefix = `[Scan: ${lesson.title}]`;
+            // القفل المتفائل
+            if (activeProcessingIds.has(lesson.id)) continue;
+            if (this.failedSessionIds.has(lesson.id)) continue;
 
-            // 1. هل يعمل عليه أحد؟
-            if (activeProcessingIds.has(lesson.id)) {
-                // logger.log(`${logPrefix} Skipped: Busy.`);
-                continue;
-            }
-            
-            // 2. هل فشل سابقاً؟
-            if (this.failedSessionIds.has(lesson.id)) {
-                // logger.log(`${logPrefix} Skipped: Failed previously.`);
-                continue;
-            }
-
-            // 3. هل لديه أسئلة؟
-            const { count } = await supabase
-                .from('question_bank')
-                .select('*', { count: 'exact', head: true })
-                .eq('lesson_id', lesson.id);
-
-            if (count > 0) {
-                // logger.log(`${logPrefix} Skipped: Already has ${count} questions.`);
-                continue;
-            }
-
-            // 4. 🔥 الفحص الحاسم: هل لديه هيكلية؟
-            const { data: struct } = await supabase
-                .from('atomic_lesson_structures')
-                .select('id')
-                .eq('lesson_id', lesson.id)
-                .single();
-
-            if (!struct) {
-                // 🛑 هذا هو السبب المرجح! سنطبعه باللون الأحمر
-                logger.warn(`${logPrefix} ❌ Skipped: NO ATOMIC STRUCTURE found. Please run 'Atomic Generator' first.`);
-                // نضيفه لقائمة الفشل المؤقت لتسريع الدورة القادمة
-                this.failedSessionIds.add(lesson.id);
-                continue;
-            }
-
-            //  وجدنا درساً صالحاً
-            logger.success(`🎯 Target Acquired: "${lesson.title}"`);
             activeProcessingIds.add(lesson.id);
-            return lesson;
-        }
 
-        // إذا وصلنا هنا، يعني فحصنا 50 درس ولم نجد أي واحد صالح
-        logger.warn('⚠️ Scanned 50 lessons but found no eligible candidates (All either have questions or lack structure).');
+            try {
+                // فحص الأسئلة
+                const { count } = await supabase
+                    .from('question_bank')
+                    .select('*', { count: 'exact', head: true })
+                    .eq('lesson_id', lesson.id);
+
+                if (count > 0) {
+                    activeProcessingIds.delete(lesson.id);
+                    continue;
+                }
+
+                // فحص الهيكلية
+                const { data: struct } = await supabase
+                    .from('atomic_lesson_structures')
+                    .select('id')
+                    .eq('lesson_id', lesson.id)
+                    .single();
+
+                if (!struct) {
+                    // logger.warn(`⚠️ Skipping "${lesson.title}": No Atomic Structure.`);
+                    this.failedSessionIds.add(lesson.id);
+                    activeProcessingIds.delete(lesson.id);
+                    continue;
+                }
+
+                return lesson;
+
+            } catch (e) {
+                activeProcessingIds.delete(lesson.id);
+            }
+        }
         return null;
     }
+
     async _processLessonWithSmartRetry(workerId, lesson) {
-         const subjectLogName = lesson.subject_id || 'Unknown Subject';
-        const subjectTitle = lesson.subjects?.title || 'General';
-        const logPrefix = `[Worker #${workerId}] 📘 ${subjectLogName} -> ${lesson.title}`;
+        const subjectLog = lesson.subject_id || 'Unknown';
+        const logPrefix = `[Worker #${workerId}] 📘 ${subjectLog} -> ${lesson.title}`;
         
         let retryLevel = 0;
         let success = false;
 
         while (!success && !this.STOP_SIGNAL) {
             try {
+                // إذا كان النظام مغلقاً من البداية (Lockdown)، ننتظر
+                if (systemHealth.isLocked() && retryLevel === 0) {
+                    logger.warn(`${logPrefix} | System Locked. Waiting 1m...`);
+                    await sleep(60000);
+                    continue;
+                }
+
                 await this._generateCore(logPrefix, lesson);
                 success = true; 
 
             } catch (err) {
                 const errorMsg = err.message || '';
 
-                // 1. أخطاء البيانات (محتوى فارغ في الجدول رغم وجود الدرس)
                 if (errorMsg.includes('DATA_MISSING')) {
-                    logger.error(`${logPrefix} | ❌ Data Missing (Marking as failed for this session).`);
-                    // نضيفه للقائمة السوداء المؤقتة لكي لا نختاره مجدداً
-                    this.failedSessionIds.add(lesson.id); 
+                    logger.error(`${logPrefix} | ❌ Data Missing. Ignoring.`);
+                    this.failedSessionIds.add(lesson.id);
                     break; 
                 }
 
-                // 2. أخطاء الكوتا/الشبكة (الصبر الجميل)
+                // إذا وصلنا هنا، فهذا يعني أننا جربنا *كل* المفاتيح وفشلت جميعها
                 if (retryLevel < RETRY_SCHEDULE.length) {
                     const waitTime = RETRY_SCHEDULE[retryLevel];
                     const waitTimeMinutes = waitTime / 60000;
                     
-                    logger.warn(`${logPrefix} | ⚠️ Failed (Attempt ${retryLevel + 1}). Sleeping for ${waitTimeMinutes} mins...`);
+                    logger.error(`${logPrefix} | 💀 ALL KEYS FAILED. Sleeping for ${waitTimeMinutes} mins before trying the whole pool again...`);
+                    
                     await sleep(waitTime);
                     retryLevel++;
                 } else {
-                    logger.error(`💀 ${logPrefix} | MAX RETRIES EXHAUSTED after 4 hours. KILLING MISSION.`);
+                    logger.error(`💀 ${logPrefix} | TOTAL SYSTEM FAILURE after 4 hours. STOPPING MISSION.`);
                     this.STOP_SIGNAL = true; 
                     break;
                 }
@@ -217,18 +204,26 @@ class GeniusBankWorker {
             supabase.from('atomic_lesson_structures').select('structure_data').eq('lesson_id', lesson.id).single()
         ]);
 
-        // هنا يتم التحقق الفعلي من المحتوى
-        if (!contentRes.data?.content || contentRes.data.content.trim().length < 50) {
+        if (!contentRes.data?.content || contentRes.data.content.length < 50) {
             throw new Error("DATA_MISSING");
         }
 
         const atomsList = structureRes.data.structure_data.elements.map(a => ({ id: a.id, title: a.title }));
         const prompt = QUESTION_GENERATION_PROMPT(lesson.title, contentRes.data.content, atomsList);
         
+        // 🔥 التعديل الجوهري هنا: استراتيجية الاستنزاف الكامل 🔥
+        // نجلب عدد المفاتيح الكلي من مدير المفاتيح
+        const totalKeys = keyManager.getKeyCount(); 
+        // نجعل عدد المحاولات يساوي عدد المفاتيح + 2 (لضمان تغطية الجميع)
+        // إذا كان عدد المفاتيح 0 (مشكلة في التحميل)، نجعلها 5 محاولات افتراضية
+        const attempts = totalKeys > 0 ? totalKeys + 2 : 5;
+
+        // logger.info(`${logPrefix} | Attempting with pool of ${totalKeys} keys...`);
+
         const res = await generateWithFailover('analysis', prompt, { 
-            label: 'BankGen_Smart',
+            label: `BankGen_${lesson.id}`,
             timeoutMs: 180000,
-            maxRetries: 1 
+            maxRetries: attempts // 👈 هنا يكمن السر: جربهم كلهم!
         });
 
         const rawText = await extractTextFromResult(res);
@@ -241,7 +236,7 @@ class GeniusBankWorker {
         const validQuestions = questionsArray.map(q => ({
             lesson_id: lesson.id,
             atom_id: q.atom_id,
-            widget_type: q.widget_type.toUpperCase(),
+            widget_type: q.widget_type ? q.widget_type.toUpperCase() : 'MCQ',
             difficulty: q.difficulty || 'Medium',
             content: q.content,
             created_at: new Date().toISOString()
@@ -250,7 +245,7 @@ class GeniusBankWorker {
         const { error } = await supabase.from('question_bank').insert(validQuestions);
         if (error) throw error;
 
-        logger.success(`✅ ${logPrefix} | Inserted ${validQuestions.length} Qs.`);
+        logger.success(`✅ ${logPrefix} | Saved ${validQuestions.length} Questions.`);
     }
 }
 
