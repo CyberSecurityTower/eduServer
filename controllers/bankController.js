@@ -4,22 +4,41 @@
 const geniusBankWorker = require('../services/ai/geniusBankWorker');
 const CONFIG = require('../config');
 
+// 1. تشغيل العملية
 async function triggerBankGeneration(req, res) {
-    // 1. الأمان
     if (req.headers['x-admin-secret'] !== CONFIG.NIGHTLY_JOB_SECRET) {
         return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    // 2. الرد الفوري (عشان التايم آوت)
     res.json({ 
         success: true, 
-        message: '🚀 The Genius Dual-Core Engine started. System is now in Maintenance Mode.',
-        details: 'Check logs for live progress: Subject -> Lesson'
+        message: '🚀 Smart Bank Engine Started. Check logs for progress.',
+        status: 'Maintenance Mode ON'
     });
 
-    // 3. إطلاق المهمة (Fire & Forget)
-    // لا ننتظرها هنا لأنها قد تأخذ ساعات
     geniusBankWorker.startMission();
 }
 
-module.exports = { triggerBankGeneration };
+// 2. إيقاف العملية (الجديد)
+async function stopBankGeneration(req, res) {
+    if (req.headers['x-admin-secret'] !== CONFIG.NIGHTLY_JOB_SECRET) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const wasRunning = geniusBankWorker.stop();
+
+    if (wasRunning) {
+        res.json({ 
+            success: true, 
+            message: '🛑 Stop signal sent. Workers will finish current lesson and halt.',
+            note: 'System maintenance mode will be disabled automatically.'
+        });
+    } else {
+        res.json({ 
+            success: false, 
+            message: '⚠️ Engine was not running.' 
+        });
+    }
+}
+
+module.exports = { triggerBankGeneration, stopBankGeneration };
