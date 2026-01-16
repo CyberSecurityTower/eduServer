@@ -27,6 +27,8 @@ class GeniusBankWorker {
     constructor() {
         this.STOP_SIGNAL = false;
         this.isWorking = false;
+        // 🗑️ ذاكرة مؤقتة لتجاهل الدروس التالفة/الفارغة خلال هذه الجلسة فقط
+        this.failedSessionIds = new Set(); 
     }
 
     /**
@@ -47,11 +49,12 @@ class GeniusBankWorker {
             return;
         }
 
-        logger.info('🚀 Genius Bank Mission Started.');
+        logger.info('🚀 Genius Bank Mission Started (Scan All Lessons Mode).');
         
         systemHealth.setMaintenanceMode(true);
         this.STOP_SIGNAL = false;
         this.isWorking = true;
+        this.failedSessionIds.clear(); // تصفير قائمة الفشل عند بدء مهمة جديدة
 
         try {
             // تشغيل محركين
@@ -82,31 +85,34 @@ class GeniusBankWorker {
             const lesson = await this._findNextTarget();
 
             if (!lesson) {
-                logger.info(`💤 Worker #${workerId}: Queue empty.`);
+                logger.info(`💤 Worker #${workerId}: Queue empty (or all remaining lessons are invalid).`);
                 break;
             }
 
             await this._processLessonWithSmartRetry(workerId, lesson);
             
-            // استراحة قصيرة جداً إذا كان الوضع طبيعياً
             if (!this.STOP_SIGNAL) await sleep(2000); 
         }
     }
 
     async _findNextTarget() {
-        // ... (نفس منطق البحث السابق تماماً)
+        // 🔥 التغيير هنا: أزلنا شرط has_content
         const { data: candidates } = await supabase
             .from('lessons')
             .select('id, title, subjects(title)')
-            .eq('has_content', true)
-            .limit(20); 
+            // .eq('has_content', true) ❌ تم الحذف
+            .limit(50); // وسعنا النطاق قليلاً للبحث
 
         if (!candidates) return null;
 
         for (const lesson of candidates) {
+            // 1. هل يعمل عليه أحد؟
             if (activeProcessingIds.has(lesson.id)) continue;
+            
+            // 2. هل فشل سابقاً في هذه الجلسة (فارغ مثلاً)؟
+            if (this.failedSessionIds.has(lesson.id)) continue;
 
-            // تحقق سريع من عدم وجود أسئلة
+            // 3. هل لديه أسئلة بالفعل؟
             const { count } = await supabase
                 .from('question_bank')
                 .select('*', { count: 'exact', head: true })
@@ -114,6 +120,7 @@ class GeniusBankWorker {
 
             if (count > 0) continue;
 
+            // 4. هل لديه هيكلية؟ (شرط أساسي لربط الأسئلة)
             const { data: struct } = await supabase
                 .from('atomic_lesson_structures')
                 .select('id')
@@ -128,9 +135,6 @@ class GeniusBankWorker {
         return null;
     }
 
-    /**
-     * 💎 المعالجة الذكية مع التصعيد الأسي
-     */
     async _processLessonWithSmartRetry(workerId, lesson) {
         const subjectTitle = lesson.subjects?.title || 'General';
         const logPrefix = `[Worker #${workerId}] 📘 ${subjectTitle} -> ${lesson.title}`;
@@ -138,38 +142,33 @@ class GeniusBankWorker {
         let retryLevel = 0;
         let success = false;
 
-        // حلقة المحاولات (تستمر طالما لم ننجح ولم نصل للنهاية ولم تأتِ إشارة التوقف)
         while (!success && !this.STOP_SIGNAL) {
             try {
-                // محاولة التوليد
                 await this._generateCore(logPrefix, lesson);
-                success = true; // 🎉 نجحنا!
+                success = true; 
 
             } catch (err) {
                 const errorMsg = err.message || '';
 
-                // 1. أخطاء البيانات (لا فائدة من الإعادة)
+                // 1. أخطاء البيانات (محتوى فارغ في الجدول رغم وجود الدرس)
                 if (errorMsg.includes('DATA_MISSING')) {
-                    logger.error(`${logPrefix} | ❌ Data Error (Skipping Lesson).`);
-                    break; // نخرج من اللوب ونترك الدرس
+                    logger.error(`${logPrefix} | ❌ Data Missing (Marking as failed for this session).`);
+                    // نضيفه للقائمة السوداء المؤقتة لكي لا نختاره مجدداً
+                    this.failedSessionIds.add(lesson.id); 
+                    break; 
                 }
 
-                // 2. أخطاء الكوتا/الشبكة (هنا يبدأ الصبر)
+                // 2. أخطاء الكوتا/الشبكة (الصبر الجميل)
                 if (retryLevel < RETRY_SCHEDULE.length) {
                     const waitTime = RETRY_SCHEDULE[retryLevel];
                     const waitTimeMinutes = waitTime / 60000;
                     
-                    logger.warn(`${logPrefix} | ⚠️ Failed (Attempt ${retryLevel + 1}). System sleeping for ${waitTimeMinutes} mins...`);
-                    
-                    // ننتظر الوقت المحدد
+                    logger.warn(`${logPrefix} | ⚠️ Failed (Attempt ${retryLevel + 1}). Sleeping for ${waitTimeMinutes} mins...`);
                     await sleep(waitTime);
-                    
-                    // نزيد المستوى للمرة القادمة
                     retryLevel++;
                 } else {
-                    // 💀 استنفدنا كل المحاولات (حتى الـ 4 ساعات)
                     logger.error(`💀 ${logPrefix} | MAX RETRIES EXHAUSTED after 4 hours. KILLING MISSION.`);
-                    this.STOP_SIGNAL = true; // 🚨 إيقاف النظام بالكامل
+                    this.STOP_SIGNAL = true; 
                     break;
                 }
             }
@@ -178,7 +177,6 @@ class GeniusBankWorker {
         activeProcessingIds.delete(lesson.id);
     }
 
-    // الوظيفة الأساسية للتوليد (مفصولة للنظافة)
     async _generateCore(logPrefix, lesson) {
         logger.info(`${logPrefix} | ⏳ Generating...`);
 
@@ -187,7 +185,10 @@ class GeniusBankWorker {
             supabase.from('atomic_lesson_structures').select('structure_data').eq('lesson_id', lesson.id).single()
         ]);
 
-        if (!contentRes.data?.content) throw new Error("DATA_MISSING");
+        // هنا يتم التحقق الفعلي من المحتوى
+        if (!contentRes.data?.content || contentRes.data.content.trim().length < 50) {
+            throw new Error("DATA_MISSING");
+        }
 
         const atomsList = structureRes.data.structure_data.elements.map(a => ({ id: a.id, title: a.title }));
         const prompt = QUESTION_GENERATION_PROMPT(lesson.title, contentRes.data.content, atomsList);
@@ -195,7 +196,7 @@ class GeniusBankWorker {
         const res = await generateWithFailover('analysis', prompt, { 
             label: 'BankGen_Smart',
             timeoutMs: 180000,
-            maxRetries: 1 // لا تعيد المحاولة داخلياً
+            maxRetries: 1 
         });
 
         const rawText = await extractTextFromResult(res);
