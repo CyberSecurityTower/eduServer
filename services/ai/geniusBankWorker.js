@@ -95,14 +95,11 @@ class GeniusBankWorker {
         }
     }
 
-   async _findNextTarget() {
-        // 🔍 التغيير 1: استخدام .range أو زيادة limit لضمان عدم فحص نفس الـ 50 درس دائماً
-        // أو استخدام ترتيب عشوائي إذا كان البوستجريس يدعم ذلك، لكن هنا سنعتمد على جلب كمية أكبر
-        // وسنقوم بالترتيب عكسياً (الأحدث أولاً) لعلنا نجد دروساً جديدة
+  async _findNextTarget() {
         const { data: candidates, error } = await supabase
             .from('lessons')
-            .select('id, title, subjects(title)')
-            .order('created_at', { ascending: false }) // 👈 نبدأ بالأحدث
+            .select('id, title, subject_id') 
+            .order('created_at', { ascending: false })
             .limit(50);
 
         if (error) {
@@ -110,6 +107,7 @@ class GeniusBankWorker {
             return null;
         }
 
+     
         if (!candidates || candidates.length === 0) {
             logger.warn('⚠️ No lessons found in DB at all.');
             return null;
