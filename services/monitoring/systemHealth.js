@@ -9,7 +9,7 @@ class SystemHealthMonitor {
     constructor() {
         this.status = 'HEALTHY'; // HEALTHY | WARNING | LOCKDOWN
         this.consecutiveFailures = 0;
-        this.LOCKDOWN_THRESHOLD = 3; // إذا فشل 3 مستخدمين وراء بعض، أغلق النظام
+        this.LOCKDOWN_THRESHOLD = 4; // إذا فشل 3 مستخدمين وراء بعض، أغلق النظام
         
         // بروتوكول العنقاء: فحص كل 2 دقيقة إذا كنا في حالة إغلاق
         setInterval(() => this._runPhoenixProbe(), 2 * 60 * 1000);
@@ -38,8 +38,20 @@ class SystemHealthMonitor {
         }
     }
 
+  //   وضع الصيانة
+    setMaintenanceMode(isActive) {
+        if (isActive) {
+            this.status = 'MAINTENANCE';
+            logger.warn('⛔ SYSTEM ENTERED MAINTENANCE MODE. User traffic blocked.');
+        } else {
+            this.status = 'HEALTHY';
+            this.consecutiveFailures = 0;
+            logger.success('🟢 SYSTEM EXITED MAINTENANCE MODE. Traffic restored.');
+        }
+    }
+
     isLocked() {
-        return this.status === 'LOCKDOWN';
+        return this.status === 'LOCKDOWN' || this.status === 'MAINTENANCE';
     }
 
     // إعادة الضبط اليدوية (عند إضافة مفاتيح جديدة)
