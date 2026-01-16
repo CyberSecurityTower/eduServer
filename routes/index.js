@@ -222,6 +222,10 @@ router.get('/arena/generate/:lessonId', requireAuth, arenaController.generateExa
 router.post('/arena/submit', requireAuth, arenaController.submitExam);
 
 // 🏦 Question Bank Generator (System Lockdown Trigger)
+
+// 1. Start Generator
 router.post('/admin/generate-bank', requireAdmin, bankController.triggerBankGeneration);
 
+// 2. Stop Generator (Emergency)
+router.post('/admin/stop-bank', requireAdmin, bankController.stopBankGeneration);
 module.exports = router;
