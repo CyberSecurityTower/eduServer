@@ -158,7 +158,7 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
             };
         });
 
-        await supabase
+        const { error: upsertError } = await supabase
             .from('atomic_user_mastery')
             .upsert({
                 user_id: userId,
@@ -166,6 +166,13 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
                 elements_scores: newScores,
                 last_updated: new Date().toISOString()
             }, { onConflict: 'user_id, lesson_id' });
+
+        // 👇 إضافة هذا السطر لكشف الخطأ
+        if (upsertError) {
+            console.error("❌ SUPABASE UPSERT ERROR:", upsertError);
+        } else {
+            console.log("✅ Update Success for User:", userId);
+        }
 
         // 5. المكافأة (Coins)
          let coinsEarned = 0;
