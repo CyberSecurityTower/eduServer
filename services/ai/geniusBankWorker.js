@@ -7,21 +7,18 @@ const { extractTextFromResult, ensureJsonOrRepair, sleep } = require('../../util
 const { QUESTION_GENERATION_PROMPT } = require('../../config/bank-prompts');
 const logger = require('../../utils/logger');
 const systemHealth = require('../monitoring/systemHealth');
-const keyManager = require('./keyManager'); // 👈 استيراد مدير المفاتيح
+const keyManager = require('./keyManager');
 
-// 🛡️ لمنع تضارب العاملين
 const activeProcessingIds = new Set();
 
-// ⏳ جدول الصبر (Exponential Backoff)
-// يتم تفعيله فقط بعد فشل جميع المفاتيح المتاحة
 const RETRY_SCHEDULE = [
-    60 * 1000,           // 1 دقيقة
-    2 * 60 * 1000,       // 2 دقيقة
-    10 * 60 * 1000,      // 10 دقائق
-    30 * 60 * 1000,      // 30 دقيقة
-    60 * 60 * 1000,      // 1 ساعة
-    2 * 60 * 60 * 1000,  // 2 ساعة
-    4 * 60 * 60 * 1000   // 4 ساعات (المحاولة الأخيرة)
+    60 * 1000,           
+    2 * 60 * 1000,       
+    10 * 60 * 1000,      
+    30 * 60 * 1000,      
+    60 * 60 * 1000,      
+    2 * 60 * 60 * 1000,  
+    4 * 60 * 60 * 1000   
 ];
 
 class GeniusBankWorker {
@@ -49,6 +46,7 @@ class GeniusBankWorker {
 
         logger.info('🚀 Genius Bank Mission Started (Full Key Exhaustion Mode).');
         
+        // 1. تفعيل وضع الصيانة (يمنع المستخدمين فقط)
         systemHealth.setMaintenanceMode(true);
         this.STOP_SIGNAL = false;
         this.isWorking = true;
@@ -93,7 +91,6 @@ class GeniusBankWorker {
     }
 
     async _findNextTarget(workerId) {
-        // نوسع البحث لضمان عدم توقف العمل
         const { data: candidates, error } = await supabase
             .from('lessons')
             .select('id, title, subject_id')
@@ -107,14 +104,12 @@ class GeniusBankWorker {
         if (!candidates) return null;
 
         for (const lesson of candidates) {
-            // القفل المتفائل
             if (activeProcessingIds.has(lesson.id)) continue;
             if (this.failedSessionIds.has(lesson.id)) continue;
 
             activeProcessingIds.add(lesson.id);
 
             try {
-                // فحص الأسئلة
                 const { count } = await supabase
                     .from('question_bank')
                     .select('*', { count: 'exact', head: true })
@@ -125,7 +120,6 @@ class GeniusBankWorker {
                     continue;
                 }
 
-                // فحص الهيكلية
                 const { data: struct } = await supabase
                     .from('atomic_lesson_structures')
                     .select('id')
@@ -133,7 +127,6 @@ class GeniusBankWorker {
                     .single();
 
                 if (!struct) {
-                    // logger.warn(`⚠️ Skipping "${lesson.title}": No Atomic Structure.`);
                     this.failedSessionIds.add(lesson.id);
                     activeProcessingIds.delete(lesson.id);
                     continue;
@@ -157,12 +150,9 @@ class GeniusBankWorker {
 
         while (!success && !this.STOP_SIGNAL) {
             try {
-                // إذا كان النظام مغلقاً من البداية (Lockdown)، ننتظر
-                if (systemHealth.isLocked() && retryLevel === 0) {
-                    logger.warn(`${logPrefix} | System Locked. Waiting 1m...`);
-                    await sleep(60000);
-                    continue;
-                }
+                // 🛑 تم حذف شرط systemHealth.isLocked() من هنا
+                // السبب: نحن من وضع النظام في Maintenance Mode، فلا يجب أن نمنع أنفسنا من العمل!
+                // العامل الإداري لديه "تصريح مرور VIP".
 
                 await this._generateCore(logPrefix, lesson);
                 success = true; 
@@ -176,12 +166,13 @@ class GeniusBankWorker {
                     break; 
                 }
 
-                // إذا وصلنا هنا، فهذا يعني أننا جربنا *كل* المفاتيح وفشلت جميعها
+                // هنا يبدأ الاستنزاف
+                // بما أننا وصلنا هنا، فهذا يعني أن _generateCore قد جربت كل المفاتيح وفشلت كلها
                 if (retryLevel < RETRY_SCHEDULE.length) {
                     const waitTime = RETRY_SCHEDULE[retryLevel];
                     const waitTimeMinutes = waitTime / 60000;
                     
-                    logger.error(`${logPrefix} | 💀 ALL KEYS FAILED. Sleeping for ${waitTimeMinutes} mins before trying the whole pool again...`);
+                    logger.error(`${logPrefix} | 💀 ALL KEYS EXHAUSTED (Round ${retryLevel+1}). Sleeping for ${waitTimeMinutes} mins...`);
                     
                     await sleep(waitTime);
                     retryLevel++;
@@ -197,7 +188,7 @@ class GeniusBankWorker {
     }
 
     async _generateCore(logPrefix, lesson) {
-        logger.info(`${logPrefix} | ⏳ Generating...`);
+        logger.info(`${logPrefix} | ⏳ Generating (Trying ALL available keys)...`);
 
         const [contentRes, structureRes] = await Promise.all([
             supabase.from('lessons_content').select('content').eq('id', lesson.id).single(),
@@ -211,19 +202,14 @@ class GeniusBankWorker {
         const atomsList = structureRes.data.structure_data.elements.map(a => ({ id: a.id, title: a.title }));
         const prompt = QUESTION_GENERATION_PROMPT(lesson.title, contentRes.data.content, atomsList);
         
-        // 🔥 التعديل الجوهري هنا: استراتيجية الاستنزاف الكامل 🔥
-        // نجلب عدد المفاتيح الكلي من مدير المفاتيح
+        // حساب عدد المفاتيح
         const totalKeys = keyManager.getKeyCount(); 
-        // نجعل عدد المحاولات يساوي عدد المفاتيح + 2 (لضمان تغطية الجميع)
-        // إذا كان عدد المفاتيح 0 (مشكلة في التحميل)، نجعلها 5 محاولات افتراضية
-        const attempts = totalKeys > 0 ? totalKeys + 2 : 5;
-
-        // logger.info(`${logPrefix} | Attempting with pool of ${totalKeys} keys...`);
+        const attempts = totalKeys > 0 ? totalKeys + 2 : 5; // عدد المحاولات = عدد المفاتيح + هامش أمان
 
         const res = await generateWithFailover('analysis', prompt, { 
             label: `BankGen_${lesson.id}`,
             timeoutMs: 180000,
-            maxRetries: attempts // 👈 هنا يكمن السر: جربهم كلهم!
+            maxRetries: attempts // 👈 هنا الأمر بتجربة الجميع
         });
 
         const rawText = await extractTextFromResult(res);
