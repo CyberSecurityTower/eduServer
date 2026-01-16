@@ -131,10 +131,12 @@ async function updateSubjectProgressFromBackend(userId, lessonId, currentLessonS
 }
 
 
+
 async function gradeArenaExam(userId, lessonId, userSubmission) {
     try {
         if (!userSubmission || userSubmission.length === 0) throw new Error("Empty submission");
 
+        // 1. جلب الأسئلة الصحيحة
         const questionIds = userSubmission.map(s => s.questionId);
         const { data: correctData, error } = await supabase
             .from('question_bank')
@@ -150,6 +152,7 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
         const totalQuestions = userSubmission.length;
         const atomUpdates = {}; 
         
+        // 2. حساب الفروقات (Deltas) بناء على الإجابات
         for (const sub of userSubmission) {
             const dbQuestion = questionMap.get(sub.questionId);
             if (!dbQuestion) continue;
@@ -161,19 +164,19 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
 
             if (isCorrect) {
                 correctCount++;
-                atomUpdates[atomId] += 100; // إتقان فوري
+                atomUpdates[atomId] += 100; // زيادة للإجابة الصحيحة
             } else {
-                atomUpdates[atomId] -= 50;
+                atomUpdates[atomId] -= 50;  // خصم للإجابة الخاطئة
             }
         }
 
+        // حساب الدرجة النهائية للامتحان
         let finalScoreOutOf20 = 0;
         if (totalQuestions > 0) finalScoreOutOf20 = (correctCount / totalQuestions) * 20;
         finalScoreOutOf20 = Math.round(finalScoreOutOf20 * 2) / 2;
-
         const finalPercentage = Math.round((correctCount / totalQuestions) * 100);
 
-        // تحديث Atomic Mastery
+        // 3. جلب حالة الاتقان الحالية (القديمة) من قاعدة البيانات
         const { data: currentProgress } = await supabase
             .from('atomic_user_mastery')
             .select('elements_scores')
@@ -181,36 +184,55 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
             .eq('lesson_id', lessonId)
             .single();
 
-        let newScores = currentProgress?.elements_scores || {};
+        // تجهيز كائن الدرجات الجديد وكائن التفاصيل للفرونت إند
+        // نستخدم نسخة جديدة لتجنب التعديل المباشر قبل الحساب
+        let dbScores = currentProgress?.elements_scores || {}; 
+        
+        // 🔥 التعديل الأساسي هنا: إنشاء مصفوفة لتفاصيل التغيير
+        const masteryChanges = [];
+
         Object.keys(atomUpdates).forEach(atomId => {
-            const currentVal = newScores[atomId]?.score || 0;
+            // القيمة القديمة (قبل التحديث)
+            const oldScore = dbScores[atomId]?.score || 0;
+            
+            // حساب القيمة الجديدة
             const delta = atomUpdates[atomId];
-            let nextVal = Math.max(0, Math.min(100, currentVal + delta));
-            newScores[atomId] = { score: nextVal, last_updated: new Date().toISOString() };
+            let newScore = Math.max(0, Math.min(100, oldScore + delta));
+            
+            // تحديث الكائن الذي سيتم حفظه في الداتابيس
+            dbScores[atomId] = { 
+                score: newScore, 
+                last_updated: new Date().toISOString() 
+            };
+
+            // إضافة تفاصيل التغيير للمصفوفة التي سنرسلها للفرونت
+            masteryChanges.push({
+                atom_id: atomId,
+                old_score: oldScore,
+                new_score: newScore,
+                delta: delta, // مفيد لمعرفة اتجاه التغيير
+                // يمكنك إضافة اسم العنصر هنا لو كان متوفراً لديك، أو يكتفي الفرونت بالـ ID
+            });
         });
 
-        // 1. الحفظ في atomic_user_mastery
+        // 4. الحفظ في atomic_user_mastery
         const { error: upsertError } = await supabase
             .from('atomic_user_mastery')
             .upsert({
                 user_id: userId,
                 lesson_id: lessonId,
-                elements_scores: newScores,
+                elements_scores: dbScores, // نرسل الكائن المحدث
                 last_updated: new Date().toISOString()
             }, { onConflict: 'user_id, lesson_id' });
 
         if (upsertError) console.error("❌ SUPABASE UPSERT ERROR:", upsertError);
         else console.log("✅ Update Success for User:", userId);
 
-        // -------------------------------------------------------------
-        // 🔥 الانتظار قليلاً لضمان أن التريجر الداخلي حدث user_lesson_stats
-        // ثم استدعاء دالة تحديث المادة من الباك إند
-        // -------------------------------------------------------------
+        // تحديث تقدم المادة والكوينز (كما هو سابقاً)
         setTimeout(() => {
             updateSubjectProgressFromBackend(userId, lessonId, finalPercentage);
-        }, 1000); // تأخير ثانية واحدة لضمان استقرار قاعدة البيانات
+        }, 1000);
 
-        // الكوينز
         let coinsEarned = 0;
         if (finalPercentage >= 50) {
             coinsEarned = Math.floor(finalPercentage / 2);
@@ -222,6 +244,7 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
             });
         }
 
+        // 5. إرجاع النتيجة مع بيانات masteryChanges الجديدة
         return {
             success: true,
             score: finalScoreOutOf20,
@@ -230,7 +253,8 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
             correctCount,
             totalQuestions,
             coinsEarned,
-            atomUpdates
+            atomUpdates, // (يمكنك إزالته إذا اكتفيت بـ masteryChanges)
+            masteryChanges // 🔥 المصفوفة الجديدة للأنيميشن
         };
 
     } catch (error) {
