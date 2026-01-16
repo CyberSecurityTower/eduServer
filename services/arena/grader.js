@@ -125,11 +125,13 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
 
             if (!atomUpdates[atomId]) atomUpdates[atomId] = 0;
 
-            if (isCorrect) {
+               if (isCorrect) {
                 correctCount++;
-                atomUpdates[atomId] += 20; 
+                // 🔥 تعديل: جعلناها 100 ليعتبر الطالب أتقن الذرة تماماً بمجرد إجابة صحيحة واحدة
+                atomUpdates[atomId] += 100; 
             } else {
-                atomUpdates[atomId] -= 10;
+                // يمكنك زيادة العقاب أيضاً إذا أردت
+                atomUpdates[atomId] -= 50;
             }
         }
 
