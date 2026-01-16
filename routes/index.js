@@ -19,6 +19,10 @@ const uploadMiddleware = require('../middleware/upload');
 const smartQueueMiddleware = require('../middleware/smartQueue'); // استيراد الجديد
 const chatBrainController = require('../controllers/ChatBrainController'); 
 const arenaController = require('../controllers/arenaController'); 
+const bankController = require('../controllers/bankController');
+
+
+
 /*
 // ⏰ تشغيل منقذ الستريك كل ساعة (60 دقيقة)
 setInterval(() => {
@@ -217,5 +221,7 @@ router.get('/arena/generate/:lessonId', requireAuth, arenaController.generateExa
 // تقديم الإجابات وتصحيحها
 router.post('/arena/submit', requireAuth, arenaController.submitExam);
 
+// 🏦 Question Bank Generator (System Lockdown Trigger)
+router.post('/admin/generate-bank', requireAdmin, bankController.triggerBankGeneration);
 
 module.exports = router;
