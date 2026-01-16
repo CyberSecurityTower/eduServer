@@ -110,9 +110,10 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
 
         // 2. التصحيح
         let correctCount = 0;
+        const totalQuestions = userSubmission.length;
         const atomUpdates = {}; 
         
-        const POINTS_PER_QUESTION = 2; // للحصول على 20 درجة
+        const POINTS_PER_QUESTION = 2; 
 
         for (const sub of userSubmission) {
             const dbQuestion = questionMap.get(sub.questionId);
@@ -132,9 +133,23 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
             }
         }
 
-        // 3. الحسابات النهائية
-        const finalScoreOutOf20 = correctCount * POINTS_PER_QUESTION; 
-        const finalPercentage = Math.round((finalScoreOutOf20 / 20) * 100);
+        // ---------------------------------------------------------
+        // 🔥 التعديل الجذري هنا: الحساب بالنسبة المئوية (Rule of Three)
+        // ---------------------------------------------------------
+        // المعادلة: (عدد الإجابات الصحيحة ÷ العدد الكلي) × 20
+        // مثال: أجبت 7 من أصل 8 أسئلة
+        // (7 / 8) * 20 = 17.5
+        
+        let finalScoreOutOf20 = 0;
+        if (totalQuestions > 0) {
+            finalScoreOutOf20 = (correctCount / totalQuestions) * 20;
+        }
+        
+        // تقريب النتيجة لرقم واحد بعد الفاصلة أو عدد صحيح (اختياري)
+        // Math.round(num * 10) / 10  يعطي رقم عشري واحد
+        finalScoreOutOf20 = Math.round(finalScoreOutOf20 * 2) / 2; // يقرب لأقرب 0.5
+
+        const finalPercentage = Math.round((correctCount / totalQuestions) * 100);
 
 
         // 4. تحديث الـ Mastery في قاعدة البيانات
@@ -190,12 +205,11 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
         // 6. الرد النهائي
         return {
             success: true,
-            score: finalScoreOutOf20,
-            maxScore: 20,
+            score: finalScoreOutOf20, 
+            maxScore: 20,             
             percentage: finalPercentage,
-            // 🔥 تعديل: تم حذف xpEarned من هنا
             correctCount,
-            totalQuestions: userSubmission.length,
+            totalQuestions,
             coinsEarned,
             atomUpdates
         };
