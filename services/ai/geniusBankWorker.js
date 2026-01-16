@@ -95,46 +95,79 @@ class GeniusBankWorker {
         }
     }
 
-    async _findNextTarget() {
-        // 🔥 التغيير هنا: أزلنا شرط has_content
-        const { data: candidates } = await supabase
+   async _findNextTarget() {
+        // 🔍 التغيير 1: استخدام .range أو زيادة limit لضمان عدم فحص نفس الـ 50 درس دائماً
+        // أو استخدام ترتيب عشوائي إذا كان البوستجريس يدعم ذلك، لكن هنا سنعتمد على جلب كمية أكبر
+        // وسنقوم بالترتيب عكسياً (الأحدث أولاً) لعلنا نجد دروساً جديدة
+        const { data: candidates, error } = await supabase
             .from('lessons')
             .select('id, title, subjects(title)')
-            // .eq('has_content', true) ❌ تم الحذف
-            .limit(50); // وسعنا النطاق قليلاً للبحث
+            .order('created_at', { ascending: false }) // 👈 نبدأ بالأحدث
+            .limit(50);
 
-        if (!candidates) return null;
+        if (error) {
+            logger.error('❌ DB Error in _findNextTarget:', error.message);
+            return null;
+        }
+
+        if (!candidates || candidates.length === 0) {
+            logger.warn('⚠️ No lessons found in DB at all.');
+            return null;
+        }
+
+        logger.info(`🔍 Scanning batch of ${candidates.length} lessons...`);
 
         for (const lesson of candidates) {
-            // 1. هل يعمل عليه أحد؟
-            if (activeProcessingIds.has(lesson.id)) continue;
-            
-            // 2. هل فشل سابقاً في هذه الجلسة (فارغ مثلاً)؟
-            if (this.failedSessionIds.has(lesson.id)) continue;
+            const logPrefix = `[Scan: ${lesson.title}]`;
 
-            // 3. هل لديه أسئلة بالفعل؟
+            // 1. هل يعمل عليه أحد؟
+            if (activeProcessingIds.has(lesson.id)) {
+                // logger.log(`${logPrefix} Skipped: Busy.`);
+                continue;
+            }
+            
+            // 2. هل فشل سابقاً؟
+            if (this.failedSessionIds.has(lesson.id)) {
+                // logger.log(`${logPrefix} Skipped: Failed previously.`);
+                continue;
+            }
+
+            // 3. هل لديه أسئلة؟
             const { count } = await supabase
                 .from('question_bank')
                 .select('*', { count: 'exact', head: true })
                 .eq('lesson_id', lesson.id);
 
-            if (count > 0) continue;
+            if (count > 0) {
+                // logger.log(`${logPrefix} Skipped: Already has ${count} questions.`);
+                continue;
+            }
 
-            // 4. هل لديه هيكلية؟ (شرط أساسي لربط الأسئلة)
+            // 4. 🔥 الفحص الحاسم: هل لديه هيكلية؟
             const { data: struct } = await supabase
                 .from('atomic_lesson_structures')
                 .select('id')
                 .eq('lesson_id', lesson.id)
                 .single();
 
-            if (!struct) continue;
+            if (!struct) {
+                // 🛑 هذا هو السبب المرجح! سنطبعه باللون الأحمر
+                logger.warn(`${logPrefix} ❌ Skipped: NO ATOMIC STRUCTURE found. Please run 'Atomic Generator' first.`);
+                // نضيفه لقائمة الفشل المؤقت لتسريع الدورة القادمة
+                this.failedSessionIds.add(lesson.id);
+                continue;
+            }
 
+            //  وجدنا درساً صالحاً
+            logger.success(`🎯 Target Acquired: "${lesson.title}"`);
             activeProcessingIds.add(lesson.id);
             return lesson;
         }
+
+        // إذا وصلنا هنا، يعني فحصنا 50 درس ولم نجد أي واحد صالح
+        logger.warn('⚠️ Scanned 50 lessons but found no eligible candidates (All either have questions or lack structure).');
         return null;
     }
-
     async _processLessonWithSmartRetry(workerId, lesson) {
         const subjectTitle = lesson.subjects?.title || 'General';
         const logPrefix = `[Worker #${workerId}] 📘 ${subjectTitle} -> ${lesson.title}`;
