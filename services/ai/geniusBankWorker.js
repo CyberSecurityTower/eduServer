@@ -8,87 +8,105 @@ const { QUESTION_GENERATION_PROMPT } = require('../../config/bank-prompts');
 const logger = require('../../utils/logger');
 const systemHealth = require('../monitoring/systemHealth');
 
-// 🛡️ لمنع تضارب العاملين (Workers) على نفس الدرس
+// 🛡️ لمنع تضارب العاملين
 const activeProcessingIds = new Set();
+
+// ⏳ جدول إعادة المحاولة (بالمللي ثانية)
+const RETRY_SCHEDULE = [
+    60 * 1000,           // 1 دقيقة
+    2 * 60 * 1000,       // 2 دقيقة
+    10 * 60 * 1000,      // 10 دقائق
+    30 * 60 * 1000,      // 30 دقيقة
+    60 * 60 * 1000,      // 1 ساعة
+    2 * 60 * 60 * 1000,  // 2 ساعة
+    4 * 60 * 60 * 1000   // 4 ساعات (المحاولة الأخيرة)
+];
 
 class GeniusBankWorker {
     
     constructor() {
-        this.MAX_CONCURRENCY = 2; // عدد الطلبات المتوازية
         this.STOP_SIGNAL = false;
+        this.isWorking = false;
     }
 
     /**
-     * 🟢 نقطة الانطلاق الرئيسية
+     * 🛑 زر الطوارئ (Emergency Stop)
      */
+    stop() {
+        if (this.isWorking) {
+            logger.warn('🛑 STOP SIGNAL RECEIVED. Aborting operations after current step...');
+            this.STOP_SIGNAL = true;
+            return true;
+        }
+        return false;
+    }
+
     async startMission() {
-        logger.info('🚀 Genius Bank Mission Started: Initializing Dual-Core Processing...');
+        if (this.isWorking) {
+            logger.warn('⚠️ Mission already running.');
+            return;
+        }
+
+        logger.info('🚀 Genius Bank Mission Started.');
         
-        // 1. قفل النظام
         systemHealth.setMaintenanceMode(true);
         this.STOP_SIGNAL = false;
+        this.isWorking = true;
 
         try {
-            // تشغيل عاملين (Workers) في نفس الوقت
+            // تشغيل محركين
             const worker1 = this._workerLoop(1);
             const worker2 = this._workerLoop(2);
 
-            // انتظار انتهاء الاثنين
             await Promise.all([worker1, worker2]);
 
-            logger.success('🏁 Mission Accomplished: All queues processed.');
+            if (this.STOP_SIGNAL) {
+                logger.warn('🚫 Mission Aborted by Admin or System Limit.');
+            } else {
+                logger.success('🏁 Mission Accomplished Successfully.');
+            }
 
         } catch (err) {
             logger.error('💥 Critical Mission Failure:', err);
         } finally {
-            // 2. فتح النظام
             systemHealth.setMaintenanceMode(false);
             activeProcessingIds.clear();
+            this.isWorking = false;
         }
     }
 
-    /**
-     * 🔄 حلقة عمل العامل الواحد
-     */
     async _workerLoop(workerId) {
-        logger.info(`👷 Worker #${workerId} is online and hungry for data.`);
+        logger.info(`👷 Worker #${workerId} online.`);
 
         while (!this.STOP_SIGNAL) {
-            // أ. البحث عن هدف
             const lesson = await this._findNextTarget();
 
             if (!lesson) {
-                logger.info(`💤 Worker #${workerId}: No more lessons found. I retire.`);
-                break; // إنهاء الحلقة
+                logger.info(`💤 Worker #${workerId}: Queue empty.`);
+                break;
             }
 
-            // ب. المعالجة "العنيدة" (لن يترك الدرس حتى ينجزه)
-            await this._processLessonStubbornly(workerId, lesson);
+            await this._processLessonWithSmartRetry(workerId, lesson);
             
-            // ج. استراحة محارب لتبريد المفاتيح
-            await sleep(2000); 
+            // استراحة قصيرة جداً إذا كان الوضع طبيعياً
+            if (!this.STOP_SIGNAL) await sleep(2000); 
         }
     }
 
-    /**
-     * 🔍 البحث الذكي (يتخطى ما يعمل عليه العامل الآخر)
-     */
     async _findNextTarget() {
-        // جلب الدروس التي لها محتوى + هيكلية + 0 أسئلة
-        // ملاحظة: نجلب 10 لنختار منهم ما ليس في الـ Set
+        // ... (نفس منطق البحث السابق تماماً)
         const { data: candidates } = await supabase
             .from('lessons')
-            .select('id, title, subjects(title)') // ✅ جلبنا اسم المادة
+            .select('id, title, subjects(title)')
             .eq('has_content', true)
             .limit(20); 
 
         if (!candidates) return null;
 
         for (const lesson of candidates) {
-            // 1. هل يتم معالجته حالياً؟
             if (activeProcessingIds.has(lesson.id)) continue;
 
-            // 2. هل لديه أسئلة بالفعل؟ (تحقق مزدوج)
+            // تحقق سريع من عدم وجود أسئلة
             const { count } = await supabase
                 .from('question_bank')
                 .select('*', { count: 'exact', head: true })
@@ -96,7 +114,6 @@ class GeniusBankWorker {
 
             if (count > 0) continue;
 
-            // 3. هل لديه هيكلية ذرية؟
             const { data: struct } = await supabase
                 .from('atomic_lesson_structures')
                 .select('id')
@@ -105,106 +122,102 @@ class GeniusBankWorker {
 
             if (!struct) continue;
 
-            // ✅ وجدنا هدفاً صالحاً!
-            activeProcessingIds.add(lesson.id); // حجز الدرس
+            activeProcessingIds.add(lesson.id);
             return lesson;
         }
-
         return null;
     }
 
     /**
-     * 💎 المعالجة العنيدة (The Stubborn Processor)
-     * هذا هو "الذكاء" الحقيقي: لا يستسلم للأخطاء التقنية.
+     * 💎 المعالجة الذكية مع التصعيد الأسي
      */
-    async _processLessonStubbornly(workerId, lesson) {
+    async _processLessonWithSmartRetry(workerId, lesson) {
         const subjectTitle = lesson.subjects?.title || 'General';
         const logPrefix = `[Worker #${workerId}] 📘 ${subjectTitle} -> ${lesson.title}`;
         
+        let retryLevel = 0;
         let success = false;
-        let attempt = 1;
-        let backoffMs = 5000; // 5 ثواني كبداية
 
+        // حلقة المحاولات (تستمر طالما لم ننجح ولم نصل للنهاية ولم تأتِ إشارة التوقف)
         while (!success && !this.STOP_SIGNAL) {
             try {
-                logger.info(`${logPrefix} | ⏳ Generating... (Attempt ${attempt})`);
-
-                // 1. جلب البيانات الخام
-                const [contentRes, structureRes] = await Promise.all([
-                    supabase.from('lessons_content').select('content').eq('id', lesson.id).single(),
-                    supabase.from('atomic_lesson_structures').select('structure_data').eq('lesson_id', lesson.id).single()
-                ]);
-
-                if (!contentRes.data?.content) {
-                    throw new Error("DATA_MISSING"); // خطأ قاتل (نخرج من اللوب)
-                }
-
-                const atomsList = structureRes.data.structure_data.elements.map(a => ({ id: a.id, title: a.title }));
-
-                // 2. استدعاء الذكاء الاصطناعي
-                const prompt = QUESTION_GENERATION_PROMPT(lesson.title, contentRes.data.content, atomsList);
-                
-                const res = await generateWithFailover('analysis', prompt, { 
-                    label: `BankGen_${workerId}`,
-                    timeoutMs: 180000, // 3 دقائق
-                    maxRetries: 1 // لا تعيد المحاولة داخلياً، نحن نتحكم هنا
-                });
-
-                const rawText = await extractTextFromResult(res);
-                const questionsArray = await ensureJsonOrRepair(rawText, 'analysis');
-
-                // 3. التحقق الصارم
-                if (!questionsArray || !Array.isArray(questionsArray) || questionsArray.length < 5) {
-                    throw new Error("AI_BAD_OUTPUT"); // نعتبره خطأ يستحق الإعادة
-                }
-
-                // 4. الحفظ
-                const validQuestions = questionsArray.map(q => ({
-                    lesson_id: lesson.id,
-                    atom_id: q.atom_id,
-                    widget_type: q.widget_type.toUpperCase(),
-                    difficulty: q.difficulty || 'Medium',
-                    content: q.content,
-                    created_at: new Date().toISOString()
-                }));
-
-                const { error } = await supabase.from('question_bank').insert(validQuestions);
-                if (error) throw error;
-
-                // 🎉 نجاح!
-                logger.success(`✅ ${logPrefix} | DONE! Generated ${validQuestions.length} Qs.`);
-                success = true;
+                // محاولة التوليد
+                await this._generateCore(logPrefix, lesson);
+                success = true; // 🎉 نجحنا!
 
             } catch (err) {
-                // 🛑 تحليل الخطأ بذكاء
-                const errMsg = err.message || '';
-                
-                if (errMsg.includes("DATA_MISSING")) {
-                    logger.error(`${logPrefix} | ❌ Fatal Data Error. Skipping lesson.`);
-                    success = true; // نخرج من اللوب لكي لا نعلق للأبد في درس فارغ
-                } 
-                else if (errMsg.includes("429") || errMsg.includes("Quota") || errMsg.includes("AI_BAD_OUTPUT")) {
-                    // ⚠️ مشاكل تقنية أو غباء مؤقت من الـ AI -> ننتظر ونحاول مجدداً
-                    logger.warn(`${logPrefix} | ⚠️ Issue: ${errMsg}. Holding queue... waiting ${backoffMs/1000}s`);
-                    await sleep(backoffMs);
-                    backoffMs = Math.min(backoffMs * 1.5, 60000); // زيادة وقت الانتظار تدريجياً حتى دقيقة
-                    attempt++;
-                } 
-                else {
-                    // أخطاء غير معروفة -> ننتظر قليلاً ونحاول
-                    logger.error(`${logPrefix} | 💥 Error: ${errMsg}. Retrying...`);
-                    await sleep(5000);
-                    attempt++;
+                const errorMsg = err.message || '';
+
+                // 1. أخطاء البيانات (لا فائدة من الإعادة)
+                if (errorMsg.includes('DATA_MISSING')) {
+                    logger.error(`${logPrefix} | ❌ Data Error (Skipping Lesson).`);
+                    break; // نخرج من اللوب ونترك الدرس
+                }
+
+                // 2. أخطاء الكوتا/الشبكة (هنا يبدأ الصبر)
+                if (retryLevel < RETRY_SCHEDULE.length) {
+                    const waitTime = RETRY_SCHEDULE[retryLevel];
+                    const waitTimeMinutes = waitTime / 60000;
+                    
+                    logger.warn(`${logPrefix} | ⚠️ Failed (Attempt ${retryLevel + 1}). System sleeping for ${waitTimeMinutes} mins...`);
+                    
+                    // ننتظر الوقت المحدد
+                    await sleep(waitTime);
+                    
+                    // نزيد المستوى للمرة القادمة
+                    retryLevel++;
+                } else {
+                    // 💀 استنفدنا كل المحاولات (حتى الـ 4 ساعات)
+                    logger.error(`💀 ${logPrefix} | MAX RETRIES EXHAUSTED after 4 hours. KILLING MISSION.`);
+                    this.STOP_SIGNAL = true; // 🚨 إيقاف النظام بالكامل
+                    break;
                 }
             }
         }
-        
-        // إزالة الحجز عند الانتهاء (سواء نجح أو فشل نهائياً)
+
         activeProcessingIds.delete(lesson.id);
     }
 
-    stop() {
-        this.STOP_SIGNAL = true;
+    // الوظيفة الأساسية للتوليد (مفصولة للنظافة)
+    async _generateCore(logPrefix, lesson) {
+        logger.info(`${logPrefix} | ⏳ Generating...`);
+
+        const [contentRes, structureRes] = await Promise.all([
+            supabase.from('lessons_content').select('content').eq('id', lesson.id).single(),
+            supabase.from('atomic_lesson_structures').select('structure_data').eq('lesson_id', lesson.id).single()
+        ]);
+
+        if (!contentRes.data?.content) throw new Error("DATA_MISSING");
+
+        const atomsList = structureRes.data.structure_data.elements.map(a => ({ id: a.id, title: a.title }));
+        const prompt = QUESTION_GENERATION_PROMPT(lesson.title, contentRes.data.content, atomsList);
+        
+        const res = await generateWithFailover('analysis', prompt, { 
+            label: 'BankGen_Smart',
+            timeoutMs: 180000,
+            maxRetries: 1 // لا تعيد المحاولة داخلياً
+        });
+
+        const rawText = await extractTextFromResult(res);
+        const questionsArray = await ensureJsonOrRepair(rawText, 'analysis');
+
+        if (!questionsArray || !Array.isArray(questionsArray) || questionsArray.length < 5) {
+            throw new Error("AI_BAD_OUTPUT");
+        }
+
+        const validQuestions = questionsArray.map(q => ({
+            lesson_id: lesson.id,
+            atom_id: q.atom_id,
+            widget_type: q.widget_type.toUpperCase(),
+            difficulty: q.difficulty || 'Medium',
+            content: q.content,
+            created_at: new Date().toISOString()
+        }));
+
+        const { error } = await supabase.from('question_bank').insert(validQuestions);
+        if (error) throw error;
+
+        logger.success(`✅ ${logPrefix} | Inserted ${validQuestions.length} Qs.`);
     }
 }
 
