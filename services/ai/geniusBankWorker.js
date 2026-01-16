@@ -167,8 +167,9 @@ class GeniusBankWorker {
         return null;
     }
     async _processLessonWithSmartRetry(workerId, lesson) {
+         const subjectLogName = lesson.subject_id || 'Unknown Subject';
         const subjectTitle = lesson.subjects?.title || 'General';
-        const logPrefix = `[Worker #${workerId}] 📘 ${subjectTitle} -> ${lesson.title}`;
+        const logPrefix = `[Worker #${workerId}] 📘 ${subjectLogName} -> ${lesson.title}`;
         
         let retryLevel = 0;
         let success = false;
