@@ -1,121 +1,226 @@
+// controllers/sourceController.js
 'use strict';
 
+const sourceManager = require('../services/media/sourceManager');
 const supabase = require('../services/data/supabase');
-const cloudinary = require('../config/cloudinary');
 const logger = require('../utils/logger');
 const fs = require('fs');
 
-class SourceManager {
-    async uploadSource(userId, lessonId, filePath, displayName, description, mimeType, originalFileName) {
-        try {
-            logger.info(`📤 Uploading source [${displayName}]...`);
+/**
+ * 1. رفع ملف جديد (Endpoint Handler)
+ */
+async function uploadFile(req, res) {
+  const userId = req.user?.id;
+  const { lessonId, customName, description, lessonIds, subjectIds } = req.body; 
+  const file = req.file;
 
-            let resourceType = 'raw';
-            if (mimeType.startsWith('image/')) resourceType = 'image';
-            else if (mimeType.startsWith('video/')) resourceType = 'video';
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+  if (!file) return res.status(400).json({ error: 'No file provided' });
 
-            const uploadResult = await cloudinary.uploader.upload(filePath, {
-                folder: 'eduapp_sources',
-                resource_type: resourceType,
-                use_filename: true,
-                public_id: `user_${userId}_${Date.now()}`,
-                type: 'upload',
-                access_mode: 'public'
-            });
+  try {
+    // الرفع والحفظ (الحالة تكون completed فوراً من داخل sourceManager)
+    const uploadResult = await sourceManager.uploadSource(
+        userId, 
+        lessonId || null, 
+        file.path, 
+        customName || file.originalname, 
+        description || "", 
+        file.mimetype,
+        file.originalname
+    );
 
-            const simpleType = mimeType.split('/')[0] === 'image' ? 'image' : 'document';
+    const sourceId = uploadResult.id;
 
-            const insertData = {
-                user_id: userId,
-                lesson_id: lessonId || null,
-                file_url: uploadResult.secure_url,
-                file_type: simpleType,
-                file_name: displayName,
-                description: description,
-                original_file_name: originalFileName,
-                public_id: uploadResult.public_id,
-                processed: true,
-                status: 'completed',
-                extracted_text: null
-            };
+    // الربط المتعدد بالدروس والمواد
+    const linkPromises = [];
+    if (lessonIds) {
+        const lIds = Array.isArray(lessonIds) ? lessonIds : JSON.parse(lessonIds);
+        const lessonLinks = lIds.map(lId => ({ source_id: sourceId, lesson_id: lId }));
+        linkPromises.push(supabase.from('source_lessons').insert(lessonLinks));
+    }
+    if (subjectIds) {
+        const sIds = Array.isArray(subjectIds) ? subjectIds : JSON.parse(subjectIds);
+        const subjectLinks = sIds.map(sId => ({ source_id: sourceId, subject_id: sId }));
+        linkPromises.push(supabase.from('source_subjects').insert(subjectLinks));
+    }
+    if (linkPromises.length > 0) await Promise.all(linkPromises);
 
-            const { data, error } = await supabase
-                .from('lesson_sources')
-                .insert(insertData)
-                .select()
-                .single();
-
-            if (error) throw error;
-            return data;
-
-        } catch (err) {
-            logger.error('❌ Source Upload Failed:', err.message);
-            if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-            throw err;
-        }
+    // حذف الملف المؤقت من السيرفر المحلي بعد الرفع لـ Cloudinary
+    if (file.path && fs.existsSync(file.path)) {
+        fs.unlinkSync(file.path);
     }
 
-    async getSourcesByLesson(userId, lessonId) {
+    res.status(200).json({ 
+        success: true, 
+        message: 'File uploaded successfully.',
+        data: uploadResult 
+    });
+
+  } catch (err) {
+    logger.error('Upload Error:', err.message);
+    if (file?.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * 2. جلب ملفات درس معين
+ */
+async function getLessonFiles(req, res) {
+    try {
+        const { lessonId } = req.params;
+        const userId = req.user?.id;
+
+        if (!lessonId) return res.status(400).json({ error: 'Lesson ID required' });
+
+        const sources = await sourceManager.getSourcesByLesson(userId, lessonId);
+        res.status(200).json({ success: true, sources: sources });
+
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+}
+
+/**
+ * 3. حذف ملف
+ */
+async function deleteFile(req, res) {
+    try {
+        const { sourceId } = req.params;
+        const userId = req.user?.id;
+
+        await sourceManager.deleteSource(userId, sourceId);
+        res.status(200).json({ success: true, message: 'Deleted successfully' });
+
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+}
+
+/**
+ * 4. جلب مكتبة المستخدم كاملة
+ */
+async function getAllUserSources(req, res) {
+    const userId = req.user?.id;
+    try {
         const { data, error } = await supabase
             .from('lesson_sources')
-            .select('*')
-            .eq('lesson_id', lessonId)
+            .select(`*, source_lessons(lesson_id), source_subjects(subject_id)`)
             .eq('user_id', userId)
             .order('created_at', { ascending: false });
 
-        if (error) {
-            logger.error('Get Sources Error:', error.message);
-            return [];
-        }
-        return data;
-    }
-
-    async deleteSource(userId, sourceId) {
-        const { data: source } = await supabase
-            .from('lesson_sources')
-            .select('public_id, user_id')
-            .eq('id', sourceId)
-            .single();
-
-        if (!source) throw new Error('Source not found');
-        if (source.user_id !== userId) throw new Error('Unauthorized');
-
-        if (source.public_id) {
-            await cloudinary.uploader.destroy(source.public_id, { resource_type: 'raw' });
-        }
-
-        const { error } = await supabase.from('lesson_sources').delete().eq('id', sourceId);
         if (error) throw error;
-
-        logger.info(`🗑️ Source deleted: ${sourceId}`);
-        return true;
+        res.json({ success: true, count: data.length, sources: data });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
 }
 
-// --- الدوال المساعدة (خارج الكلاس تماماً) ---
+/**
+ * 5. ربط مصدر موجود بدرس أو مادة
+ */
+async function linkSourceToContext(req, res) {
+  const { sourceId, lessonIds, subjectIds } = req.body;
+  const userId = req.user?.id;
 
-function parseSizeToBytes(sizeStr) {
-    if (!sizeStr || typeof sizeStr !== 'string') return 0;
-    const units = { 'bytes': 1, 'kb': 1024, 'mb': 1024 * 1024, 'gb': 1024 * 1024 * 1024 };
-    const match = sizeStr.toLowerCase().match(/([\d.]+)\s*(bytes|kb|mb|gb)/);
-    if (!match) return 0;
-    const value = parseFloat(match[1]);
-    const unit = match[2];
-    return value * (units[unit] || 1);
+  try {
+    const { data: source } = await supabase
+        .from('lesson_sources')
+        .select('id')
+        .eq('id', sourceId)
+        .eq('user_id', userId)
+        .single();
+
+    if (!source) return res.status(403).json({ error: "Access denied" });
+
+    if (lessonIds && Array.isArray(lessonIds)) {
+        const lessonLinks = lessonIds.map(lId => ({ source_id: sourceId, lesson_id: lId }));
+        await supabase.from('source_lessons').upsert(lessonLinks);
+    }
+    if (subjectIds && Array.isArray(subjectIds)) {
+        const subjectLinks = subjectIds.map(sId => ({ source_id: sourceId, subject_id: sId }));
+        await supabase.from('source_subjects').upsert(subjectLinks);
+    }
+
+    res.json({ success: true, message: 'Source linked successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 }
 
-function formatBytes(bytes, decimals = 2) {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const dm = decimals < 0 ? 0 : decimals;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+/**
+ * 6. إحصائيات المكتبة (المرفوعة والمشتراة)
+ */
+async function getLibraryStats(req, res) {
+    const userId = req.user?.id;
+    try {
+        const { data: uploads, error: uploadError } = await supabase
+            .from('lesson_sources')
+            .select('file_size')
+            .eq('user_id', userId);
+
+        if (uploadError) throw uploadError;
+
+        const { data: purchases, error: purchaseError } = await supabase
+            .from('user_inventory')
+            .select(`item_id, store_items (file_size)`)
+            .eq('user_id', userId);
+
+        if (purchaseError) throw purchaseError;
+
+        // حساب الحجم للملفات المرفوعة
+        const uploadedCount = uploads.length;
+        let totalUploadedBytes = 0;
+        uploads.forEach(item => {
+            // نستخدم Helper من الـ service مباشرة
+            totalUploadedBytes += sourceManager.parseSizeToBytes(item.file_size || '0 Bytes');
+        });
+
+        // حساب الحجم للملفات المشتراة
+        const purchasedCount = purchases.length;
+        let totalPurchasedBytes = 0;
+        purchases.forEach(item => {
+            if (item.store_items && item.store_items.file_size) {
+                totalPurchasedBytes += sourceManager.parseSizeToBytes(item.store_items.file_size);
+            }
+        });
+
+        res.json({
+            success: true,
+            stats: {
+                uploads: { 
+                    count: uploadedCount, 
+                    totalSize: sourceManager.formatBytes(totalUploadedBytes) 
+                },
+                purchases: { 
+                    count: purchasedCount, 
+                    totalSize: sourceManager.formatBytes(totalPurchasedBytes) 
+                },
+                grandTotalSize: sourceManager.formatBytes(totalUploadedBytes + totalPurchasedBytes)
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 }
 
-// التصدير الصحيح (Exporting an object containing everything)
-const managerInstance = new SourceManager();
+/**
+ * 7. فحص الحالة (Legacy Support)
+ */
+async function checkSourceStatus(req, res) {
+    res.status(200).json({ 
+        success: true, 
+        status: 'completed', 
+        message: 'Sources are processed instantly.' 
+    });
+}
 
-module.exports = managerInstance; // التصدير الافتراضي هو الـ instance
-module.exports.parseSizeToBytes = parseSizeToBytes;
-module.exports.formatBytes = formatBytes;
+module.exports = { 
+    uploadFile, 
+    getLessonFiles, 
+    getAllUserSources,
+    deleteFile, 
+    checkSourceStatus, 
+    linkSourceToContext,
+    getLibraryStats
+};
