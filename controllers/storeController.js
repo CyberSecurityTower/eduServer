@@ -103,49 +103,83 @@ async function getMyInventory(req, res) {
  * 4. (Admin) إضافة منتج جديد
  * التحديث: يستقبل المحتوى النصي يدوياً + يرفع الملف للكلاوديناري
  */
+
+/**
+ * 4. (Admin) إضافة منتج جديد (نسخة المحترفين)
+ */
 async function addStoreItem(req, res) {
   const file = req.file;
-  // نستقبل المحتوى (content) من الـ Body
-  const { title, description, price, category, content } = req.body;
+  const { title, description, price, category, content, type, metadata } = req.body;
 
   if (!file) return res.status(400).json({ error: 'File is required' });
 
   try {
-    // 1. رفع الملف إلى Cloudinary
-    // resource_type: 'auto' يسمح برفع PDF, Images, Video
+    // 1. حساب حجم الملف
+    const fileSizeFormatted = formatBytes(file.size);
+
+    // 2. الرفع إلى Cloudinary
     const uploadResult = await cloudinary.uploader.upload(file.path, {
         folder: 'edustore_products',
         resource_type: 'auto',
-        use_filename: true,
-        unique_filename: true,
-        access_mode: 'public' // لضمان أن الرابط مباشر وقابل للوصول
+        access_mode: 'public',
+        image_metadata: true // ✅ مهم جداً: نطلب من كلاوديناري قراءة بيانات الملف (عدد الصفحات)
     });
 
-    // الرابط المباشر هو secure_url
-    const directFileUrl = uploadResult.secure_url;
+    // 3. استخراج البيانات الذكية
+    let pagesCount = 0;
+    let previewImages = [];
+    
+    // إذا كان ملف PDF، كلاوديناري يرجع عدد الصفحات في الحقل 'pages'
+    if (uploadResult.format === 'pdf' || (type && type === 'pdf')) {
+        pagesCount = uploadResult.pages || 0;
+        
+        // توليد صور المعاينة (أول 5 صفحات)
+        if (pagesCount > 0) {
+            previewImages = generatePreviewUrls(uploadResult.public_id, uploadResult.version, pagesCount);
+        }
+    } 
+    // إذا كان صورة عادية، نضع الصورة نفسها كمعاينة وحيدة
+    else if (uploadResult.resource_type === 'image') {
+        pagesCount = 1;
+        previewImages = [uploadResult.secure_url];
+    }
 
-    // 2. الحفظ في قاعدة البيانات
+    // 4. إنشاء Thumbnail (صورة الغلاف) - الصفحة الأولى
+    let derivedThumbnail = uploadResult.secure_url;
+    if (uploadResult.format === 'pdf') {
+        // نأخذ الصفحة الأولى كغلاف ونحولها لـ JPG
+        derivedThumbnail = `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/image/upload/w_400,f_jpg,q_auto,pg_1/v${uploadResult.version}/${uploadResult.public_id}.jpg`;
+    }
+
+    // 5. الحفظ في قاعدة البيانات
     const { data, error } = await supabase.from('store_items').insert({
         title,
         description,
         price: parseInt(price) || 0,
-        file_url: directFileUrl, //  الرابط المباشر
-        content: content || null, // المحتوى النصي (يدوياً حالياً)
+        
+        file_url: uploadResult.secure_url,
+        file_size: fileSizeFormatted,   // ✅ "2.4 MB"
+        pages_count: pagesCount,        // ✅ 34
+        preview_images: previewImages,  // ✅ ["url_pg1", "url_pg2"...]
+        thumbnail_url: derivedThumbnail, 
+        
+        content: content || null,
         category: category || 'general',
+        type: type || (uploadResult.format === 'pdf' ? 'pdf' : 'image'),
+        metadata: metadata ? JSON.parse(metadata) : {},
         is_active: true
     }).select().single();
 
     if (error) throw error;
 
-    // 3. تنظيف الملف المؤقت
+    // تنظيف
     if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
 
-    logger.success(`📦 Store Item Added: ${title} (Has Content: ${!!content})`);
+    logger.success(`📦 Added Pro Item: ${title} (${pagesCount} pages, ${fileSizeFormatted})`);
     res.json({ success: true, item: data });
 
   } catch (err) {
     logger.error('Add Store Item Error:', err.message);
-    // محاولة حذف الملف المؤقت في حال الفشل
     if (file && fs.existsSync(file.path)) fs.unlinkSync(file.path);
     res.status(500).json({ error: err.message });
   }
@@ -198,10 +232,36 @@ async function getItemContent(req, res) {
         res.status(500).json({ error: err.message });
     }
 }
+
+// دالة مساعدة: تحويل الحجم من بايت إلى صيغة مقروءة
+function formatBytes(bytes, decimals = 2) {
+    if (!+bytes) return '0 Bytes';
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+}
+
+// دالة مساعدة: توليد روابط المعاينة من رابط الكلاوديناري
+function generatePreviewUrls(publicId, version, pageCount) {
+    const previews = [];
+    const maxPreviews = Math.min(pageCount, 5); // نأخذ 5 أو أقل إذا كان الملف صغيراً
+
+    for (let i = 1; i <= maxPreviews; i++) {
+        // صيغة كلاوديناري السحرية:
+        // dn_pg_[رقم الصفحة] -> لجلب الصفحة
+        // f_jpg -> لتحويلها لصورة
+        // q_auto -> لضغط الصورة أوتوماتيكياً
+        const url = `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/image/upload/w_600,f_jpg,q_auto,pg_${i}/v${version}/${publicId}.jpg`;
+        previews.push(url);
+    }
+    return previews;
+}
 module.exports = {
   getStoreItems,
   purchaseItem,
   getMyInventory,
   addStoreItem,
-  getItemContent
+  getItemContent  
 };
