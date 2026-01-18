@@ -15,14 +15,44 @@ const fs = require('fs'); // 👈👈👈 هذا هو السطر المفقود!
 async function getStoreItems(req, res) {
   try {
     const userId = req.user?.id;
-    const { data: items, error } = await supabase
+    
+    // 1. معرفة تخصص الطالب الحالي
+    // نجلب selected_path_id من جدول users
+    const { data: userProfile } = await supabase
+        .from('users')
+        .select('selected_path_id')
+        .eq('id', userId)
+        .single();
+
+    const userPath = userProfile?.selected_path_id;
+
+    // 2. بناء استعلام ذكي
+    let query = supabase
       .from('store_items')
       .select('*')
-      .eq('is_active', true)
-      .order('created_at', { ascending: false });
+      .eq('is_active', true);
+
+    // المنطق:
+    // اعرض الملفات التي تتبع تخصص الطالب (path_id = userPath)
+    // أو الملفات العامة التي ليس لها تخصص (path_id IS NULL)
+    if (userPath) {
+        query = query.or(`path_id.eq.${userPath},path_id.is.null`);
+    } else {
+        // إذا الطالب لم يختر تخصصاً بعد، اعرض له العام فقط
+        query = query.is('path_id', null);
+    }
+    
+    // (اختياري) الفلترة حسب المادة إذا أرسلها الفرونت إند
+    // مثلاً: المستخدم دخل لمتجر مادة "الفيزياء" ويريد ملفاتها فقط
+    if (req.query.subjectId) {
+        query = query.eq('subject_id', req.query.subjectId);
+    }
+
+    const { data: items, error } = await query.order('created_at', { ascending: false });
 
     if (error) throw error;
 
+    // 3. التحقق من الملكية (كما كان سابقاً)
     const { data: owned } = await supabase
       .from('user_inventory')
       .select('item_id')
@@ -36,6 +66,7 @@ async function getStoreItems(req, res) {
     }));
 
     res.json({ success: true, items: formattedItems });
+
   } catch (err) {
     logger.error('Get Store Error:', err.message);
     res.status(500).json({ error: err.message });
