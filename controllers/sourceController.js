@@ -418,6 +418,60 @@ async function getAllUserSources(req, res) {
         res.status(500).json({ error: err.message });
     }
 }
+// 1. ربط ملف (Source) بمواد أو دروس متعددة
+async function linkSourceToContext(req, res) {
+  const { sourceId, lessonIds, subjectIds } = req.body; // مصفوفات IDs
+  const userId = req.user?.id;
+
+  try {
+    // التأكد أولاً أن المستخدم يملك هذا الملف
+    const { data: source } = await supabase
+        .from('lesson_sources')
+        .select('id')
+        .eq('id', sourceId)
+        .eq('user_id', userId)
+        .single();
+
+    if (!source) return res.status(403).json({ error: "Source not found or access denied" });
+
+    // ربط بالدروس (Many-to-Many)
+    if (lessonIds && Array.isArray(lessonIds)) {
+        const lessonLinks = lessonIds.map(lId => ({ source_id: sourceId, lesson_id: lId }));
+        await supabase.from('source_lessons').upsert(lessonLinks);
+    }
+
+    // ربط بالمواد
+    if (subjectIds && Array.isArray(subjectIds)) {
+        const subjectLinks = subjectIds.map(sId => ({ source_id: sourceId, subject_id: sId }));
+        await supabase.from('source_subjects').upsert(subjectLinks);
+    }
+
+    res.json({ success: true, message: 'Source linked successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// 2. جلب جميع المصادر التي رفعها المستخدم مع تفاصيل الربط
+async function getAllUserSources(req, res) {
+    const userId = req.user?.id;
+    try {
+        const { data, error } = await supabase
+            .from('lesson_sources')
+            .select(`
+                *,
+                source_lessons(lesson_id),
+                source_subjects(subject_id)
+            `)
+            .eq('user_id', userId)
+            .order('created_at', { ascending: false });
+
+        if (error) throw error;
+        res.json({ success: true, sources: data });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+}
 module.exports = { 
     uploadFile, 
     getLessonFiles, 
@@ -425,5 +479,7 @@ module.exports = {
     deleteFile, 
     checkSourceStatus, 
     retryProcessing,
-    triggerSystemRetry
+    triggerSystemRetry,
+    getAllUserSources,
+    linkSourceToContext
 };
