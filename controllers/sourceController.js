@@ -1,8 +1,8 @@
 'use strict';
 
-const supabase = require('../../services/data/supabase');
-const cloudinary = require('../../config/cloudinary');
-const logger = require('../../utils/logger');
+const supabase = require('../services/data/supabase');
+const cloudinary = require('../config/cloudinary');
+const logger = require('../utils/logger');
 const fs = require('fs');
 
 class SourceManager {
