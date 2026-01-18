@@ -5,6 +5,10 @@ const supabase = require('../services/data/supabase');
 const sourceManager = require('../services/media/sourceManager'); // سنستخدمه لرفع الملفات
 const logger = require('../utils/logger');
 const cloudinary = require('../config/cloudinary'); 
+const sharp = require('sharp');
+const path = require('path');
+
+
 // 1. جلب قائمة المتجر (للمستخدم)
 async function getStoreItems(req, res) {
   try {
@@ -112,17 +116,39 @@ async function addStoreItem(req, res) {
   const { title, description, price, category, content, type, metadata } = req.body;
 
   if (!file) return res.status(400).json({ error: 'File is required' });
+ // مسار الملف النهائي (سيتغير إذا ضغطنا الصورة)
+  let finalFilePath = file.path;
+  let isCompressed = false;
+   try {
+    // 🔥 ضغط الصور قبل الرفع
+    if (file.mimetype.startsWith('image/')) {
+        const compressedPath = path.join(path.dirname(file.path), `compressed-${file.filename}`);
+        
+        // تغيير الحجم (عرض 1200 بكسل كحد أقصى) + تقليل الجودة إلى 80%
+        await sharp(file.path)
+            .resize(1200, null, { withoutEnlargement: true }) // لا تكبر الصور الصغيرة
+            .jpeg({ quality: 80, mozjpeg: true }) // ضغط ذكي
+            .toFile(compressedPath);
 
-  try {
-    // 1. حساب حجم الملف
-    const fileSizeFormatted = formatBytes(file.size);
+        finalFilePath = compressedPath; // نرفع الملف المضغوط
+        isCompressed = true;
+        
+        // (اختياري) طباعة التوفير
+        const originalSize = file.size;
+        const newSize = fs.statSync(compressedPath).size;
+        console.log(`📉 Image Compressed: ${(originalSize/1024).toFixed(2)}KB -> ${(newSize/1024).toFixed(2)}KB`);
+    }
 
-    // 2. الرفع إلى Cloudinary
-    const uploadResult = await cloudinary.uploader.upload(file.path, {
+    // 1. حساب حجم الملف (للملف الذي سيتم رفعه فعلياً)
+    const stats = fs.statSync(finalFilePath);
+    const fileSizeFormatted = formatBytes(stats.size);
+
+    // 2. الرفع إلى Cloudinary (نرفع finalFilePath)
+    const uploadResult = await cloudinary.uploader.upload(finalFilePath, {
         folder: 'edustore_products',
         resource_type: 'auto',
         access_mode: 'public',
-        image_metadata: true // ✅ مهم جداً: نطلب من كلاوديناري قراءة بيانات الملف (عدد الصفحات)
+        image_metadata: true
     });
 
     // 3. استخراج البيانات الذكية
@@ -172,15 +198,18 @@ async function addStoreItem(req, res) {
 
     if (error) throw error;
 
-    // تنظيف
+    // نحذف الملف الأصلي
     if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
-
+    // نحذف الملف المضغوط إذا تم إنشاؤه
+    if (isCompressed && fs.existsSync(finalFilePath)) fs.unlinkSync(finalFilePath);
+     
     logger.success(`📦 Added Pro Item: ${title} (${pagesCount} pages, ${fileSizeFormatted})`);
     res.json({ success: true, item: data });
 
   } catch (err) {
     logger.error('Add Store Item Error:', err.message);
-    if (file && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    if (isCompressed && fs.existsSync(finalFilePath)) fs.unlinkSync(finalFilePath);   
     res.status(500).json({ error: err.message });
   }
 }
