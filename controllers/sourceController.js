@@ -71,74 +71,72 @@ async function processAIInBackground(sourceId, filePath, mimeType, lessonTitle) 
 }
 
 // 1. دالة الرفع (Endpoint Handler)
+
 async function uploadFile(req, res) {
   const userId = req.user?.id;
-  // 👇 نستقبل customName من الـ Body (الذي أرسلته عبر FormData)
-  const { lessonId, customName } = req.body;
+  // أضفنا lessonIds و subjectIds هنا
+  const { lessonId, customName, lessonIds, subjectIds } = req.body; 
   const file = req.file;
 
   if (!userId) return res.status(401).json({ error: 'Unauthorized' });
   if (!file) return res.status(400).json({ error: 'No file provided' });
 
   try {
-    // أ. جلب عنوان الدرس (لتحسين سياق الـ AI وللاستخدام كاسم احتياطي)
-    let lessonTitle = "University Topic"; 
-    if (lessonId) {
-        const { data } = await supabase
-            .from('lessons')
-            .select('title')
-            .eq('id', lessonId)
-            .single();
-        if (data && data.title) lessonTitle = data.title;
-    }
-
-    // 🔥 المنطق الجديد لتحديد اسم الملف (Display Name)
-    let finalFileName = file.originalname; // الافتراضي: اسم الملف الأصلي
-
-    // 1. إذا اختار المستخدم اسماً مخصصاً، نستخدمه
-    if (customName && customName.trim().length > 0) {
-        finalFileName = customName.trim();
-    } 
-    // 2. إذا لم يكن هناك اسم ملف أصلي (نادرة)، نستخدم عنوان الدرس
-    else if (!finalFileName || finalFileName.trim() === '') {
-        finalFileName = lessonTitle;
-    }
-
-    // ب. الرفع والكتابة في الداتابيز
+    // أ. تحديد عنوان افتراضي للـ AI
+    let lessonTitle = "General Resource"; 
+    
+    // ب. الرفع والحفظ في جدول lesson_sources الأساسي
+    // ملاحظة: نمرر lessonId (الأساسي) إذا وُجد للتوافق مع النظام القديم
     const uploadResult = await sourceManager.uploadSource(
         userId, 
-        lessonId, 
+        lessonId || null, 
         file.path, 
-        finalFileName, // 👈 نرسل الاسم النهائي هنا
+        customName || file.originalname, 
         file.mimetype,
-        file.originalname // 👈 نرسل الاسم الأصلي أيضاً (للتخزين في عمود منفصل إن وجد)
+        file.originalname
     );
 
-    // ج. الرد الفوري
+    const sourceId = uploadResult.id;
+
+    // ج. 🔥 الجديد: الربط المتعدد بالدروس والمواد فور الرفع
+    const linkPromises = [];
+
+    // 1. ربط بالدروس إذا أرسل المستخدم مصفوفة
+    if (lessonIds) {
+        // تحويلها لمصفوفة إذا كانت قادمة كنص من FormData
+        const lIds = Array.isArray(lessonIds) ? lessonIds : JSON.parse(lessonIds);
+        const lessonLinks = lIds.map(lId => ({ source_id: sourceId, lesson_id: lId }));
+        linkPromises.push(supabase.from('source_lessons').insert(lessonLinks));
+    }
+
+    // 2. ربط بالمواد إذا أرسل المستخدم مصفوفة
+    if (subjectIds) {
+        const sIds = Array.isArray(subjectIds) ? subjectIds : JSON.parse(subjectIds);
+        const subjectLinks = sIds.map(sId => ({ source_id: sourceId, subject_id: sId }));
+        linkPromises.push(supabase.from('source_subjects').insert(subjectLinks));
+    }
+
+    // تنفيذ عمليات الربط في الخلفية (أو انتظرها حسب رغبتك)
+    if (linkPromises.length > 0) {
+        await Promise.all(linkPromises);
+    }
+
+    // د. الرد الفوري للفرونت إند
     res.status(202).json({ 
         success: true, 
-        message: 'File uploaded. AI processing started in background.',
-        data: uploadResult 
+        message: 'File uploaded and linked successfully.',
+        sourceId: sourceId 
     });
 
-    // د. إطلاق المعالجة في الخلفية
-    processAIInBackground(uploadResult.id, file.path, file.mimetype, lessonTitle);
+    // هـ. إطلاق معالجة الـ AI في الخلفية
+    processAIInBackground(sourceId, file.path, file.mimetype, lessonTitle);
 
   } catch (err) {
-    logger.error('Upload Endpoint Error:', err.message);
-    
-    // في حال فشل الرفع الأولي، ننظف الملف هنا لأن الخلفية لن تعمل
-    if (file && file.path && fs.existsSync(file.path)) {
-        fs.unlinkSync(file.path);
-    }
-    
-    // إذا لم نرد بعد، نرسل خطأ
-    if (!res.headersSent) {
-        res.status(500).json({ error: err.message });
-    }
+    logger.error('Upload Error:', err.message);
+    if (file?.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    res.status(500).json({ error: err.message });
   }
 }
-
 // 2. جلب ملفات درس (كما هي)
 
 async function getLessonFiles(req, res) {
