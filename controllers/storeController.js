@@ -126,10 +126,12 @@ async function getItemContent(req, res) {
 }
 
 // تصدير دوال المتجر فقط
-module.exports = { 
-    getStoreItems, 
-    purchaseItem, 
-    getMyInventory, 
-    addStoreItem, 
-    getItemContent 
+module.exports = {
+  getStoreItems,
+  purchaseItem,
+  getMyInventory,
+  addStoreItem,
+  getItemContent,
+  getAvailableItems,
+  removeFromInventory
 };
