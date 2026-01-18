@@ -1,4 +1,3 @@
-// services/media/sourceManager.js
 'use strict';
 
 const supabase = require('../../services/data/supabase');
@@ -7,107 +6,94 @@ const logger = require('../../utils/logger');
 const fs = require('fs');
 
 class SourceManager {
-  async uploadSource(userId, lessonId, filePath, displayName, description, mimeType, originalFileName) {
-    try {
-      logger.info(`📤 Uploading source [${displayName}]...`);
+    async uploadSource(userId, lessonId, filePath, displayName, description, mimeType, originalFileName) {
+        try {
+            logger.info(`📤 Uploading source [${displayName}]...`);
 
-      let resourceType = 'raw'; 
-      if (mimeType.startsWith('image/')) resourceType = 'image';
-      else if (mimeType.startsWith('video/')) resourceType = 'video';
-      
-      // 1. الرفع لـ Cloudinary
-      const uploadResult = await cloudinary.uploader.upload(filePath, {
-        folder: 'eduapp_sources',
-        resource_type: resourceType,
-        use_filename: true,
-        public_id: `user_${userId}_${Date.now()}`,
-        type: 'upload',
-        access_mode: 'public'
-      });
+            let resourceType = 'raw';
+            if (mimeType.startsWith('image/')) resourceType = 'image';
+            else if (mimeType.startsWith('video/')) resourceType = 'video';
 
-      // 2. الحفظ في DB مع الحالة Completed
-      const simpleType = mimeType.split('/')[0] === 'image' ? 'image' : 'document';
+            const uploadResult = await cloudinary.uploader.upload(filePath, {
+                folder: 'eduapp_sources',
+                resource_type: resourceType,
+                use_filename: true,
+                public_id: `user_${userId}_${Date.now()}`,
+                type: 'upload',
+                access_mode: 'public'
+            });
 
-      const insertData = {
-          user_id: userId,
-          lesson_id: lessonId || null,
-          file_url: uploadResult.secure_url,
-          file_type: simpleType,
-          
-          file_name: displayName,
-          description: description, // ✅ حفظ الوصف
-          original_file_name: originalFileName,
-          
-          public_id: uploadResult.public_id,
-          
-          // 🔥 التغيير الجوهري هنا:
-          processed: true,       // جاهز فوراً
-          status: 'completed',   // مكتمل
-          extracted_text: null   // لم نعد بحاجة إليه
-      };
+            const simpleType = mimeType.split('/')[0] === 'image' ? 'image' : 'document';
 
-      const { data, error } = await supabase
-        .from('lesson_sources')
-        .insert(insertData)
-        .select()
-        .single();
+            const insertData = {
+                user_id: userId,
+                lesson_id: lessonId || null,
+                file_url: uploadResult.secure_url,
+                file_type: simpleType,
+                file_name: displayName,
+                description: description,
+                original_file_name: originalFileName,
+                public_id: uploadResult.public_id,
+                processed: true,
+                status: 'completed',
+                extracted_text: null
+            };
 
-      if (error) throw error;
+            const { data, error } = await supabase
+                .from('lesson_sources')
+                .insert(insertData)
+                .select()
+                .single();
 
-      return data;
+            if (error) throw error;
+            return data;
 
-    } catch (err) {
-      logger.error('❌ Source Upload Failed:', err.message);
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-      throw err;
-    }
-  }
-
-
-  /**
-   * 📥 جلب مصادر درس معين
-   */
-  async getSourcesByLesson(userId, lessonId) {
-    const { data, error } = await supabase
-      .from('lesson_sources')
-      // ✅ نختار (*) لجلب النص المستخرج، الحالة، ورسالة الخطأ
-      .select('*') 
-      .eq('lesson_id', lessonId)
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
-
-    if (error) {
-        logger.error('Get Sources Error:', error.message);
-        return [];
-    }
-    return data;
-  }
-
-  async deleteSource(userId, sourceId) {
-    const { data: source } = await supabase
-        .from('lesson_sources')
-        .select('public_id, user_id')
-        .eq('id', sourceId)
-        .single();
-
-    if (!source) throw new Error('Source not found');
-    if (source.user_id !== userId) throw new Error('Unauthorized');
-
-    if (source.public_id) {
-        await cloudinary.uploader.destroy(source.public_id, { resource_type: 'raw' }); 
+        } catch (err) {
+            logger.error('❌ Source Upload Failed:', err.message);
+            if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+            throw err;
+        }
     }
 
-    const { error } = await supabase.from('lesson_sources').delete().eq('id', sourceId);
-    if (error) throw error;
+    async getSourcesByLesson(userId, lessonId) {
+        const { data, error } = await supabase
+            .from('lesson_sources')
+            .select('*')
+            .eq('lesson_id', lessonId)
+            .eq('user_id', userId)
+            .order('created_at', { ascending: false });
 
-    logger.info(`🗑️ Source deleted: ${sourceId}`);
-    return true;
-  }
+        if (error) {
+            logger.error('Get Sources Error:', error.message);
+            return [];
+        }
+        return data;
+    }
 
- 
-// --- Helpers للتعامل مع الأحجام ---
+    async deleteSource(userId, sourceId) {
+        const { data: source } = await supabase
+            .from('lesson_sources')
+            .select('public_id, user_id')
+            .eq('id', sourceId)
+            .single();
 
-// تحويل من نص (KB, MB) إلى رقم (Bytes)
+        if (!source) throw new Error('Source not found');
+        if (source.user_id !== userId) throw new Error('Unauthorized');
+
+        if (source.public_id) {
+            await cloudinary.uploader.destroy(source.public_id, { resource_type: 'raw' });
+        }
+
+        const { error } = await supabase.from('lesson_sources').delete().eq('id', sourceId);
+        if (error) throw error;
+
+        logger.info(`🗑️ Source deleted: ${sourceId}`);
+        return true;
+    }
+}
+
+// --- الدوال المساعدة (خارج الكلاس تماماً) ---
+
 function parseSizeToBytes(sizeStr) {
     if (!sizeStr || typeof sizeStr !== 'string') return 0;
     const units = { 'bytes': 1, 'kb': 1024, 'mb': 1024 * 1024, 'gb': 1024 * 1024 * 1024 };
@@ -118,7 +104,6 @@ function parseSizeToBytes(sizeStr) {
     return value * (units[unit] || 1);
 }
 
-// تحويل من رقم (Bytes) إلى نص مقروء (MB, GB)
 function formatBytes(bytes, decimals = 2) {
     if (bytes === 0) return '0 Bytes';
     const k = 1024;
@@ -127,4 +112,10 @@ function formatBytes(bytes, decimals = 2) {
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
-module.exports = new SourceManager();
+
+// التصدير الصحيح (Exporting an object containing everything)
+const managerInstance = new SourceManager();
+
+module.exports = managerInstance; // التصدير الافتراضي هو الـ instance
+module.exports.parseSizeToBytes = parseSizeToBytes;
+module.exports.formatBytes = formatBytes;
