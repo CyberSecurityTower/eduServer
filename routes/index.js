@@ -186,6 +186,11 @@ router.post(
     sourceController.uploadFile // 3. الكونترولر يبعثو لـ Cloudinary
 );
 
+// ربط ملف بمادة أو درس (يقبل arrays في الـ body)
+router.post('/sources/link', requireAuth, sourceController.linkSourceToContext);
+
+// جلب كل ملفات المستخدم (تم تحديث المسار)
+router.get('/sources/my-library', requireAuth, sourceController.getAllUserSources);
 // جلب الملفات الخاصة بدرس معين
 router.get('/sources/lesson/:lessonId', requireAuth, sourceController.getLessonFiles);
 
@@ -258,4 +263,9 @@ router.post(
 // هذا المسار يستخدم getItemContent للتحقق من الملكية قبل إرجاع النص والرابط
 router.get('/store/item/:itemId/content', requireAuth, storeController.getItemContent);
 
+// جلب المنتجات المتوفرة فقط (التي لم يشتريها بعد)
+router.get('/store/available', requireAuth, storeController.getAvailableItems);
+
+// حذف عنصر من المكتبة (Inventory)
+router.delete('/store/inventory/:itemId', requireAuth, storeController.removeFromInventory);
 module.exports = router;
