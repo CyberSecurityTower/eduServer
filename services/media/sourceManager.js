@@ -7,21 +7,15 @@ const logger = require('../../utils/logger');
 const fs = require('fs');
 
 class SourceManager {
-  /**
-   * 📤 رفع مصدر جديد
-   * @param {string} displayName - الاسم الذي سيظهر للمستخدم (Custom or Original)
-   * @param {string} originalFileName - الاسم الحقيقي للملف (لأغراض الأرشفة)
-   */
-  async uploadSource(userId, lessonId, filePath, displayName, mimeType, originalFileName) {
+  async uploadSource(userId, lessonId, filePath, displayName, description, mimeType, originalFileName) {
     try {
-      logger.info(`📤 Uploading source [${displayName}] (Original: ${originalFileName}) for Lesson: ${lessonId || 'Pending'}...`);
+      logger.info(`📤 Uploading source [${displayName}]...`);
 
-      // 1. تحديد نوع المورد
       let resourceType = 'raw'; 
       if (mimeType.startsWith('image/')) resourceType = 'image';
       else if (mimeType.startsWith('video/')) resourceType = 'video';
       
-      // 2. الرفع إلى Cloudinary
+      // 1. الرفع لـ Cloudinary
       const uploadResult = await cloudinary.uploader.upload(filePath, {
         folder: 'eduapp_sources',
         resource_type: resourceType,
@@ -31,7 +25,7 @@ class SourceManager {
         access_mode: 'public'
       });
 
-      // 3. الحفظ في قاعدة البيانات
+      // 2. الحفظ في DB مع الحالة Completed
       const simpleType = mimeType.split('/')[0] === 'image' ? 'image' : 'document';
 
       const insertData = {
@@ -40,12 +34,16 @@ class SourceManager {
           file_url: uploadResult.secure_url,
           file_type: simpleType,
           
-          file_name: displayName, // ✅ هذا الاسم الذي سيظهر في التطبيق (Custom Name)
-          original_file_name: originalFileName, 
+          file_name: displayName,
+          description: description, // ✅ حفظ الوصف
+          original_file_name: originalFileName,
           
           public_id: uploadResult.public_id,
-          processed: false,
-          status: 'processing'
+          
+          // 🔥 التغيير الجوهري هنا:
+          processed: true,       // جاهز فوراً
+          status: 'completed',   // مكتمل
+          extracted_text: null   // لم نعد بحاجة إليه
       };
 
       const { data, error } = await supabase
@@ -56,12 +54,10 @@ class SourceManager {
 
       if (error) throw error;
 
-      logger.success(`✅ Source Saved: ${data.file_name} (ID: ${data.id})`);
       return data;
 
     } catch (err) {
       logger.error('❌ Source Upload Failed:', err.message);
-      // تنظيف الملف المؤقت فوراً في حال فشل الرفع الأولي
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
       throw err;
     }
