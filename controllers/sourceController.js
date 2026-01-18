@@ -377,42 +377,52 @@ async function triggerSystemRetry(sourceId) {
 }
 
 // ✅ دالة جديدة: جلب كل المصادر الخاصة بالمستخدم (الأرشيف الشخصي)
+// ✅ نسخة محدثة من getAllUserSources مع سجلات كونسول تفصيلية
 async function getAllUserSources(req, res) {
+    const userId = req.user?.id;
+    
+    console.log('--------------------------------------------------');
+    console.log(`📂 [Library Access] Request received from User: ${userId}`);
+    console.log('⏳ [Library Access] Fetching sources and links from Supabase...');
+
     try {
-        const userId = req.user?.id;
-        
-        // جلب المصادر مرتبة من الأحدث للأقدم
-        const { data: sources, error } = await supabase
+        const { data, error } = await supabase
             .from('lesson_sources')
             .select(`
                 *,
-                lessons ( title ) 
-            `) // نجلب اسم الدرس المرتبط أيضاً للمرجعية
+                source_lessons(lesson_id),
+                source_subjects(subject_id)
+            `)
             .eq('user_id', userId)
             .order('created_at', { ascending: false });
 
-        if (error) throw error;
+        if (error) {
+            console.error('❌ [Library Access] Database Error:', error.message);
+            throw error;
+        }
 
-        // تنسيق البيانات لتكون واضحة
-        const formattedSources = sources.map(s => ({
-            id: s.id,
-            fileName: s.file_name,
-            originalName: s.original_file_name,
-            type: s.file_type,
-            url: s.file_url,
-            status: s.status,
-            lessonTitle: s.lessons?.title || 'General Upload', // اسم الدرس أو عام
-            uploadedAt: s.created_at
-        }));
+        // طباعة ملخص للبيانات المستلمة
+        console.log(`✅ [Library Access] Successfully retrieved ${data?.length || 0} sources.`);
+        
+        if (data && data.length > 0) {
+            console.log('📊 [Library Sample] First Item Context:');
+            console.log(`   - ID: ${data[0].id}`);
+            console.log(`   - Linked Lessons: ${JSON.stringify(data[0].source_lessons)}`);
+            console.log(`   - Linked Subjects: ${JSON.stringify(data[0].source_subjects)}`);
+        } else {
+            console.log('ℹ️ [Library Access] User library is empty.');
+        }
 
-        res.status(200).json({ 
+        console.log('--------------------------------------------------');
+
+        res.json({ 
             success: true, 
-            count: formattedSources.length,
-            sources: formattedSources 
+            count: data.length,
+            sources: data 
         });
 
     } catch (err) {
-        logger.error('Get All Sources Error:', err.message);
+        console.error('🔥 [Library Access] Fatal Controller Error:', err.message);
         res.status(500).json({ error: err.message });
     }
 }
