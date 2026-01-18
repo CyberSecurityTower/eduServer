@@ -197,13 +197,6 @@ router.get('/sources/lesson/:lessonId', requireAuth, sourceController.getLessonF
 // حذف ملف
 router.delete('/sources/:sourceId', requireAuth, sourceController.deleteFile);
 
-//  فحص حالة ملف معين (خفيف وسريع)
-router.get('/sources/:sourceId/status', requireAuth, sourceController.checkSourceStatus);
-
-//  إعادة المحاولة في حال الفشل
-router.post('/sources/:sourceId/retry', requireAuth, sourceController.retryProcessing);
-
-
 //   جلب مكتبة ملفات المستخدم كاملة
 router.get('/sources/all', requireAuth, sourceController.getAllUserSources);
 
