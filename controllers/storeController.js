@@ -2,19 +2,19 @@
 'use strict';
 
 const supabase = require('../services/data/supabase');
-const sourceManager = require('../services/media/sourceManager'); // سنستخدمه لرفع الملفات
+const sourceManager = require('../services/media/sourceManager');
 const logger = require('../utils/logger');
 const cloudinary = require('../config/cloudinary'); 
 const sharp = require('sharp');
 const path = require('path');
+const fs = require('fs'); // 👈👈👈 هذا هو السطر المفقود! أضفه هنا
 
+// ... (باقي الدوال getStoreItems, purchaseItem, getMyInventory كما هي) ...
 
 // 1. جلب قائمة المتجر (للمستخدم)
 async function getStoreItems(req, res) {
   try {
     const userId = req.user?.id;
-
-    // جلب العناصر النشطة
     const { data: items, error } = await supabase
       .from('store_items')
       .select('*')
@@ -23,7 +23,6 @@ async function getStoreItems(req, res) {
 
     if (error) throw error;
 
-    // جلب ما يملكه المستخدم (لمعرفة ماذا اشترى)
     const { data: owned } = await supabase
       .from('user_inventory')
       .select('item_id')
@@ -31,14 +30,12 @@ async function getStoreItems(req, res) {
 
     const ownedSet = new Set(owned?.map(i => i.item_id));
 
-    // دمج المعلومات
     const formattedItems = items.map(item => ({
       ...item,
-      isOwned: ownedSet.has(item.id) // هل اشتراه من قبل؟
+      isOwned: ownedSet.has(item.id)
     }));
 
     res.json({ success: true, items: formattedItems });
-
   } catch (err) {
     logger.error('Get Store Error:', err.message);
     res.status(500).json({ error: err.message });
@@ -53,7 +50,6 @@ async function purchaseItem(req, res) {
   if (!userId || !itemId) return res.status(400).json({ error: 'Missing data' });
 
   try {
-    // استدعاء دالة الـ RPC التي أنشأناها في الخطوة 1
     const { data, error } = await supabase.rpc('buy_store_item', {
       p_user_id: userId,
       p_item_id: itemId
@@ -67,83 +63,70 @@ async function purchaseItem(req, res) {
 
     logger.success(`🛒 User ${userId} bought item ${itemId}`);
     res.json({ success: true, newBalance: data.new_balance });
-
   } catch (err) {
     logger.error('Purchase Error:', err.message);
     res.status(500).json({ error: err.message });
   }
 }
 
-// 3. جلب مكتبة المستخدم (My Inventory)
+// 3. جلب مكتبة المستخدم
 async function getMyInventory(req, res) {
   const userId = req.user?.id;
   try {
     const { data, error } = await supabase
       .from('user_inventory')
-      .select(`
-        purchased_at,
-        store_items (*)
-      `)
+      .select(`purchased_at, store_items (*)`)
       .eq('user_id', userId)
       .order('purchased_at', { ascending: false });
 
     if (error) throw error;
 
-    // تنظيف البيانات
     const inventory = data.map(row => ({
       ...row.store_items,
       purchasedAt: row.purchased_at
     }));
 
     res.json({ success: true, inventory });
-
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 }
 
-
-/**
- * 4. (Admin) إضافة منتج جديد
- * التحديث: يستقبل المحتوى النصي يدوياً + يرفع الملف للكلاوديناري
- */
-
-/**
- * 4. (Admin) إضافة منتج جديد (نسخة المحترفين)
- */
+// 4. (Admin) إضافة منتج جديد (المصححة)
 async function addStoreItem(req, res) {
   const file = req.file;
   const { title, description, price, category, content, type, metadata } = req.body;
 
   if (!file) return res.status(400).json({ error: 'File is required' });
- // مسار الملف النهائي (سيتغير إذا ضغطنا الصورة)
+
   let finalFilePath = file.path;
   let isCompressed = false;
-   try {
-    // 🔥 ضغط الصور قبل الرفع
+
+  try {
+    // 🔥 ضغط الصور
     if (file.mimetype.startsWith('image/')) {
         const compressedPath = path.join(path.dirname(file.path), `compressed-${file.filename}`);
         
-        // تغيير الحجم (عرض 1200 بكسل كحد أقصى) + تقليل الجودة إلى 80%
         await sharp(file.path)
-            .resize(1200, null, { withoutEnlargement: true }) // لا تكبر الصور الصغيرة
-            .jpeg({ quality: 80, mozjpeg: true }) // ضغط ذكي
+            .resize(1200, null, { withoutEnlargement: true })
+            .jpeg({ quality: 80, mozjpeg: true })
             .toFile(compressedPath);
 
-        finalFilePath = compressedPath; // نرفع الملف المضغوط
+        finalFilePath = compressedPath;
         isCompressed = true;
         
         // (اختياري) طباعة التوفير
+        // نستخدم fs هنا بأمان الآن
         const originalSize = file.size;
         const newSize = fs.statSync(compressedPath).size;
         console.log(`📉 Image Compressed: ${(originalSize/1024).toFixed(2)}KB -> ${(newSize/1024).toFixed(2)}KB`);
     }
 
-    // 1. حساب حجم الملف (للملف الذي سيتم رفعه فعلياً)
+    // 1. حساب حجم الملف
     const stats = fs.statSync(finalFilePath);
     const fileSizeFormatted = formatBytes(stats.size);
 
-    // 2. الرفع إلى Cloudinary (نرفع finalFilePath)
+    // 2. الرفع إلى Cloudinary
     const uploadResult = await cloudinary.uploader.upload(finalFilePath, {
         folder: 'edustore_products',
         resource_type: 'auto',
@@ -151,44 +134,36 @@ async function addStoreItem(req, res) {
         image_metadata: true
     });
 
-    // 3. استخراج البيانات الذكية
+    // 3. استخراج البيانات
     let pagesCount = 0;
     let previewImages = [];
     
-    // إذا كان ملف PDF، كلاوديناري يرجع عدد الصفحات في الحقل 'pages'
     if (uploadResult.format === 'pdf' || (type && type === 'pdf')) {
         pagesCount = uploadResult.pages || 0;
-        
-        // توليد صور المعاينة (أول 5 صفحات)
         if (pagesCount > 0) {
             previewImages = generatePreviewUrls(uploadResult.public_id, uploadResult.version, pagesCount);
         }
-    } 
-    // إذا كان صورة عادية، نضع الصورة نفسها كمعاينة وحيدة
-    else if (uploadResult.resource_type === 'image') {
+    } else if (uploadResult.resource_type === 'image') {
         pagesCount = 1;
         previewImages = [uploadResult.secure_url];
     }
 
-    // 4. إنشاء Thumbnail (صورة الغلاف) - الصفحة الأولى
+    // 4. Thumbnail
     let derivedThumbnail = uploadResult.secure_url;
     if (uploadResult.format === 'pdf') {
-        // نأخذ الصفحة الأولى كغلاف ونحولها لـ JPG
         derivedThumbnail = `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/image/upload/w_400,f_jpg,q_auto,pg_1/v${uploadResult.version}/${uploadResult.public_id}.jpg`;
     }
 
-    // 5. الحفظ في قاعدة البيانات
+    // 5. الحفظ في DB
     const { data, error } = await supabase.from('store_items').insert({
         title,
         description,
         price: parseInt(price) || 0,
-        
         file_url: uploadResult.secure_url,
-        file_size: fileSizeFormatted,   // ✅ "2.4 MB"
-        pages_count: pagesCount,        // ✅ 34
-        preview_images: previewImages,  // ✅ ["url_pg1", "url_pg2"...]
-        thumbnail_url: derivedThumbnail, 
-        
+        file_size: fileSizeFormatted,
+        pages_count: pagesCount,
+        preview_images: previewImages,
+        thumbnail_url: derivedThumbnail,
         content: content || null,
         category: category || 'general',
         type: type || (uploadResult.format === 'pdf' ? 'pdf' : 'image'),
@@ -198,9 +173,8 @@ async function addStoreItem(req, res) {
 
     if (error) throw error;
 
-    // نحذف الملف الأصلي
+    // التنظيف (Clean up)
     if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
-    // نحذف الملف المضغوط إذا تم إنشاؤه
     if (isCompressed && fs.existsSync(finalFilePath)) fs.unlinkSync(finalFilePath);
      
     logger.success(`📦 Added Pro Item: ${title} (${pagesCount} pages, ${fileSizeFormatted})`);
@@ -208,24 +182,19 @@ async function addStoreItem(req, res) {
 
   } catch (err) {
     logger.error('Add Store Item Error:', err.message);
+    // التنظيف في حال الخطأ
     if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
     if (isCompressed && fs.existsSync(finalFilePath)) fs.unlinkSync(finalFilePath);   
     res.status(500).json({ error: err.message });
   }
 }
 
-/**
- * 5. (User) قراءة محتوى العنصر
- * هذه الدالة مهمة جداً: تسمح فقط لمن "اشترى" العنصر بقراءة الـ content
- */
+// 5. قراءة المحتوى
 async function getItemContent(req, res) {
     const userId = req.user?.id;
     const { itemId } = req.params;
 
     try {
-        // 1. التحقق من الملكية (هل اشترى الطالب هذا الملف؟)
-        // أو هل هو أدمين (للمعاينة)
-        // سنفترض التحقق من الملكية أولاً
         const { data: inventory } = await supabase
             .from('user_inventory')
             .select('id')
@@ -233,14 +202,12 @@ async function getItemContent(req, res) {
             .eq('item_id', itemId)
             .single();
 
-        // تحقق إضافي: هل هو أدمين؟
         const isAdmin = req.user?.role === 'admin' || req.isAdmin;
 
         if (!inventory && !isAdmin) {
             return res.status(403).json({ error: 'You need to buy this item first.' });
         }
 
-        // 2. جلب المحتوى والرابط
         const { data: item, error } = await supabase
             .from('store_items')
             .select('content, file_url, title')
@@ -251,8 +218,8 @@ async function getItemContent(req, res) {
 
         res.json({ 
             success: true, 
-            content: item.content, // النص الكامل
-            fileUrl: item.file_url, // الرابط المباشر
+            content: item.content,
+            fileUrl: item.file_url,
             title: item.title 
         });
 
@@ -262,7 +229,7 @@ async function getItemContent(req, res) {
     }
 }
 
-// دالة مساعدة: تحويل الحجم من بايت إلى صيغة مقروءة
+// Helpers
 function formatBytes(bytes, decimals = 2) {
     if (!+bytes) return '0 Bytes';
     const k = 1024;
@@ -272,25 +239,20 @@ function formatBytes(bytes, decimals = 2) {
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
 }
 
-// دالة مساعدة: توليد روابط المعاينة من رابط الكلاوديناري
 function generatePreviewUrls(publicId, version, pageCount) {
     const previews = [];
-    const maxPreviews = Math.min(pageCount, 5); // نأخذ 5 أو أقل إذا كان الملف صغيراً
-
+    const maxPreviews = Math.min(pageCount, 5);
     for (let i = 1; i <= maxPreviews; i++) {
-        // صيغة كلاوديناري السحرية:
-        // dn_pg_[رقم الصفحة] -> لجلب الصفحة
-        // f_jpg -> لتحويلها لصورة
-        // q_auto -> لضغط الصورة أوتوماتيكياً
         const url = `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/image/upload/w_600,f_jpg,q_auto,pg_${i}/v${version}/${publicId}.jpg`;
         previews.push(url);
     }
     return previews;
 }
+
 module.exports = {
   getStoreItems,
   purchaseItem,
   getMyInventory,
   addStoreItem,
-  getItemContent  
+  getItemContent
 };
