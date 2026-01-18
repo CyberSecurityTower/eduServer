@@ -332,12 +332,78 @@ async function getAvailableItems(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
-module.exports = {
-  getStoreItems,
-  purchaseItem,
-  getMyInventory,
-  addStoreItem,
-  getItemContent,
-  getAvailableItems,
-  removeFromInventory
+
+// --- Add this function inside controllers/sourceController.js ---
+async function getLibraryStats(req, res) {
+    const userId = req.user?.id;
+    try {
+        const { data: uploads, error: uploadError } = await supabase
+            .from('lesson_sources')
+            .select('file_size_bytes, file_size')
+            .eq('user_id', userId);
+
+        if (uploadError) throw uploadError;
+
+        const { data: purchases, error: purchaseError } = await supabase
+            .from('user_inventory')
+            .select(`item_id, store_items (file_size)`)
+            .eq('user_id', userId);
+
+        if (purchaseError) throw purchaseError;
+
+        const uploadedCount = uploads.length;
+        let totalUploadedBytes = 0;
+        uploads.forEach(item => {
+            totalUploadedBytes += parseSizeToBytes(item.file_size || '0 Bytes');
+        });
+
+        const purchasedCount = purchases.length;
+        let totalPurchasedBytes = 0;
+        purchases.forEach(item => {
+            if (item.store_items && item.store_items.file_size) {
+                totalPurchasedBytes += parseSizeToBytes(item.store_items.file_size);
+            }
+        });
+
+        res.json({
+            success: true,
+            stats: {
+                uploads: { count: uploadedCount, totalSize: formatBytes(totalUploadedBytes) },
+                purchases: { count: purchasedCount, totalSize: formatBytes(totalPurchasedBytes) },
+                grandTotalSize: formatBytes(totalUploadedBytes + totalPurchasedBytes)
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+}
+
+// Helpers needed by getLibraryStats
+function parseSizeToBytes(sizeStr) {
+    if (!sizeStr || typeof sizeStr !== 'string') return 0;
+    const units = { 'bytes': 1, 'kb': 1024, 'mb': 1024 * 1024, 'gb': 1024 * 1024 * 1024 };
+    const match = sizeStr.toLowerCase().match(/([\d.]+)\s*(bytes|kb|mb|gb)/);
+    if (!match) return 0;
+    const value = parseFloat(match[1]);
+    return value * (units[match[2]] || 1);
+}
+
+function formatBytes(bytes, decimals = 2) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
+
+// --- UPDATE THE EXPORTS AT THE BOTTOM ---
+module.exports = { 
+    uploadFile, 
+    getLessonFiles, 
+    getAllUserSources,
+    deleteFile, 
+    checkSourceStatus, 
+    linkSourceToContext,
+    getLibraryStats
 };
