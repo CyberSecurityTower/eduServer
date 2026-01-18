@@ -2,134 +2,64 @@
 'use strict';
 
 const sourceManager = require('../services/media/sourceManager');
-const lessonGenerator = require('../services/ai/lessonGenerator');
 const supabase = require('../services/data/supabase');
 const logger = require('../utils/logger');
 const fs = require('fs');
 const https = require('https'); 
 const os = require('os');
 const path = require('path');
-const { pipeline } = require('stream/promises'); // أضف هذا
-const MAX_AUTO_RETRIES = 3;
-// دالة المعالجة في الخلفية (Worker Function)
-async function processAIInBackground(sourceId, filePath, mimeType, lessonTitle) {
-  try {
-    logger.info(`⚙️ [Background Job] Starting AI analysis for source: ${sourceId}`);
-
-    // تشغيل خدمة الـ AI (قد تستغرق وقتاً طويلاً)
-    const aiGeneratedLesson = await lessonGenerator.generateLessonFromSource(filePath, mimeType, lessonTitle);
-
-    if (aiGeneratedLesson) {
-        // نجاح: تحديث السجل إلى completed وحفظ النص
-        await supabase
-            .from('lesson_sources')
-            .update({ 
-                extracted_text: aiGeneratedLesson, 
-                processed: true,
-                status: 'completed', // ✅ تم الانتهاء
-                error_message: null
-            })
-            .eq('id', sourceId);
-            
-        logger.success(`✅ [Background Job] AI Finished for source: ${sourceId}`);
-    } else {
-        // فشل الـ AI في إرجاع محتوى (لكن العملية تمت)
-        await supabase
-            .from('lesson_sources')
-            .update({ 
-                status: 'failed', 
-                error_message: 'AI returned empty content or failed to process.' 
-            })
-            .eq('id', sourceId);
-        
-        logger.warn(`⚠️ [Background Job] AI returned empty for source: ${sourceId}`);
-    }
-
-  } catch (err) {
-    logger.error(`❌ [Background Job] Fatal Error for source ${sourceId}:`, err.message);
-    
-    // تسجيل الخطأ في قاعدة البيانات
-    await supabase
-        .from('lesson_sources')
-        .update({ 
-            status: 'failed', 
-            error_message: err.message 
-        })
-        .eq('id', sourceId);
-
-  } finally {
-    // 🧹 تنظيف الملف المؤقت: يتم الحذف هنا فقط بعد انتهاء الـ AI
-    if (filePath && fs.existsSync(filePath)) {
-        try { 
-            fs.unlinkSync(filePath); 
-            logger.info(`🧹 [Background Job] Temp file cleaned up: ${filePath}`);
-        } catch(e) {
-            console.error('Failed to delete temp file:', e);
-        }
-    }
-  }
-}
+const { pipeline } = require('stream/promises'); 
 
 // 1. دالة الرفع (Endpoint Handler)
 
 async function uploadFile(req, res) {
   const userId = req.user?.id;
-  // أضفنا lessonIds و subjectIds هنا
-  const { lessonId, customName, lessonIds, subjectIds } = req.body; 
+  const { lessonId, customName, description, lessonIds, subjectIds } = req.body; 
   const file = req.file;
 
   if (!userId) return res.status(401).json({ error: 'Unauthorized' });
   if (!file) return res.status(400).json({ error: 'No file provided' });
 
   try {
-    // أ. تحديد عنوان افتراضي للـ AI
-    let lessonTitle = "General Resource"; 
-    
-    // ب. الرفع والحفظ في جدول lesson_sources الأساسي
-    // ملاحظة: نمرر lessonId (الأساسي) إذا وُجد للتوافق مع النظام القديم
+    // 1. الرفع والحفظ في قاعدة البيانات
+    // ملاحظة: سيتم تعيين الحالة completed فوراً داخل sourceManager
     const uploadResult = await sourceManager.uploadSource(
         userId, 
         lessonId || null, 
         file.path, 
         customName || file.originalname, 
+        description || "", // ✅ تمرير الوصف
         file.mimetype,
         file.originalname
     );
 
     const sourceId = uploadResult.id;
 
-    // ج. 🔥 الجديد: الربط المتعدد بالدروس والمواد فور الرفع
+    // 2. الربط المتعدد (Multi-Linking)
     const linkPromises = [];
-
-    // 1. ربط بالدروس إذا أرسل المستخدم مصفوفة
     if (lessonIds) {
-        // تحويلها لمصفوفة إذا كانت قادمة كنص من FormData
         const lIds = Array.isArray(lessonIds) ? lessonIds : JSON.parse(lessonIds);
         const lessonLinks = lIds.map(lId => ({ source_id: sourceId, lesson_id: lId }));
         linkPromises.push(supabase.from('source_lessons').insert(lessonLinks));
     }
-
-    // 2. ربط بالمواد إذا أرسل المستخدم مصفوفة
     if (subjectIds) {
         const sIds = Array.isArray(subjectIds) ? subjectIds : JSON.parse(subjectIds);
         const subjectLinks = sIds.map(sId => ({ source_id: sourceId, subject_id: sId }));
         linkPromises.push(supabase.from('source_subjects').insert(subjectLinks));
     }
+    if (linkPromises.length > 0) await Promise.all(linkPromises);
 
-    // تنفيذ عمليات الربط في الخلفية (أو انتظرها حسب رغبتك)
-    if (linkPromises.length > 0) {
-        await Promise.all(linkPromises);
+    // 3. حذف الملف المؤقت من السيرفر
+    if (file.path && fs.existsSync(file.path)) {
+        fs.unlinkSync(file.path);
     }
 
-    // د. الرد الفوري للفرونت إند
-    res.status(202).json({ 
+    // 4. الرد الفوري (تم الانتهاء!)
+    res.status(200).json({ 
         success: true, 
-        message: 'File uploaded and linked successfully.',
-        sourceId: sourceId 
+        message: 'File uploaded successfully.',
+        data: uploadResult // ✅ إرجاع البيانات كاملة
     });
-
-    // هـ. إطلاق معالجة الـ AI في الخلفية
-    processAIInBackground(sourceId, file.path, file.mimetype, lessonTitle);
 
   } catch (err) {
     logger.error('Upload Error:', err.message);
@@ -226,83 +156,6 @@ async function downloadTempFile(url, fileName) {
     }
 }
 
-// 5. إعادة المحاولة (Retry Processing)
-async function retryProcessing(req, res) {
-    try {
-        const { sourceId } = req.params;
-        const userId = req.user?.id;
-
-        // 1. جلب بيانات المصدر
-        const { data: source } = await supabase
-            .from('lesson_sources')
-            .select('*')
-            .eq('id', sourceId)
-            .eq('user_id', userId)
-            .single();
-
-        if (!source) {
-            return res.status(404).json({ error: 'Source not found' });
-        }
-
-        // 2. التحقق مما إذا كان يستحق الإعادة (ليس مكتملاً بالفعل)
-        // ملاحظة: نسمح بالإعادة إذا كان failed أو حتى processing (في حال علق)
-        if (source.status === 'completed' && source.extracted_text) {
-            return res.status(400).json({ error: 'Source is already processed successfully.' });
-        }
-
-        // 3. تحديث الحالة فوراً ليعرف المستخدم أننا بدأنا
-        await supabase
-            .from('lesson_sources')
-            .update({ 
-                status: 'processing', 
-                error_message: null // مسح الخطأ القديم
-            })
-            .eq('id', sourceId);
-
-        // 4. الرد على العميل
-        res.status(202).json({ 
-            success: true, 
-            message: 'Retry initiated. Processing started in background.' 
-        });
-
-        // 5. العمل في الخلفية (Background Job)
-        (async () => {
-            try {
-                // أ. جلب عنوان الدرس (لتحسين الـ AI)
-                let lessonTitle = "University Topic";
-                if (source.lesson_id) {
-                    const { data: lData } = await supabase.from('lessons').select('title').eq('id', source.lesson_id).single();
-                    if (lData) lessonTitle = lData.title;
-                }
-
-                // ب. تحميل الملف من Cloudinary إلى Temp
-                logger.info(`🔄 [Retry] Downloading file for source ${sourceId}...`);
-                const tempFilePath = await downloadTempFile(source.file_url, source.file_name || 'temp_file');
-
-                // ج. استدعاء المعالج الموجود مسبقاً
-                // (هذه الدالة موجودة في نفس الملف وتتكفل بحذف الملف المؤقت بعد الانتهاء)
-                await processAIInBackground(
-                    source.id, 
-                    tempFilePath, 
-                    source.file_type === 'image' ? 'image/jpeg' : 'application/pdf', // تخمين بسيط للنوع أو جلبه من الـ DB إذا كنت تخزنه
-                    lessonTitle
-                );
-
-            } catch (bgErr) {
-                logger.error(`❌ [Retry Failed] Source ${sourceId}:`, bgErr.message);
-                // تسجيل الفشل مرة أخرى
-                await supabase
-                    .from('lesson_sources')
-                    .update({ status: 'failed', error_message: bgErr.message })
-                    .eq('id', sourceId);
-            }
-        })();
-
-    } catch (err) {
-        logger.error('Retry Endpoint Error:', err.message);
-        res.status(500).json({ error: err.message });
-    }
-}
 
 
 /**
@@ -486,7 +339,6 @@ module.exports = {
     getAllUserSources,
     deleteFile, 
     checkSourceStatus, 
-    retryProcessing,
     triggerSystemRetry,
     getAllUserSources,
     linkSourceToContext
