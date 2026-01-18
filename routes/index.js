@@ -253,4 +253,9 @@ router.post(
     uploadMiddleware.single('file'), 
     storeController.addStoreItem
 );
+
+// 5. قراءة محتوى الملف (Secure Access)
+// هذا المسار يستخدم getItemContent للتحقق من الملكية قبل إرجاع النص والرابط
+router.get('/store/item/:itemId/content', requireAuth, storeController.getItemContent);
+
 module.exports = router;
