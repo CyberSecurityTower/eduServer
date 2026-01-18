@@ -95,7 +95,7 @@ async function getMyInventory(req, res) {
 // 4. (Admin) إضافة منتج جديد (المصححة)
 async function addStoreItem(req, res) {
   const file = req.file;
-  const { title, description, price, category, content, type, metadata } = req.body;
+  const { title, description, price, category, content, type, metadata, pathId, subjectId, lessonId } = req.body;
 
   if (!file) return res.status(400).json({ error: 'File is required' });
 
@@ -168,6 +168,9 @@ async function addStoreItem(req, res) {
         category: category || 'general',
         type: type || (uploadResult.format === 'pdf' ? 'pdf' : 'image'),
         metadata: metadata ? JSON.parse(metadata) : {},
+        path_id: pathId || null,       // إذا لم يرسل، يكون عاماً (null)
+        subject_id: subjectId || null, // اختياري
+        lesson_id: lessonId || null,   // اختياري
         is_active: true
     }).select().single();
 
