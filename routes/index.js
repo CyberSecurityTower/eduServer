@@ -216,7 +216,8 @@ router.get('/chat/history', chatBrainController.getChatHistory);
 
 router.post('/chat/process', chatBrainController.processChat);
 
-
+// إحصائيات المكتبة (عدد وحجم الملفات المرفوعة والمشتراة)
+router.get('/library/stats', requireAuth, sourceController.getLibraryStats);
 
 // ==========================================
 // 9. Arena (Exam System) ⚔️
