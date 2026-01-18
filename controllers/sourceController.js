@@ -222,5 +222,5 @@ module.exports = {
     deleteFile, 
     checkSourceStatus, 
     linkSourceToContext,
-    getLibraryStats
+    getLibraryStats 
 };
