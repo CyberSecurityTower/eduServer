@@ -9,7 +9,6 @@ const sharp = require('sharp');
 const path = require('path');
 const fs = require('fs'); // 👈👈👈 هذا هو السطر المفقود! أضفه هنا
 
-// ... (باقي الدوال getStoreItems, purchaseItem, getMyInventory كما هي) ...
 
 // 1. جلب قائمة المتجر (للمستخدم)
 async function getStoreItems(req, res) {
@@ -282,11 +281,63 @@ function generatePreviewUrls(publicId, version, pageCount) {
     }
     return previews;
 }
+// 1. حذف عنصر من ممتلكات المستخدم (Inventory)
+async function removeFromInventory(req, res) {
+  const userId = req.user?.id;
+  const { itemId } = req.params;
 
+  try {
+    const { error } = await supabase
+      .from('user_inventory')
+      .delete()
+      .eq('user_id', userId)
+      .eq('item_id', itemId);
+
+    if (error) throw error;
+
+    res.json({ success: true, message: 'Item removed from your library' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// 2. جلب المنتجات التي "لا يملكها" المستخدم حالياً
+async function getAvailableItems(req, res) {
+  try {
+    const userId = req.user?.id;
+
+    // جلب الـ IDs للملفات المملوكة مسبقاً
+    const { data: owned } = await supabase
+      .from('user_inventory')
+      .select('item_id')
+      .eq('user_id', userId);
+
+    const ownedIds = owned.map(i => i.item_id);
+
+    // جلب الملفات غير الموجودة في القائمة أعلاه
+    let query = supabase
+      .from('store_items')
+      .select('*')
+      .eq('is_active', true);
+
+    if (ownedIds.length > 0) {
+      query = query.not('id', 'in', `(${ownedIds.join(',')})`);
+    }
+
+    const { data: items, error } = await query;
+
+    if (error) throw error;
+    res.json({ success: true, items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
 module.exports = {
   getStoreItems,
   purchaseItem,
   getMyInventory,
   addStoreItem,
-  getItemContent
+  getItemContent,
+  getAvailableItems,
+  removeFromInventory
 };
