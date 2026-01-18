@@ -20,6 +20,7 @@ const smartQueueMiddleware = require('../middleware/smartQueue'); // استير�
 const chatBrainController = require('../controllers/ChatBrainController'); 
 const arenaController = require('../controllers/arenaController'); 
 const bankController = require('../controllers/bankController');
+const storeController = require('../controllers/storeController');
 
 
 
@@ -228,4 +229,28 @@ router.post('/admin/generate-bank', requireAdmin, bankController.triggerBankGene
 
 // 2. Stop Generator (Emergency)
 router.post('/admin/stop-bank', requireAdmin, bankController.stopBankGeneration);
+
+
+
+// ==========================================
+// 🛒 EduStore Routes
+// ==========================================
+
+// 1. تصفح المتجر (للجميع - يحتاج Auth لمعرفة ماذا تملك)
+router.get('/store/items', requireAuth, storeController.getStoreItems);
+
+// 2. شراء عنصر
+router.post('/store/purchase', requireAuth, storeController.purchaseItem);
+
+// 3. مكتبتي (Inventory)
+router.get('/store/inventory', requireAuth, storeController.getMyInventory);
+
+// 4. (Admin) إضافة منتج جديد
+// نستخدم نفس uploadMiddleware المستخدم سابقاً
+router.post(
+    '/admin/store/add', 
+    requireAdmin, 
+    uploadMiddleware.single('file'), 
+    storeController.addStoreItem
+);
 module.exports = router;
