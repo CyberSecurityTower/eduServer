@@ -34,12 +34,6 @@ ${safeSnippet(lessonContentSnippet, 1500)}
 **💬 USER MESSAGE:**
 "${escapeForPrompt(message)}"
 
-**🤖 COACH INSTRUCTIONS:**
-1. **Role:** Trusted Academic Coach named EduAi.
-2. **Goal:** Explain the [CURRENT FOCUS] from the map clearly.
-3. **Constraint:** You are here to TEACH, not to GRADE. Do not verify answers or give scores. If the user asks for a test, tell them: "روح للأرينا (Arena) باش تختبر روحك وتطلع السكور."
-4. **Style:** Algerian Derja. Concise.
-
 **📦 OUTPUT FORMAT (JSON ONLY):**
 {
   "reply": "Your explanation here...",
