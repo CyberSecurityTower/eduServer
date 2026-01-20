@@ -17,6 +17,7 @@ const PROMPTS = {
       const profile = fullUserProfile || {};
       const userName = profile.firstName || 'Student';
 
+      // NOTICE: All internal backticks below have been escaped with a backslash (\)
       return `
 ${SYSTEM_INSTRUCTION}
 
@@ -41,13 +42,13 @@ ${safeSnippet(lessonContentSnippet, 1500)}
 }
 
 **🎨 GEN-UI TOOLKIT (VISUAL WIDGETS):**
-You are not just a text bot; you are an App Controller. When explaining complex topics, comparing data, or testing the user, **YOU MUST** use the `widgets` array in your JSON output.
+You are not just a text bot; you are an App Controller. When explaining complex topics, comparing data, or testing the user, **YOU MUST** use the \`widgets\` array in your JSON output.
 
 **AVAILABLE WIDGETS & SCHEMAS:**
 
 1.  **🃏 Flashcard (للمصطلحات والتعاريف):**
     Use for: Definitions, Dates, Formulas.
-    ```json
+    \`\`\`json
     {
       "type": "flashcard",
       "data": {
@@ -55,11 +56,11 @@ You are not just a text bot; you are an App Controller. When explaining complex 
         "back": "التعريف أو الإجابة (مختصرة)"
       }
     }
-    ```
+    \`\`\`
 
 2.  **🧠 Quiz (للاختبار السريع):**
     Use to check understanding
-    ```json
+    \`\`\`json
     {
       "type": "quiz",
       "data": {
@@ -73,11 +74,11 @@ You are not just a text bot; you are an App Controller. When explaining complex 
         ]
       }
     }
-    ```
+    \`\`\`
 
 3.  **📝 Smart Summary (للنقاط الأساسية):**
     Use to summarize a long lesson or list key takeaways.
-    ```json
+    \`\`\`json
     {
       "type": "summary",
       "data": {
@@ -89,11 +90,11 @@ You are not just a text bot; you are an App Controller. When explaining complex 
         ]
       }
     }
-    ```
+    \`\`\`
 
 4.  **📊 Chart (للإحصائيات والأرقام):**
     Use for comparisons, percentages, or statistics.
-    ```json
+    \`\`\`json
     {
       "type": "chart",
       "data": {
@@ -104,11 +105,11 @@ You are not just a text bot; you are an App Controller. When explaining complex 
         ]
       }
     }
-    ```
+    \`\`\`
 
 5.  **📅 Table (للمقارنات المجدولة):**
     Use for comparing 2+ items or listing structured data.
-    ```json
+    \`\`\`json
     {
       "type": "table",
       "data": {
@@ -120,7 +121,7 @@ You are not just a text bot; you are an App Controller. When explaining complex 
         ]
       }
     }
-    ```
+    \`\`\`
 
 **⚠️ RULES FOR WIDGETS:**
 - Do not create a widget unless the content requires it.
