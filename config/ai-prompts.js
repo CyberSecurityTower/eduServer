@@ -35,100 +35,73 @@ ${safeSnippet(lessonContentSnippet, 1500)}
 **💬 USER MESSAGE:**
 "${escapeForPrompt(message)}"
 
-**📦 OUTPUT FORMAT (JSON ONLY):**
+
+**📦 OUTPUT FORMAT:**
+1. **Speak Naturally:** Write your reply in plain text (Arabic/Derja) directly. Do NOT wrap your text in JSON.
+2. **Add Widgets (Optional):** If (and ONLY if) you need to show a widget (Quiz, Flashcard, Chart, etc.), append a JSON code block at the very end of your message.
+
+**Example of a valid response:**
+يا صاحبي، سؤالك ممتاز! الجواب هو أن الجبل يقع في الشمال.
+وهاك هذا الكويز باش تختبر روحك:
+\`\`\`json
 {
-  "reply": "Your explanation here...",
-  "widgets": []
-}
-
-**🎨 GEN-UI TOOLKIT (VISUAL WIDGETS):**
-You are not just a text bot; you are an App Controller. When explaining complex topics, comparing data, or testing the user, **YOU MUST** use the \`widgets\` array in your JSON output.
-
-**AVAILABLE WIDGETS & SCHEMAS:**
-
-1.  **🃏 Flashcard (للمصطلحات والتعاريف):**
-    Use for: Definitions, Dates, Formulas.
-    \`\`\`json
+  "widgets": [
     {
-      "type": "flashcard",
+      "type": "quiz",
       "data": {
-        "front": "المصطلح أو السؤال",
-        "back": "التعريف أو الإجابة (مختصرة)"
+        "questions": [
+           { "text": "أين يقع الجبل؟", "options": ["شمال", "جنوب"], "correctAnswerText": "شمال" }
+        ]
       }
     }
+  ]
+}
+\`\`\`
+
+**🎨 GEN-UI TOOLKIT (VISUAL WIDGETS):**
+Use these schemas inside the \`widgets\` array in your JSON block:
+
+1.  **🃏 Flashcard:**
+    \`\`\`json
+    { "type": "flashcard", "data": { "front": "Question", "back": "Answer" } }
     \`\`\`
 
-2.  **🧠 Quiz (للاختبار السريع):**
-    Use to check understanding
+2.  **🧠 Quiz:**
     \`\`\`json
     {
       "type": "quiz",
       "data": {
         "questions": [
           {
-            "text": "السؤال هنا؟",
-            "options": ["خيار 1", "خيار 2", "خيار 3"],
-            "correctAnswerText": "خيار 1",
-            "explanation": "شرح بسيط ليش هذا الجواب صح"
+            "text": "Question?",
+            "options": ["Opt1", "Opt2"],
+            "correctAnswerText": "Opt1",
+            "explanation": "Why?"
           }
         ]
       }
     }
     \`\`\`
 
-3.  **📝 Smart Summary (للنقاط الأساسية):**
-    Use to summarize a long lesson or list key takeaways.
+3.  **📝 Smart Summary:**
     \`\`\`json
-    {
-      "type": "summary",
-      "data": {
-        "title": "ملخص سريع",
-        "points": [
-          "النقطة الأولى المهمة",
-          "النقطة الثانية",
-          "النقطة الثالثة"
-        ]
-      }
-    }
+    { "type": "summary", "data": { "title": "Summary", "points": ["P1", "P2"] } }
     \`\`\`
 
-4.  **📊 Chart (للإحصائيات والأرقام):**
-    Use for comparisons, percentages, or statistics.
+4.  **📊 Chart:**
     \`\`\`json
-    {
-      "type": "chart",
-      "data": {
-        "title": "إحصائيات النمو",
-        "data": [
-          { "label": "النوع أ", "value": 40, "color": "#38BDF8" },
-          { "label": "النوع ب", "value": 60, "color": "#F472B6" }
-        ]
-      }
-    }
+    { "type": "chart", "data": { "title": "Stats", "data": [{ "label": "A", "value": 10 }] } }
     \`\`\`
 
-5.  **📅 Table (للمقارنات المجدولة):**
-    Use for comparing 2+ items or listing structured data.
+5.  **📅 Table:**
     \`\`\`json
-    {
-      "type": "table",
-      "data": {
-        "title": "مقارنة بين X و Y",
-        "headers": ["الخاصية", "العنصر 1", "العنصر 2"],
-        "rows": [
-          ["السرعة", "عالية", "منخفضة"],
-          ["التكلفة", "50$", "20$"]
-        ]
-      }
-    }
+    { "type": "table", "data": { "headers": ["Col1", "Col2"], "rows": [["Val1", "Val2"]] } }
     \`\`\`
 
-**⚠️ RULES FOR WIDGETS:**
-- Do not create a widget unless the content requires it.
-- **Charts:** Values must be numbers.
-- **Quizzes:** Provide exactly one correct answer text matching one of the options.
-- **Language:** Widget content must be in **Arabic/Derja** (unless the subject is foreign).
-- you can add more than widget in one message
+**⚠️ RULES:**
+- Text goes FIRST. Widgets go LAST in a \`\`\`json block.
+- **Do not** put the reply text inside the JSON.
+- Ensure the JSON is valid.
 `;
     }
   }
