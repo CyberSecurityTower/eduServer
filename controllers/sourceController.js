@@ -5,7 +5,14 @@ const sourceManager = require('../services/media/sourceManager');
 const supabase = require('../services/data/supabase');
 const logger = require('../utils/logger');
 const fs = require('fs');
-
+function formatBytes(bytes, decimals = 2) {
+    if (!+bytes) return '0 Bytes';
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+}
 /**
  * 1. رفع ملف جديد (Endpoint Handler)
  */
@@ -257,24 +264,24 @@ async function getAllUserSources(req, res) {
     const { folderId } = req.query;
 
     try {
-        // 1. تجهيز استعلام المرفوعات
+        // 1. المرفوعات: نقرأ file_size (الذي هو int8 في الداتابيز)
+        // ❌ حذفنا size_bytes من الاستعلام لأنه غير موجود
         let uploadsQuery = supabase
             .from('lesson_sources')
-            .select('id, file_name, file_type, file_url, size_bytes, file_size, created_at, folder_id')
+            .select('id, file_name, file_type, file_url, file_size, created_at, folder_id')
             .eq('user_id', userId);
 
-        // 2. تجهيز استعلام المشتريات (مع جلب تفاصيل المنتج)
+        // 2. المشتريات
         let purchasesQuery = supabase
             .from('user_inventory')
             .select(`
                 id, 
                 folder_id, 
                 created_at:purchased_at, 
-                store_items (title, file_url, size_bytes, file_size, type)
+                store_items (title, file_url, file_size, type)
             `)
             .eq('user_id', userId);
 
-        // تطبيق الفلتر على الاثنين
         if (folderId === 'root' || folderId === 'null' || !folderId) {
             uploadsQuery = uploadsQuery.is('folder_id', null);
             purchasesQuery = purchasesQuery.is('folder_id', null);
@@ -283,35 +290,44 @@ async function getAllUserSources(req, res) {
             purchasesQuery = purchasesQuery.eq('folder_id', folderId);
         }
 
-        // تنفيذ الاستعلامين بالتوازي (أسرع)
         const [uploadsRes, purchasesRes] = await Promise.all([uploadsQuery, purchasesQuery]);
 
         if (uploadsRes.error) throw uploadsRes.error;
         if (purchasesRes.error) throw purchasesRes.error;
 
-        // 3. توحيد البيانات (Normalization)
-        // نحول شكل المشتريات ليشببه شكل المرفوعات ليسهل عرضه في الفرونت
-        const normalizedPurchases = (purchasesRes.data || []).map(p => ({
-            id: p.id, // هذا الـ ID هو الذي سنستخدمه للنقل لاحقاً
-            file_name: p.store_items?.title || 'Purchased Item',
-            file_type: mapStoreTypeToMime(p.store_items?.type), // دالة مساعدة بالأسفل
-            file_url: p.store_items?.file_url,
-            size_bytes: p.store_items?.size_bytes,
-            file_size: p.store_items?.file_size,
-            created_at: p.created_at,
-            folder_id: p.folder_id,
-            is_purchase: true // علامة لتمييزه في الفرونت
-        }));
+        // 3. توحيد البيانات وحساب التنسيق
+        const normalizedPurchases = (purchasesRes.data || []).map(p => {
+            const rawSize = p.store_items?.file_size || 0;
+            return {
+                id: p.id,
+                file_name: p.store_items?.title || 'Purchased Item',
+                file_type: mapStoreTypeToMime(p.store_items?.type),
+                file_url: p.store_items?.file_url,
+                
+                // نرسل الرقم الخام للحسابات
+                size_bytes: rawSize,
+                // نرسل النص المنسق للعرض
+                file_size: formatBytes(rawSize), 
+                
+                created_at: p.created_at,
+                folder_id: p.folder_id,
+                is_purchase: true
+            };
+        });
 
-        const normalizedUploads = (uploadsRes.data || []).map(u => ({
-            ...u,
-            is_purchase: false
-        }));
+        const normalizedUploads = (uploadsRes.data || []).map(u => {
+            const rawSize = u.file_size || 0;
+            return {
+                ...u,
+                // الرقم الخام (من قاعدة البيانات)
+                size_bytes: rawSize,
+                // النص المنسق (نقوم بتوليده الآن)
+                file_size: formatBytes(rawSize),
+                is_purchase: false
+            };
+        });
 
-        // دمج المصفوفتين
         const allFiles = [...normalizedUploads, ...normalizedPurchases];
-
-        // الترتيب حسب الأحدث
         allFiles.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
         res.json({ success: true, count: allFiles.length, sources: allFiles });
