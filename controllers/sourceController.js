@@ -205,52 +205,130 @@ async function checkSourceStatus(req, res) {
 async function moveFile(req, res) {
     const userId = req.user?.id;
     const { sourceId } = req.params;
-    const { targetFolderId } = req.body; // null يعني نقل للـ Root
+    const { targetFolderId } = req.body; // null = Root
 
     try {
-        const { data, error } = await supabase
+        // المحاولة 1: البحث في الملفات المرفوعة (lesson_sources)
+        const { data: uploadData, error: uploadError } = await supabase
             .from('lesson_sources')
             .update({ folder_id: targetFolderId })
             .eq('id', sourceId)
-            .eq('user_id', userId) // حماية: المستخدم يملك الملف
+            .eq('user_id', userId)
             .select()
-            .single();
+            .maybeSingle(); // نستخدم maybeSingle لكي لا يرمي خطأ إذا لم يجد الملف
 
-        if (error) throw error;
-        res.json({ success: true, message: 'File moved successfully', file: data });
+        if (uploadData) {
+            return res.json({ success: true, message: 'Upload moved successfully', type: 'upload' });
+        }
+
+        // المحاولة 2: البحث في المشتريات (user_inventory)
+        // ملاحظة: هنا نستخدم id الخاص بالصف في user_inventory وليس item_id
+        // (الفرونت إند يجب أن يرسل id الخاص بـ user_inventory)
+        // إذا كان الفرونت يرسل item_id، سنحتاج لتعديل الشرط أدناه ليكون .eq('item_id', sourceId)
+        
+        // سنفترض أن sourceId هو المعرف الفريد للملف سواء كان مرفوعاً أو مشترياً
+        const { data: purchaseData, error: purchaseError } = await supabase
+            .from('user_inventory')
+            .update({ folder_id: targetFolderId })
+            .eq('id', sourceId) // أو .eq('item_id', sourceId) حسب ما يرسله الفرونت
+            .eq('user_id', userId)
+            .select()
+            .maybeSingle();
+
+        if (purchaseData) {
+            return res.json({ success: true, message: 'Purchase moved successfully', type: 'purchase' });
+        }
+
+        // إذا وصلنا هنا، الملف غير موجود في الجدولين
+        return res.status(404).json({ error: 'File not found in uploads or inventory' });
+
     } catch (err) {
+        logger.error('Move Error:', err.message);
         res.status(500).json({ error: err.message });
     }
 }
 
 /**
- * 🆕 تحديث: جلب المكتبة مع دعم التصفية بالمجلد
+ * 🔄 تحديث: جلب المكتبة الموحدة (Unified Library Fetch)
+ * تجلب المرفوعات + المشتريات وتصفيها حسب المجلد
  */
 async function getAllUserSources(req, res) {
     const userId = req.user?.id;
-    const { folderId } = req.query; // query param
+    const { folderId } = req.query;
 
     try {
-        let query = supabase
+        // 1. تجهيز استعلام المرفوعات
+        let uploadsQuery = supabase
             .from('lesson_sources')
-            .select(`*, source_lessons(lesson_id), source_subjects(subject_id)`)
+            .select('id, file_name, file_type, file_url, size_bytes, file_size, created_at, folder_id')
             .eq('user_id', userId);
 
-        // التصفية حسب المجلد
-        if (folderId === 'root' || folderId === 'null') {
-            query = query.is('folder_id', null);
-        } else if (folderId) {
-            query = query.eq('folder_id', folderId);
+        // 2. تجهيز استعلام المشتريات (مع جلب تفاصيل المنتج)
+        let purchasesQuery = supabase
+            .from('user_inventory')
+            .select(`
+                id, 
+                folder_id, 
+                created_at:purchased_at, 
+                store_items (title, file_url, size_bytes, file_size, type)
+            `)
+            .eq('user_id', userId);
+
+        // تطبيق الفلتر على الاثنين
+        if (folderId === 'root' || folderId === 'null' || !folderId) {
+            uploadsQuery = uploadsQuery.is('folder_id', null);
+            purchasesQuery = purchasesQuery.is('folder_id', null);
+        } else {
+            uploadsQuery = uploadsQuery.eq('folder_id', folderId);
+            purchasesQuery = purchasesQuery.eq('folder_id', folderId);
         }
-        // إذا لم يتم إرسال folderId، نجلب الكل (السلوك القديم) أو حسب رغبتك
 
-        const { data, error } = await query.order('created_at', { ascending: false });
+        // تنفيذ الاستعلامين بالتوازي (أسرع)
+        const [uploadsRes, purchasesRes] = await Promise.all([uploadsQuery, purchasesQuery]);
 
-        if (error) throw error;
-        res.json({ success: true, count: data.length, sources: data });
+        if (uploadsRes.error) throw uploadsRes.error;
+        if (purchasesRes.error) throw purchasesRes.error;
+
+        // 3. توحيد البيانات (Normalization)
+        // نحول شكل المشتريات ليشببه شكل المرفوعات ليسهل عرضه في الفرونت
+        const normalizedPurchases = (purchasesRes.data || []).map(p => ({
+            id: p.id, // هذا الـ ID هو الذي سنستخدمه للنقل لاحقاً
+            file_name: p.store_items?.title || 'Purchased Item',
+            file_type: mapStoreTypeToMime(p.store_items?.type), // دالة مساعدة بالأسفل
+            file_url: p.store_items?.file_url,
+            size_bytes: p.store_items?.size_bytes,
+            file_size: p.store_items?.file_size,
+            created_at: p.created_at,
+            folder_id: p.folder_id,
+            is_purchase: true // علامة لتمييزه في الفرونت
+        }));
+
+        const normalizedUploads = (uploadsRes.data || []).map(u => ({
+            ...u,
+            is_purchase: false
+        }));
+
+        // دمج المصفوفتين
+        const allFiles = [...normalizedUploads, ...normalizedPurchases];
+
+        // الترتيب حسب الأحدث
+        allFiles.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+        res.json({ success: true, count: allFiles.length, sources: allFiles });
+
     } catch (err) {
+        logger.error('Get Library Error:', err.message);
         res.status(500).json({ error: err.message });
     }
+}
+
+// دالة مساعدة بسيطة لتوحيد الأنواع
+function mapStoreTypeToMime(storeType) {
+    if (!storeType) return 'document';
+    if (storeType.includes('pdf')) return 'document';
+    if (storeType.includes('image')) return 'image';
+    if (storeType.includes('video')) return 'video';
+    return 'document';
 }
 module.exports = { 
     uploadFile, 
