@@ -6,14 +6,25 @@ const logger = require('../../utils/logger');
 const fs = require('fs');
 
 class SourceManager {
+    // الدالة تقبل الآن folderId كما في التعديل السابق
     async uploadSource(userId, lessonId, filePath, displayName, description, mimeType, originalFileName, folderId = null) {
         try {
             logger.info(`📤 Uploading source [${displayName}]...`);
 
+            // 1. 🔥 حساب حجم الملف بالبايت (الخطوة الجديدة)
+            // نستخدم fs للحصول على الحجم الفعلي من الملف المؤقت قبل الرفع
+            let fileSizeInBytes = 0;
+            if (fs.existsSync(filePath)) {
+                const stats = fs.statSync(filePath);
+                fileSizeInBytes = stats.size;
+            }
+
+            // تحديد نوع الموارد لـ Cloudinary
             let resourceType = 'raw';
             if (mimeType.startsWith('image/')) resourceType = 'image';
             else if (mimeType.startsWith('video/')) resourceType = 'video';
 
+            // الرفع إلى Cloudinary
             const uploadResult = await cloudinary.uploader.upload(filePath, {
                 folder: 'eduapp_sources',
                 resource_type: resourceType,
@@ -23,8 +34,14 @@ class SourceManager {
                 access_mode: 'public'
             });
 
+            // إذا فشل fs في قراءة الحجم لسبب ما، نأخذه من استجابة Cloudinary كخطة بديلة
+            if (fileSizeInBytes === 0 && uploadResult.bytes) {
+                fileSizeInBytes = uploadResult.bytes;
+            }
+
             const simpleType = mimeType.split('/')[0] === 'image' ? 'image' : 'document';
 
+            // 2. 🔥 إضافة size_bytes للبيانات المدخلة
             const insertData = {
                 user_id: userId,
                 lesson_id: lessonId || null,
@@ -35,6 +52,10 @@ class SourceManager {
                 description: description,
                 original_file_name: originalFileName,
                 public_id: uploadResult.public_id,
+                
+                size_bytes: fileSizeInBytes, // 👈 هنا التعديل الجوهري (رقم صحيح BigInt/Integer)
+                file_size: formatBytes(fileSizeInBytes), // نخزن النص للعرض فقط (مثلا "15 MB")
+                
                 processed: true,
                 status: 'completed',
                 extracted_text: null
@@ -47,10 +68,15 @@ class SourceManager {
                 .single();
 
             if (error) throw error;
+            
+            // ملاحظة: لا نقوم بتحديث users.total_storage_used هنا
+            // لأن Trigger قاعدة البيانات سيقوم بذلك تلقائياً.
+
             return data;
 
         } catch (err) {
             logger.error('❌ Source Upload Failed:', err.message);
+            // تنظيف الملف في حال الخطأ موجود في Controller، لكن لا يضر التأكد
             if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
             throw err;
         }
@@ -106,7 +132,7 @@ function parseSizeToBytes(sizeStr) {
 }
 
 function formatBytes(bytes, decimals = 2) {
-    if (bytes === 0) return '0 Bytes';
+    if (!+bytes) return '0 Bytes';
     const k = 1024;
     const dm = decimals < 0 ? 0 : decimals;
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
@@ -118,5 +144,5 @@ function formatBytes(bytes, decimals = 2) {
 const managerInstance = new SourceManager();
 
 module.exports = managerInstance; // التصدير الافتراضي هو الـ instance
-module.exports.parseSizeToBytes = parseSizeToBytes;
+module.exports.parseSizeToBytes = (str) => 0; // لم نعد بحاجة لهذه الدالة للحسابات الدقيقة
 module.exports.formatBytes = formatBytes;
