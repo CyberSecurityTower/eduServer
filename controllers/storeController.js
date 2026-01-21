@@ -103,9 +103,7 @@ async function addStoreItem(req, res) {
         price: parseInt(price) || 0,
         file_url: uploadResult.secure_url,
         
-        size_bytes: fileSizeInBytes, // 👈 الحجم الخام للحسابات
-        file_size: formatBytes(fileSizeInBytes), // 👈 الحجم المنسق للعرض (مثلا "5 MB")
-        
+        file_size: fileSizeInBytes,
         category: category || 'general',
         path_id: pathId || null,
         subject_id: subjectId || null,
