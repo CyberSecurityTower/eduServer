@@ -11,7 +11,7 @@ const fs = require('fs');
  */
 async function uploadFile(req, res) {
   const userId = req.user?.id;
-  const { lessonId, customName, description, lessonIds, subjectIds } = req.body; 
+  const { lessonId, customName, description, lessonIds, subjectIds, folderId  } = req.body; 
   const file = req.file;
 
   if (!userId) return res.status(401).json({ error: 'Unauthorized' });
@@ -26,7 +26,8 @@ async function uploadFile(req, res) {
         customName || file.originalname, 
         description || "", 
         file.mimetype,
-        file.originalname
+        file.originalname,
+        folderId || null
     );
 
     const sourceId = uploadResult.id;
@@ -97,24 +98,7 @@ async function deleteFile(req, res) {
     }
 }
 
-/**
- * 4. جلب مكتبة المستخدم كاملة
- */
-async function getAllUserSources(req, res) {
-    const userId = req.user?.id;
-    try {
-        const { data, error } = await supabase
-            .from('lesson_sources')
-            .select(`*, source_lessons(lesson_id), source_subjects(subject_id)`)
-            .eq('user_id', userId)
-            .order('created_at', { ascending: false });
 
-        if (error) throw error;
-        res.json({ success: true, count: data.length, sources: data });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-}
 
 /**
  * 5. ربط مصدر موجود بدرس أو مادة
@@ -215,6 +199,59 @@ async function checkSourceStatus(req, res) {
     });
 }
 
+/**
+ * 🆕 دالة جديدة: نقل ملف إلى مجلد (Move File)
+ */
+async function moveFile(req, res) {
+    const userId = req.user?.id;
+    const { sourceId } = req.params;
+    const { targetFolderId } = req.body; // null يعني نقل للـ Root
+
+    try {
+        const { data, error } = await supabase
+            .from('lesson_sources')
+            .update({ folder_id: targetFolderId })
+            .eq('id', sourceId)
+            .eq('user_id', userId) // حماية: المستخدم يملك الملف
+            .select()
+            .single();
+
+        if (error) throw error;
+        res.json({ success: true, message: 'File moved successfully', file: data });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+}
+
+/**
+ * 🆕 تحديث: جلب المكتبة مع دعم التصفية بالمجلد
+ */
+async function getAllUserSources(req, res) {
+    const userId = req.user?.id;
+    const { folderId } = req.query; // query param
+
+    try {
+        let query = supabase
+            .from('lesson_sources')
+            .select(`*, source_lessons(lesson_id), source_subjects(subject_id)`)
+            .eq('user_id', userId);
+
+        // التصفية حسب المجلد
+        if (folderId === 'root' || folderId === 'null') {
+            query = query.is('folder_id', null);
+        } else if (folderId) {
+            query = query.eq('folder_id', folderId);
+        }
+        // إذا لم يتم إرسال folderId، نجلب الكل (السلوك القديم) أو حسب رغبتك
+
+        const { data, error } = await query.order('created_at', { ascending: false });
+
+        if (error) throw error;
+        res.json({ success: true, count: data.length, sources: data });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+}
 module.exports = { 
     uploadFile, 
     getLessonFiles, 
@@ -222,5 +259,6 @@ module.exports = {
     deleteFile, 
     checkSourceStatus, 
     linkSourceToContext,
-    getLibraryStats 
+    getLibraryStats,
+    moveFile
 };
