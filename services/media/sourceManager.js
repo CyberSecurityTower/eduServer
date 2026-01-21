@@ -53,9 +53,7 @@ class SourceManager {
                 original_file_name: originalFileName,
                 public_id: uploadResult.public_id,
                 
-                size_bytes: fileSizeInBytes, // 👈 هنا التعديل الجوهري (رقم صحيح BigInt/Integer)
-                file_size: formatBytes(fileSizeInBytes), // نخزن النص للعرض فقط (مثلا "15 MB")
-                
+                file_size: fileSizeInBytes,
                 processed: true,
                 status: 'completed',
                 extracted_text: null
