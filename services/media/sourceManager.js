@@ -6,7 +6,7 @@ const logger = require('../../utils/logger');
 const fs = require('fs');
 
 class SourceManager {
-    async uploadSource(userId, lessonId, filePath, displayName, description, mimeType, originalFileName) {
+    async uploadSource(userId, lessonId, filePath, displayName, description, mimeType, originalFileName, folderId = null) {
         try {
             logger.info(`📤 Uploading source [${displayName}]...`);
 
@@ -28,6 +28,7 @@ class SourceManager {
             const insertData = {
                 user_id: userId,
                 lesson_id: lessonId || null,
+                folder_id: folderId || null,
                 file_url: uploadResult.secure_url,
                 file_type: simpleType,
                 file_name: displayName,
