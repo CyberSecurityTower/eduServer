@@ -21,7 +21,7 @@ const chatBrainController = require('../controllers/ChatBrainController');
 const arenaController = require('../controllers/arenaController'); 
 const bankController = require('../controllers/bankController');
 const storeController = require('../controllers/storeController');
-
+const folderController = require('../controllers/folderController');
 
 
 /*
@@ -186,6 +186,9 @@ router.post(
     sourceController.uploadFile // 3. الكونترولر يبعثو لـ Cloudinary
 );
 
+// نقل ملف (Move)
+router.patch('/sources/:sourceId/move', requireAuth, sourceController.moveFile);
+
 // ربط ملف بمادة أو درس (يقبل arrays في الـ body)
 router.post('/sources/link', requireAuth, sourceController.linkSourceToContext);
 
@@ -198,8 +201,7 @@ router.get('/sources/lesson/:lessonId', requireAuth, sourceController.getLessonF
 router.delete('/sources/:sourceId', requireAuth, sourceController.deleteFile);
 
 //   جلب مكتبة ملفات المستخدم كاملة
-router.get('/sources/all', requireAuth, sourceController.getAllUserSources);
-
+router.get('/sources/all', requireAuth, sourceController.getAllUserSources); 
 // المسار الجديد لجلب التاريخ (للـ MiniChatPanel)
 router.get('/chat/history', chatBrainController.getChatHistory);
 
@@ -262,4 +264,14 @@ router.get('/store/available', requireAuth, storeController.getAvailableItems);
 
 // حذف عنصر من المكتبة (Inventory)
 router.delete('/store/inventory/:itemId', requireAuth, storeController.removeFromInventory);
+
+// ==========================================
+// 📂 Folder Management (EduDrive) - NEW
+// ==========================================
+router.get('/folders', requireAuth, folderController.getUserFolders);
+router.post('/folders', requireAuth, folderController.createFolder);
+router.put('/folders/reorder', requireAuth, folderController.reorderFolders); // إعادة الترتيب
+router.patch('/folders/:folderId', requireAuth, folderController.updateFolder); // تغيير الاسم/اللون
+router.delete('/folders/:folderId', requireAuth, folderController.deleteFolder);
+
 module.exports = router;
