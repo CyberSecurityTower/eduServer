@@ -90,13 +90,22 @@ async function addStoreItem(req, res) {
   let finalFilePath = file.path;
 
   try {
+    // 1. 🔥 الحصول على الحجم بالبايت
     const stats = fs.statSync(finalFilePath);
+    const fileSizeInBytes = stats.size;
+
     const uploadResult = await cloudinary.uploader.upload(finalFilePath, { folder: 'edustore_products', resource_type: 'auto' });
 
+    // 2. 🔥 تخزين size_bytes
     const { data, error } = await supabase.from('store_items').insert({
-        title, description, price: parseInt(price) || 0,
+        title, 
+        description, 
+        price: parseInt(price) || 0,
         file_url: uploadResult.secure_url,
-        file_size: formatBytes(stats.size),
+        
+        size_bytes: fileSizeInBytes, // 👈 الحجم الخام للحسابات
+        file_size: formatBytes(fileSizeInBytes), // 👈 الحجم المنسق للعرض (مثلا "5 MB")
+        
         category: category || 'general',
         path_id: pathId || null,
         subject_id: subjectId || null,
@@ -106,6 +115,7 @@ async function addStoreItem(req, res) {
     if (error) throw error;
     if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
     res.json({ success: true, item: data });
+
   } catch (err) {
     if (file?.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
     res.status(500).json({ error: err.message });
