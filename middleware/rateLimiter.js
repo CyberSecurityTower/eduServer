@@ -7,11 +7,14 @@ const logger = require('../utils/logger');
 const requestCounts = new Map();
 
 const RATE_LIMIT_WINDOW_MS = 60 * 1000; // دقيقة واحدة
-const MAX_REQUESTS_PER_WINDOW = 20; // 20 طلب كحد أقصى
+// ✅ تم التعديل: رفع الحد من 20 إلى 100 طلب في الدقيقة
+const MAX_REQUESTS_PER_WINDOW = 100; 
 
 function rateLimiter(req, res, next) {
   // نحاول الحصول على معرف المستخدم من البودي، وإلا نستخدم الـ IP
-  const key = req.body.userId || req.ip;
+  // ملاحظة: يفضل الاعتماد على req.user.id إذا كان المستخدم مسجلاً للدخول (يتم تعيينه في authMiddleware)
+  // ولكن للكود الحالي سنبقي عليه كما هو ليعمل مع الطلبات غير المصادقة أيضاً
+  const key = (req.user && req.user.id) || req.body.userId || req.ip;
 
   if (!key) return next();
 
@@ -35,7 +38,7 @@ function rateLimiter(req, res, next) {
     // تجاوز الحد
     logger.warn(`Rate limit exceeded for user: ${key}`);
     return res.status(429).json({ 
-      error: 'Too many requests. Please wait a moment.',
+      error: 'Too many requests. Please slow down.',
       retryAfter: Math.ceil((RATE_LIMIT_WINDOW_MS - (currentTime - record.startTime)) / 1000)
     });
   }
