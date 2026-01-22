@@ -306,25 +306,25 @@ async function moveFile(req, res) {
  * 🔄 تحديث: جلب المكتبة الموحدة (Unified Library Fetch)
  * تجلب المرفوعات + المشتريات وتصفيها حسب المجلد
  */
+
 async function getAllUserSources(req, res) {
     const userId = req.user?.id;
-    // ملاحظة: ألغينا فلترة المجلد هنا لنجلب كل شيء مرة واحدة (لأداء أسرع في التنقل)
-    // أو يمكنك إبقاء الفلتر إذا كنت تريد Pagination
 
     try {
-        // 1. المرفوعات
+        // 1. المرفوعات (Uploads) مع جلب المواد المرتبطة
         const uploadsQuery = supabase
             .from('lesson_sources')
-            .select('id, file_name, file_type, file_url, file_size, created_at, folder_id, thumbnail_url') // Added thumbnail
+            .select(`
+                id, file_name, file_type, file_url, file_size, created_at, folder_id, thumbnail_url,
+                source_subjects (subject_id) 
+            `) // ✅ لاحظ هنا: جلبنا المواد المرتبطة
             .eq('user_id', userId);
 
-        // 2. المشتريات
+        // 2. المشتريات (Purchases) - سنفترض حالياً أنها لا ترتبط بمواد عبر هذا الجدول، أو يمكنك إضافتها لاحقاً
         const purchasesQuery = supabase
             .from('user_inventory')
             .select(`
-                id, 
-                folder_id, 
-                created_at:purchased_at, 
+                id, folder_id, created_at:purchased_at, 
                 store_items (id, title, file_url, file_size, type, thumbnail)
             `)
             .eq('user_id', userId);
@@ -335,41 +335,41 @@ async function getAllUserSources(req, res) {
         if (purchasesRes.error) throw purchasesRes.error;
 
         // توحيد البيانات
-        const normalizedPurchases = (purchasesRes.data || []).map(p => {
-            const rawSize = p.store_items?.file_size || 0;
-            return {
-                id: p.id, // ✅ Critical: This is the INVENTORY ID used for moving
-                item_id: p.store_items?.id, // Product ID (Reference)
-                title: p.store_items?.title || 'Purchased Item',
-                type: mapStoreTypeToMime(p.store_items?.type),
-                file_url: p.store_items?.file_url,
-                thumbnail_url: p.store_items?.thumbnail || null, // Unified name
-                file_size: formatBytes(rawSize), 
-                created_at: p.created_at,
-                folder_id: p.folder_id,
-                is_upload: false, // ✅ Explicit flag
-                is_inventory: true // ✅ Explicit flag
-            };
-        });
-
         const normalizedUploads = (uploadsRes.data || []).map(u => {
-            const rawSize = u.file_size || 0;
+            // تحويل مصفوفة المواد إلى قائمة IDs بسيطة
+            const linkedSubjects = u.source_subjects?.map(s => s.subject_id) || [];
+            
             return {
                 id: u.id,
-                title: u.file_name, // Unified name
+                title: u.file_name,
                 type: u.file_type || 'file',
                 file_url: u.file_url,
                 thumbnail_url: u.thumbnail_url || null,
-                file_size: formatBytes(rawSize),
+                file_size: formatBytes(u.file_size || 0),
                 created_at: u.created_at,
                 folder_id: u.folder_id,
+                subject_ids: linkedSubjects, // هذا هو الحقل الجديد المهم
                 is_upload: true, 
                 is_inventory: false
             };
         });
 
+        const normalizedPurchases = (purchasesRes.data || []).map(p => ({
+            id: p.id,
+            item_id: p.store_items?.id,
+            title: p.store_items?.title || 'Item',
+            type: mapStoreTypeToMime(p.store_items?.type),
+            file_url: p.store_items?.file_url,
+            thumbnail_url: p.store_items?.thumbnail || null,
+            file_size: formatBytes(p.store_items?.file_size || 0), 
+            created_at: p.created_at,
+            folder_id: p.folder_id,
+            subject_ids: [], 
+            is_upload: false,
+            is_inventory: true
+        }));
+
         const allFiles = [...normalizedUploads, ...normalizedPurchases];
-        // ترتيب حسب الأحدث
         allFiles.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
         res.json({ success: true, count: allFiles.length, sources: allFiles });
@@ -379,7 +379,6 @@ async function getAllUserSources(req, res) {
         res.status(500).json({ error: err.message });
     }
 }
-
 
 // دالة مساعدة بسيطة لتوحيد الأنواع
 function mapStoreTypeToMime(storeType) {
