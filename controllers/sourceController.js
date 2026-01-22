@@ -108,36 +108,61 @@ async function deleteFile(req, res) {
 
 
 /**
- * 5. ربط مصدر موجود بدرس أو مادة
+ * 5. [UPDATED] ربط مصدر (مرفوع أو مشترى) بدرس أو مادة
  */
 async function linkSourceToContext(req, res) {
   const { sourceId, lessonIds, subjectIds } = req.body;
   const userId = req.user?.id;
 
   try {
-    const { data: source } = await supabase
+    // 1. التحقق هل المصدر موجود في المرفوعات؟
+    let { data: uploadItem } = await supabase
         .from('lesson_sources')
         .select('id')
         .eq('id', sourceId)
         .eq('user_id', userId)
-        .single();
+        .maybeSingle();
 
-    if (!source) return res.status(403).json({ error: "Access denied" });
+    // 2. إذا لم يكن مرفوعاً، نتحقق هل هو في المخزون (مشتريات)؟
+    let validSourceId = uploadItem ? uploadItem.id : null;
+    
+    if (!validSourceId) {
+        const { data: inventoryItem } = await supabase
+            .from('user_inventory')
+            .select('id')
+            .eq('id', sourceId) // نستخدم ID السجل في Inventory
+            .eq('user_id', userId)
+            .maybeSingle();
+            
+        if (inventoryItem) validSourceId = inventoryItem.id;
+    }
 
+    if (!validSourceId) return res.status(403).json({ error: "File not found or access denied" });
+
+    const promises = [];
+
+    // الربط بالدروس
     if (lessonIds && Array.isArray(lessonIds)) {
-        const lessonLinks = lessonIds.map(lId => ({ source_id: sourceId, lesson_id: lId }));
-        await supabase.from('source_lessons').upsert(lessonLinks);
-    }
-    if (subjectIds && Array.isArray(subjectIds)) {
-        const subjectLinks = subjectIds.map(sId => ({ source_id: sourceId, subject_id: sId }));
-        await supabase.from('source_subjects').upsert(subjectLinks);
+        const lessonLinks = lessonIds.map(lId => ({ source_id: validSourceId, lesson_id: lId }));
+        // نستخدم upsert لتجنب التكرار
+        promises.push(supabase.from('source_lessons').upsert(lessonLinks, { onConflict: 'source_id, lesson_id' }));
     }
 
-    res.json({ success: true, message: 'Source linked successfully' });
+    // الربط بالمواد
+    if (subjectIds && Array.isArray(subjectIds)) {
+        const subjectLinks = subjectIds.map(sId => ({ source_id: validSourceId, subject_id: sId }));
+        promises.push(supabase.from('source_subjects').upsert(subjectLinks, { onConflict: 'source_id, subject_id' }));
+    }
+
+    await Promise.all(promises);
+
+    res.json({ success: true, message: 'Linked successfully' });
   } catch (err) {
+    logger.error('Linking Error:', err);
     res.status(500).json({ error: err.message });
   }
 }
+
 
 /**
  * 6. إحصائيات المكتبة (المرفوعة والمشتراة)
@@ -306,28 +331,33 @@ async function moveFile(req, res) {
  * 🔄 تحديث: جلب المكتبة الموحدة (Unified Library Fetch)
  * تجلب المرفوعات + المشتريات وتصفيها حسب المجلد
  */
+
+/**
+ * [UPDATED] جلب المكتبة الموحدة مع تضمين الدروس المرتبطة
+ */
 async function getAllUserSources(req, res) {
     const userId = req.user?.id;
 
     try {
-        // 1. المرفوعات (Uploads)
-        // ❌ حذفنا is_upload من هنا لأنه غير موجود في الجدول
+        // 1. المرفوعات (Uploads) + جلب الدروس المرتبطة
         const uploadsQuery = supabase
             .from('lesson_sources')
             .select(`
                 id, file_name, file_type, file_url, file_size, created_at, folder_id, thumbnail_url,
-                source_subjects (subject_id)
+                source_subjects (subject_id),
+                source_lessons (lesson_id)
             `) 
             .eq('user_id', userId);
 
-        // 2. المشتريات (Purchases)
+        // 2. المشتريات (Purchases) + جلب الدروس المرتبطة
+        // ملاحظة: نفترض أن source_lessons و source_subjects مربوطة بـ user_inventory.id أيضاً
         const purchasesQuery = supabase
             .from('user_inventory')
             .select(`
-                id, 
-                folder_id, 
-                created_at:purchased_at, 
-                store_items (id, title, file_url, file_size, type, thumbnail)
+                id, folder_id, created_at:purchased_at, 
+                store_items (id, title, file_url, file_size, type, thumbnail),
+                source_lessons (lesson_id),
+                source_subjects (subject_id)
             `)
             .eq('user_id', userId);
 
@@ -336,52 +366,47 @@ async function getAllUserSources(req, res) {
         if (uploadsRes.error) throw uploadsRes.error;
         if (purchasesRes.error) throw purchasesRes.error;
 
-        // --- معالجة المرفوعات ---
-        const normalizedUploads = (uploadsRes.data || []).map(u => {
-            const rawSize = u.file_size || 0;
-            
-            // استخراج معرفات المواد
-            const linkedSubjectIds = u.source_subjects 
-                ? u.source_subjects.map(rel => rel.subject_id) 
-                : [];
+        // دالة مساعدة لاستخراج IDs
+        const extractIds = (arr, key) => arr ? arr.map(item => item[key]) : [];
 
-            return {
-                id: u.id,
-                title: u.file_name,
-                type: u.file_type || 'file',
-                file_url: u.file_url,
-                thumbnail_url: u.thumbnail_url || null,
-                file_size: formatBytes(rawSize),
-                created_at: u.created_at,
-                folder_id: u.folder_id,
-                
-                subject_ids: linkedSubjectIds, 
-                
-                is_upload: true, // ✅ نضعها هنا يدوياً (Hardcoded) لأننا نعلم أنها مرفوعة
-                is_inventory: false
-            };
-        });
+        // --- معالجة المرفوعات ---
+        const normalizedUploads = (uploadsRes.data || []).map(u => ({
+            id: u.id,
+            title: u.file_name,
+            type: u.file_type || 'file',
+            file_url: u.file_url,
+            thumbnail_url: u.thumbnail_url || null,
+            file_size: formatBytes(u.file_size || 0),
+            created_at: u.created_at,
+            folder_id: u.folder_id,
+            
+            // ✅ تضمين القوائم
+            subject_ids: extractIds(u.source_subjects, 'subject_id'),
+            lesson_ids: extractIds(u.source_lessons, 'lesson_id'), 
+            
+            is_upload: true,
+            is_inventory: false
+        }));
 
         // --- معالجة المشتريات ---
-        const normalizedPurchases = (purchasesRes.data || []).map(p => {
-            const rawSize = p.store_items?.file_size || 0;
-            return {
-                id: p.id,
-                item_id: p.store_items?.id,
-                title: p.store_items?.title || 'Purchased Item',
-                type: mapStoreTypeToMime(p.store_items?.type),
-                file_url: p.store_items?.file_url,
-                thumbnail_url: p.store_items?.thumbnail || null,
-                file_size: formatBytes(rawSize), 
-                created_at: p.created_at,
-                folder_id: p.folder_id,
-                
-                subject_ids: [], 
-                
-                is_upload: false,
-                is_inventory: true
-            };
-        });
+        const normalizedPurchases = (purchasesRes.data || []).map(p => ({
+            id: p.id,
+            item_id: p.store_items?.id,
+            title: p.store_items?.title || 'Purchased Item',
+            type: mapStoreTypeToMime(p.store_items?.type),
+            file_url: p.store_items?.file_url,
+            thumbnail_url: p.store_items?.thumbnail || null,
+            file_size: formatBytes(p.store_items?.file_size || 0), 
+            created_at: p.created_at,
+            folder_id: p.folder_id,
+            
+            // ✅ تضمين القوائم (مهم جداً للفلترة في الواجهة)
+            subject_ids: extractIds(p.source_subjects, 'subject_id'), // قد تحتاج تعديل العلاقة في Supabase لتظهر هنا
+            lesson_ids: extractIds(p.source_lessons, 'lesson_id'),   // هنا نعتمد أن source_id في جدول العلاقات يشير لـ inventory.id
+            
+            is_upload: false,
+            is_inventory: true
+        }));
 
         const allFiles = [...normalizedUploads, ...normalizedPurchases];
         allFiles.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
