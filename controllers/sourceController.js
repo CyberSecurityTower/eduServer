@@ -212,41 +212,58 @@ async function checkSourceStatus(req, res) {
 async function moveFile(req, res) {
     const userId = req.user?.id;
     const { sourceId } = req.params;
-    const { targetFolderId } = req.body; // null = Root
+    const { targetFolderId } = req.body;
 
     try {
-        // المحاولة 1: البحث في الملفات المرفوعة (lesson_sources)
-        const { data: uploadData, error: uploadError } = await supabase
+        // 1. تنظيف targetFolderId
+        // إذا كان "root" أو "null" كنص، نحوله لـ null حقيقي ليخزن في الداتابيز بشكل صحيح
+        let finalFolderId = targetFolderId;
+        if (!targetFolderId || targetFolderId === 'root' || targetFolderId === 'null') {
+            finalFolderId = null;
+        }
+
+        // 2. المحاولة 1: نقل ملف مرفوع (Uploads)
+        const { data: uploadData } = await supabase
             .from('lesson_sources')
-            .update({ folder_id: targetFolderId })
+            .update({ folder_id: finalFolderId })
             .eq('id', sourceId)
             .eq('user_id', userId)
             .select()
-            .maybeSingle(); // نستخدم maybeSingle لكي لا يرمي خطأ إذا لم يجد الملف
+            .maybeSingle();
 
         if (uploadData) {
             return res.json({ success: true, message: 'Upload moved successfully', type: 'upload' });
         }
 
-        // المحاولة 2: البحث في المشتريات (user_inventory)
-        // ملاحظة: هنا نستخدم id الخاص بالصف في user_inventory وليس item_id
-        // (الفرونت إند يجب أن يرسل id الخاص بـ user_inventory)
-        // إذا كان الفرونت يرسل item_id، سنحتاج لتعديل الشرط أدناه ليكون .eq('item_id', sourceId)
-        
-        // سنفترض أن sourceId هو المعرف الفريد للملف سواء كان مرفوعاً أو مشترياً
-        const { data: purchaseData, error: purchaseError } = await supabase
+        // 3. المحاولة 2: نقل مشتريات (Inventory)
+        // نحاول أولاً باستخدام ID الصف (Row ID)
+        let { data: purchaseData } = await supabase
             .from('user_inventory')
-            .update({ folder_id: targetFolderId })
-            .eq('id', sourceId) // أو .eq('item_id', sourceId) حسب ما يرسله الفرونت
+            .update({ folder_id: finalFolderId })
+            .eq('id', sourceId) // البحث بـ Inventory Row ID
             .eq('user_id', userId)
             .select()
             .maybeSingle();
+
+        // 4. خطة بديلة (Fallback): إذا لم نجد الصف، نحاول باستخدام Item ID
+        // هذا يعالج الحالة التي يرسل فيها الفرونت أند ID المنتج بدلاً من ID المخزون
+        if (!purchaseData) {
+            const { data: retryData } = await supabase
+                .from('user_inventory')
+                .update({ folder_id: finalFolderId })
+                .eq('item_id', sourceId) // البحث بـ Product ID
+                .eq('user_id', userId)
+                .select()
+                .maybeSingle();
+            
+            purchaseData = retryData;
+        }
 
         if (purchaseData) {
             return res.json({ success: true, message: 'Purchase moved successfully', type: 'purchase' });
         }
 
-        // إذا وصلنا هنا، الملف غير موجود في الجدولين
+        // إذا وصلنا هنا، الملف غير موجود
         return res.status(404).json({ error: 'File not found in uploads or inventory' });
 
     } catch (err) {
@@ -264,8 +281,10 @@ async function getAllUserSources(req, res) {
     const { folderId } = req.query;
 
     try {
-        // 1. المرفوعات: نقرأ file_size (الذي هو int8 في الداتابيز)
-        // ❌ حذفنا size_bytes من الاستعلام لأنه غير موجود
+        // تنظيف folderId للمقارنة
+        const isRoot = (!folderId || folderId === 'root' || folderId === 'null');
+
+        // 1. المرفوعات
         let uploadsQuery = supabase
             .from('lesson_sources')
             .select('id, file_name, file_type, file_url, file_size, created_at, folder_id')
@@ -278,11 +297,12 @@ async function getAllUserSources(req, res) {
                 id, 
                 folder_id, 
                 created_at:purchased_at, 
-                store_items (title, file_url, file_size, type)
+                store_items (id, title, file_url, file_size, type)
             `)
             .eq('user_id', userId);
 
-        if (folderId === 'root' || folderId === 'null' || !folderId) {
+        // تطبيق الفلتر
+        if (isRoot) {
             uploadsQuery = uploadsQuery.is('folder_id', null);
             purchasesQuery = purchasesQuery.is('folder_id', null);
         } else {
@@ -295,20 +315,17 @@ async function getAllUserSources(req, res) {
         if (uploadsRes.error) throw uploadsRes.error;
         if (purchasesRes.error) throw purchasesRes.error;
 
-        // 3. توحيد البيانات وحساب التنسيق
+        // توحيد البيانات
         const normalizedPurchases = (purchasesRes.data || []).map(p => {
             const rawSize = p.store_items?.file_size || 0;
             return {
-                id: p.id,
+                id: p.id, // هذا الـ ID هو الذي يجب استخدامه للنقل (Inventory Row ID)
+                item_id: p.store_items?.id, // نضيف هذا للمرجعية
                 file_name: p.store_items?.title || 'Purchased Item',
                 file_type: mapStoreTypeToMime(p.store_items?.type),
                 file_url: p.store_items?.file_url,
-                
-                // نرسل الرقم الخام للحسابات
                 size_bytes: rawSize,
-                // نرسل النص المنسق للعرض
                 file_size: formatBytes(rawSize), 
-                
                 created_at: p.created_at,
                 folder_id: p.folder_id,
                 is_purchase: true
@@ -319,9 +336,7 @@ async function getAllUserSources(req, res) {
             const rawSize = u.file_size || 0;
             return {
                 ...u,
-                // الرقم الخام (من قاعدة البيانات)
                 size_bytes: rawSize,
-                // النص المنسق (نقوم بتوليده الآن)
                 file_size: formatBytes(rawSize),
                 is_purchase: false
             };
