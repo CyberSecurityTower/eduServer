@@ -163,13 +163,14 @@ async function linkSourceToContext(req, res) {
   }
 }
 
-
 /**
  * 6. إحصائيات المكتبة (المرفوعة والمشتراة)
+ * [FIXED] حساب الحجم بناءً على الأرقام المخزنة في قاعدة البيانات مباشرة
  */
 async function getLibraryStats(req, res) {
     const userId = req.user?.id;
     try {
+        // 1. حساب حجم المرفوعات
         const { data: uploads, error: uploadError } = await supabase
             .from('lesson_sources')
             .select('file_size')
@@ -177,45 +178,61 @@ async function getLibraryStats(req, res) {
 
         if (uploadError) throw uploadError;
 
+        // 2. حساب حجم المشتريات
         const { data: purchases, error: purchaseError } = await supabase
             .from('user_inventory')
-            .select(`item_id, store_items (file_size)`)
+            .select(`
+                store_items (file_size)
+            `)
             .eq('user_id', userId);
 
         if (purchaseError) throw purchaseError;
 
-        // حساب الحجم للملفات المرفوعة
-        const uploadedCount = uploads.length;
+        // ✅ التصحيح: الجمع المباشر للأرقام (int8)
         let totalUploadedBytes = 0;
         uploads.forEach(item => {
-            // نستخدم Helper من الـ service مباشرة
-            totalUploadedBytes += sourceManager.parseSizeToBytes(item.file_size || '0 Bytes');
+            // تأكد من تحويل القيمة لرقم (في حال كانت null أو نص رقمي)
+            totalUploadedBytes += Number(item.file_size) || 0;
         });
 
-        // حساب الحجم للملفات المشتراة
-        const purchasedCount = purchases.length;
         let totalPurchasedBytes = 0;
         purchases.forEach(item => {
             if (item.store_items && item.store_items.file_size) {
-                totalPurchasedBytes += sourceManager.parseSizeToBytes(item.store_items.file_size);
+                totalPurchasedBytes += Number(item.store_items.file_size) || 0;
             }
         });
+
+        // دالة تنسيق الحجم (يجب أن تكون معرفة في الملف أو استيرادها)
+        const formatBytes = (bytes, decimals = 2) => {
+            if (!+bytes) return '0 B';
+            const k = 1024;
+            const dm = decimals < 0 ? 0 : decimals;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+        };
 
         res.json({
             success: true,
             stats: {
                 uploads: { 
-                    count: uploadedCount, 
-                    totalSize: sourceManager.formatBytes(totalUploadedBytes) 
+                    count: uploads.length, 
+                    totalSize: formatBytes(totalUploadedBytes),
+                    rawSize: totalUploadedBytes // نرسل الرقم الخام أيضاً
                 },
                 purchases: { 
-                    count: purchasedCount, 
-                    totalSize: sourceManager.formatBytes(totalPurchasedBytes) 
+                    count: purchases.length, 
+                    totalSize: formatBytes(totalPurchasedBytes),
+                    rawSize: totalPurchasedBytes
                 },
-                grandTotalSize: sourceManager.formatBytes(totalUploadedBytes + totalPurchasedBytes)
+                // الحجم الكلي المنسق
+                grandTotalSize: formatBytes(totalUploadedBytes + totalPurchasedBytes),
+                // النسبة المئوية من 1 جيجا (اختياري)
+                usagePercentage: ((totalUploadedBytes + totalPurchasedBytes) / (1024 * 1024 * 1024)) * 100
             }
         });
     } catch (err) {
+        console.error("Library Stats Error:", err);
         res.status(500).json({ error: err.message });
     }
 }
