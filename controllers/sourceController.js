@@ -400,25 +400,22 @@ async function moveFile(req, res) {
  * [FIXED] جلب المكتبة الموحدة مع دمج الروابط يدوياً
  * لتجنب خطأ: Could not find a relationship
  */
+
 async function getAllUserSources(req, res) {
     const userId = req.user?.id;
 
     try {
-        // 1. جلب المرفوعات (Uploads)
+        // ... (نفس استعلامات قاعدة البيانات السابقة) ...
+        // 1. جلب المرفوعات
         const uploadsQuery = supabase
             .from('lesson_sources')
-            .select(`
-                id, file_name, file_type, file_url, file_size, created_at, folder_id, thumbnail_url
-            `) 
+            .select(`id, file_name, file_type, file_url, file_size, created_at, folder_id, thumbnail_url`) 
             .eq('user_id', userId);
 
-        // 2. جلب المشتريات (Purchases)
+        // 2. جلب المشتريات
         const purchasesQuery = supabase
             .from('user_inventory')
-            .select(`
-                id, folder_id, created_at:purchased_at, 
-                store_items (id, title, file_url, file_size, type, thumbnail)
-            `)
+            .select(`id, folder_id, created_at:purchased_at, store_items (id, title, file_url, file_size, type, thumbnail)`)
             .eq('user_id', userId);
 
         const [uploadsRes, purchasesRes] = await Promise.all([uploadsQuery, purchasesQuery]);
@@ -426,32 +423,31 @@ async function getAllUserSources(req, res) {
         if (uploadsRes.error) throw uploadsRes.error;
         if (purchasesRes.error) throw purchasesRes.error;
 
+        // دالة تحويل الحجم العادية (بدون ترقيع)
+        const formatBytes = (bytes, decimals = 2) => {
+            if (!+bytes) return '0 B'; // إذا 0 رجع 0، ما تزيدش من عندك
+            const k = 1024;
+            const dm = decimals < 0 ? 0 : decimals;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+        };
+
         const uploadIds = (uploadsRes.data || []).map(i => i.id);
         const purchaseIds = (purchasesRes.data || []).map(i => i.id);
         const allSourceIds = [...uploadIds, ...purchaseIds];
 
-        let lessonLinks = [];
-        let subjectLinks = [];
-
+        // ... (جلب الروابط links كما هي) ...
+         let lessonLinks = [], subjectLinks = [];
         if (allSourceIds.length > 0) {
-            const { data: lData } = await supabase
-                .from('source_lessons')
-                .select('source_id, lesson_id')
-                .in('source_id', allSourceIds);
+            const { data: lData } = await supabase.from('source_lessons').select('source_id, lesson_id').in('source_id', allSourceIds);
             lessonLinks = lData || [];
-
-            const { data: sData } = await supabase
-                .from('source_subjects')
-                .select('source_id, subject_id')
-                .in('source_id', allSourceIds);
+            const { data: sData } = await supabase.from('source_subjects').select('source_id, subject_id').in('source_id', allSourceIds);
             subjectLinks = sData || [];
         }
 
-        const getLinkedIds = (sourceId, linksArray, key) => {
-            return linksArray
-                .filter(link => link.source_id === sourceId)
-                .map(link => link[key]);
-        };
+        const getLinkedIds = (sourceId, linksArray, key) => linksArray.filter(link => link.source_id === sourceId).map(link => link[key]);
+
 
         const normalizedUploads = (uploadsRes.data || []).map(u => ({
             id: u.id,
@@ -459,7 +455,7 @@ async function getAllUserSources(req, res) {
             type: u.file_type || 'file',
             file_url: u.file_url,
             thumbnail_url: u.thumbnail_url || null,
-            file_size: formatBytes(u.file_size || 0),
+            file_size: formatBytes(u.file_size), // ✅ دالة نظيفة
             created_at: u.created_at,
             folder_id: u.folder_id,
             subject_ids: getLinkedIds(u.id, subjectLinks, 'subject_id'),
@@ -475,7 +471,7 @@ async function getAllUserSources(req, res) {
             type: mapStoreTypeToMime(p.store_items?.type),
             file_url: p.store_items?.file_url,
             thumbnail_url: p.store_items?.thumbnail || null,
-            file_size: formatBytes(p.store_items?.file_size || 0), 
+            file_size: formatBytes(p.store_items?.file_size), // ✅ دالة نظيفة
             created_at: p.created_at,
             folder_id: p.folder_id,
             subject_ids: getLinkedIds(p.id, subjectLinks, 'subject_id'),
