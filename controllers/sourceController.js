@@ -216,14 +216,16 @@ async function moveFile(req, res) {
 
     try {
         // 1. تنظيف targetFolderId
-        // إذا كان "root" أو "null" كنص، نحوله لـ null حقيقي ليخزن في الداتابيز بشكل صحيح
         let finalFolderId = targetFolderId;
         if (!targetFolderId || targetFolderId === 'root' || targetFolderId === 'null') {
             finalFolderId = null;
         }
 
+        console.log(`🚚 Attempting to move SourceID: ${sourceId} to Folder: ${finalFolderId}`);
+
         // 2. المحاولة 1: نقل ملف مرفوع (Uploads)
-        const { data: uploadData } = await supabase
+        // نبحث في جدول المرفوعات
+        const { data: uploadData, error: uploadError } = await supabase
             .from('lesson_sources')
             .update({ folder_id: finalFolderId })
             .eq('id', sourceId)
@@ -236,22 +238,22 @@ async function moveFile(req, res) {
         }
 
         // 3. المحاولة 2: نقل مشتريات (Inventory)
-        // نحاول أولاً باستخدام ID الصف (Row ID)
-        let { data: purchaseData } = await supabase
+        // نبحث باستخدام ID السجل (Inventory Record ID)
+        let { data: purchaseData, error: purchaseError } = await supabase
             .from('user_inventory')
             .update({ folder_id: finalFolderId })
-            .eq('id', sourceId) // البحث بـ Inventory Row ID
+            .eq('id', sourceId)
             .eq('user_id', userId)
             .select()
             .maybeSingle();
 
-        // 4. خطة بديلة (Fallback): إذا لم نجد الصف، نحاول باستخدام Item ID
-        // هذا يعالج الحالة التي يرسل فيها الفرونت أند ID المنتج بدلاً من ID المخزون
+        // 4. خطة بديلة (Fallback): إذا لم نجد السجل بالـ ID المباشر، ربما أرسل الفرونت إند الـ item_id
         if (!purchaseData) {
+            console.log("⚠️ Direct inventory ID check failed, trying Item ID lookup...");
             const { data: retryData } = await supabase
                 .from('user_inventory')
                 .update({ folder_id: finalFolderId })
-                .eq('item_id', sourceId) // البحث بـ Product ID
+                .eq('item_id', sourceId) // المحاولة بـ ID المنتج
                 .eq('user_id', userId)
                 .select()
                 .maybeSingle();
@@ -264,7 +266,8 @@ async function moveFile(req, res) {
         }
 
         // إذا وصلنا هنا، الملف غير موجود
-        return res.status(404).json({ error: 'File not found in uploads or inventory' });
+        console.error("❌ Move Failed: Item not found in Uploads or Inventory.");
+        return res.status(404).json({ error: 'File not found or access denied.' });
 
     } catch (err) {
         logger.error('Move Error:', err.message);
@@ -272,43 +275,33 @@ async function moveFile(req, res) {
     }
 }
 
+
 /**
  * 🔄 تحديث: جلب المكتبة الموحدة (Unified Library Fetch)
  * تجلب المرفوعات + المشتريات وتصفيها حسب المجلد
  */
 async function getAllUserSources(req, res) {
     const userId = req.user?.id;
-    const { folderId } = req.query;
+    // ملاحظة: ألغينا فلترة المجلد هنا لنجلب كل شيء مرة واحدة (لأداء أسرع في التنقل)
+    // أو يمكنك إبقاء الفلتر إذا كنت تريد Pagination
 
     try {
-        // تنظيف folderId للمقارنة
-        const isRoot = (!folderId || folderId === 'root' || folderId === 'null');
-
         // 1. المرفوعات
-        let uploadsQuery = supabase
+        const uploadsQuery = supabase
             .from('lesson_sources')
-            .select('id, file_name, file_type, file_url, file_size, created_at, folder_id')
+            .select('id, file_name, file_type, file_url, file_size, created_at, folder_id, thumbnail_url') // Added thumbnail
             .eq('user_id', userId);
 
         // 2. المشتريات
-        let purchasesQuery = supabase
+        const purchasesQuery = supabase
             .from('user_inventory')
             .select(`
                 id, 
                 folder_id, 
                 created_at:purchased_at, 
-                store_items (id, title, file_url, file_size, type)
+                store_items (id, title, file_url, file_size, type, thumbnail)
             `)
             .eq('user_id', userId);
-
-        // تطبيق الفلتر
-        if (isRoot) {
-            uploadsQuery = uploadsQuery.is('folder_id', null);
-            purchasesQuery = purchasesQuery.is('folder_id', null);
-        } else {
-            uploadsQuery = uploadsQuery.eq('folder_id', folderId);
-            purchasesQuery = purchasesQuery.eq('folder_id', folderId);
-        }
 
         const [uploadsRes, purchasesRes] = await Promise.all([uploadsQuery, purchasesQuery]);
 
@@ -319,30 +312,38 @@ async function getAllUserSources(req, res) {
         const normalizedPurchases = (purchasesRes.data || []).map(p => {
             const rawSize = p.store_items?.file_size || 0;
             return {
-                id: p.id, // هذا الـ ID هو الذي يجب استخدامه للنقل (Inventory Row ID)
-                item_id: p.store_items?.id, // نضيف هذا للمرجعية
-                file_name: p.store_items?.title || 'Purchased Item',
-                file_type: mapStoreTypeToMime(p.store_items?.type),
+                id: p.id, // ✅ Critical: This is the INVENTORY ID used for moving
+                item_id: p.store_items?.id, // Product ID (Reference)
+                title: p.store_items?.title || 'Purchased Item',
+                type: mapStoreTypeToMime(p.store_items?.type),
                 file_url: p.store_items?.file_url,
-                size_bytes: rawSize,
+                thumbnail_url: p.store_items?.thumbnail || null, // Unified name
                 file_size: formatBytes(rawSize), 
                 created_at: p.created_at,
                 folder_id: p.folder_id,
-                is_purchase: true
+                is_upload: false, // ✅ Explicit flag
+                is_inventory: true // ✅ Explicit flag
             };
         });
 
         const normalizedUploads = (uploadsRes.data || []).map(u => {
             const rawSize = u.file_size || 0;
             return {
-                ...u,
-                size_bytes: rawSize,
+                id: u.id,
+                title: u.file_name, // Unified name
+                type: u.file_type || 'file',
+                file_url: u.file_url,
+                thumbnail_url: u.thumbnail_url || null,
                 file_size: formatBytes(rawSize),
-                is_purchase: false
+                created_at: u.created_at,
+                folder_id: u.folder_id,
+                is_upload: true, 
+                is_inventory: false
             };
         });
 
         const allFiles = [...normalizedUploads, ...normalizedPurchases];
+        // ترتيب حسب الأحدث
         allFiles.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
         res.json({ success: true, count: allFiles.length, sources: allFiles });
@@ -352,6 +353,7 @@ async function getAllUserSources(req, res) {
         res.status(500).json({ error: err.message });
     }
 }
+
 
 // دالة مساعدة بسيطة لتوحيد الأنواع
 function mapStoreTypeToMime(storeType) {
