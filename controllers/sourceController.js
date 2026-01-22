@@ -34,7 +34,9 @@ async function uploadFile(req, res) {
         description || "", 
         file.mimetype,
         file.originalname,
-        folderId || null
+        folderId || null,
+        file.size
+        
     );
 
     const sourceId = uploadResult.id;
