@@ -239,117 +239,127 @@ async function moveFile(req, res) {
     const { sourceId } = req.params;
     const { targetFolderId } = req.body;
 
-    console.log(`🚀 [MoveFile] Request: ID=${sourceId} -> Folder=${targetFolderId} | User=${userId}`);
+    console.log(`🚀 [SmartMove] Request: ID=${sourceId} -> Target=${targetFolderId}`);
 
     try {
-        // 1. تنظيف معرف المجلد الهدف
-        let finalFolderId = targetFolderId;
-        if (!targetFolderId || targetFolderId === 'root' || targetFolderId === 'null') {
-            finalFolderId = null;
-        }
+        // 1. تحديد نوع الملف (مرفوع أم مشترى)
+        let fileType = null;
+        let realSourceId = null;
 
-        // ✅ [إصلاح هام]: التحقق من وجود المجلد قبل محاولة النقل
-        // هذا يمنع خطأ Foreign Key Constraint إذا كان الهدف مادة أو درس
-        if (finalFolderId) {
-            const { data: folderExists } = await supabase
-                .from('folders')
-                .select('id')
-                .eq('id', finalFolderId)
-                .maybeSingle();
-
-            if (!folderExists) {
-                // ⚠️ الهدف ليس مجلداً في جدول folders!
-                // هنا يمكننا التحقق إذا كان مادة (Subject) لعمل ربط تلقائي (ميزة إضافية)
-                // لكن حالياً سنمنع الخطأ فقط.
-                console.warn(`⚠️ Target ID ${finalFolderId} is not a valid folder. Canceling move.`);
-                return res.status(400).json({ 
-                    error: "Target is not a valid folder. You cannot move files directly into Subjects or Lessons, please use 'Link' instead." 
-                });
-            }
-        }
-
-        // ====================================================
-        // PHASE 1: البحث في المرفوعات (Lesson Sources)
-        // ====================================================
-        const { data: uploadExists, error: findUploadError } = await supabase
+        // فحص المرفوعات
+        const { data: uploadData } = await supabase
             .from('lesson_sources')
             .select('id')
             .eq('id', sourceId)
             .eq('user_id', userId)
             .maybeSingle();
-
-        if (uploadExists) {
-            console.log(`✅ Found in Uploads. Moving...`);
-            const { error: moveError } = await supabase
-                .from('lesson_sources')
-                .update({ folder_id: finalFolderId })
-                .eq('id', sourceId);
-
-            if (moveError) throw moveError;
-            return res.json({ success: true, message: 'Upload moved successfully', type: 'upload' });
+        
+        if (uploadData) {
+            fileType = 'upload';
+            realSourceId = uploadData.id;
+        } else {
+            // فحص المشتريات
+            const { data: invData } = await supabase
+                .from('user_inventory')
+                .select('id')
+                .eq('id', sourceId) // أو item_id حسب ما يرسله الفرونت
+                .eq('user_id', userId)
+                .maybeSingle();
+            
+            if (invData) {
+                fileType = 'inventory';
+                realSourceId = invData.id;
+            }
         }
 
-        // ====================================================
-        // PHASE 2: البحث في المشتريات (Inventory) - الطريقة المباشرة
-        // ====================================================
-        const { data: inventoryRow, error: findInvError } = await supabase
-            .from('user_inventory')
+        if (!fileType) {
+            return res.status(404).json({ error: 'File not found or access denied' });
+        }
+
+        // 2. تنظيف الهدف
+        if (!targetFolderId || targetFolderId === 'root' || targetFolderId === 'null') {
+            // النقل إلى الروت (إزالة المجلد)
+            const table = fileType === 'upload' ? 'lesson_sources' : 'user_inventory';
+            await supabase.from(table).update({ folder_id: null }).eq('id', realSourceId);
+            return res.json({ success: true, message: 'Moved to root' });
+        }
+
+        // 3. 🧠 المنطق الذكي: ما هو الهدف؟
+
+        // أ) هل هو مجلد حقيقي؟ (Folders)
+        const { data: isFolder } = await supabase
+            .from('folders')
             .select('id')
-            .eq('id', sourceId)
-            .eq('user_id', userId)
+            .eq('id', targetFolderId)
             .maybeSingle();
 
-        if (inventoryRow) {
-            console.log(`✅ Found in Inventory (Row ID). Moving...`);
-            const { error: moveError } = await supabase
-                .from('user_inventory')
-                .update({ folder_id: finalFolderId })
-                .eq('id', sourceId);
+        if (isFolder) {
+            // ✅ نعم، هو مجلد -> قم بالنقل الفيزيائي
+            console.log('📂 Target is a Folder. Moving...');
+            const table = fileType === 'upload' ? 'lesson_sources' : 'user_inventory';
+            
+            const { error } = await supabase
+                .from(table)
+                .update({ folder_id: targetFolderId })
+                .eq('id', realSourceId);
 
-            if (moveError) throw moveError;
-            return res.json({ success: true, message: 'Purchase moved successfully', type: 'purchase' });
+            if (error) throw error;
+            return res.json({ success: true, message: 'Moved to folder' });
         }
 
-        // ====================================================
-        // PHASE 3: البحث في المشتريات (Product ID)
-        // ====================================================
-        const { data: inventoryByItem, error: findItemError } = await supabase
-            .from('user_inventory')
+        // ب) هل هو مادة؟ (Subjects)
+        const { data: isSubject } = await supabase
+            .from('subjects')
             .select('id')
-            .eq('item_id', sourceId)
-            .eq('user_id', userId)
+            .eq('id', targetFolderId)
             .maybeSingle();
 
-        if (inventoryByItem) {
-            console.log(`✅ Found in Inventory (Product ID). Moving...`);
-            const { error: moveError } = await supabase
-                .from('user_inventory')
-                .update({ folder_id: finalFolderId })
-                .eq('id', inventoryByItem.id); 
+        if (isSubject) {
+            // 🔗 نعم، هو مادة -> قم بالربط (Link)
+            console.log('📘 Target is a Subject. Linking...');
+            
+            const { error } = await supabase
+                .from('source_subjects')
+                .upsert(
+                    { source_id: realSourceId, subject_id: targetFolderId },
+                    { onConflict: 'source_id, subject_id' }
+                );
 
-            if (moveError) throw moveError;
-            return res.json({ success: true, message: 'Purchase moved successfully', type: 'purchase' });
+            if (error) throw error;
+            return res.json({ success: true, message: 'Linked to Subject successfully' });
         }
 
-        // ====================================================
-        // END: لم يتم العثور على الملف
-        // ====================================================
-        console.error(`❌ [MoveFile] File ${sourceId} not found anywhere for user ${userId}`);
-        return res.status(404).json({ error: 'File not found or access denied (Check logs)' });
+        // ج) هل هو درس؟ (Lessons)
+        const { data: isLesson } = await supabase
+            .from('lessons')
+            .select('id')
+            .eq('id', targetFolderId)
+            .maybeSingle();
+
+        if (isLesson) {
+            // 🎥 نعم، هو درس -> قم بالربط (Link)
+            console.log('📝 Target is a Lesson. Linking...');
+            
+            const { error } = await supabase
+                .from('source_lessons')
+                .upsert(
+                    { source_id: realSourceId, lesson_id: targetFolderId },
+                    { onConflict: 'source_id, lesson_id' }
+                );
+
+            if (error) throw error;
+            return res.json({ success: true, message: 'Linked to Lesson successfully' });
+        }
+
+        // د) الهدف غير معروف
+        console.warn(`⚠️ Target ID ${targetFolderId} is unknown (Not folder, subject, or lesson).`);
+        return res.status(400).json({ error: "Invalid target. Cannot move or link." });
 
     } catch (err) {
-        logger.error('Move Error:', err.message);
-        console.error("Full Error Details:", err);
-        
-        // تحسين رسالة الخطأ للفرونت إند
-        if (err.code === '23503') { // خطأ Foreign Key
-            return res.status(400).json({ error: "Invalid Folder ID. The target folder does not exist." });
-        }
-        
+        logger.error('Smart Move Error:', err.message);
         res.status(500).json({ error: err.message });
     }
 }
-
 
 /**
  * 🔄 تحديث: جلب المكتبة الموحدة (Unified Library Fetch)
