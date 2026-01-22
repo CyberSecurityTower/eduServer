@@ -105,32 +105,36 @@ class SourceManager {
         return data;
     }
 
-    async function deleteSource(userId, sourceId) {
-    // 1. حذف الروابط أولاً (يدوياً لضمان عدم حدوث خطأ)
-    await supabase.from('source_lessons').delete().eq('source_id', sourceId);
-    await supabase.from('source_subjects').delete().eq('source_id', sourceId);
+    // ✅ التصحيح: إزالة كلمة function لأننا داخل Class
+    async deleteSource(userId, sourceId) {
+        // 1. حذف الروابط أولاً (يدوياً لضمان عدم حدوث خطأ)
+        await supabase.from('source_lessons').delete().eq('source_id', sourceId);
+        await supabase.from('source_subjects').delete().eq('source_id', sourceId);
 
-    // 2. محاولة حذف الملف من Cloudinary (اختياري - نضعه داخل try/catch لكي لا يوقف العملية)
-    try {
-        const { data } = await supabase.from('lesson_sources').select('public_id').eq('id', sourceId).single();
-        if (data?.public_id) {
-            // ... كود حذف Cloudinary ...
+        // 2. محاولة حذف الملف من Cloudinary (اختياري)
+        try {
+            const { data } = await supabase.from('lesson_sources').select('public_id').eq('id', sourceId).single();
+            if (data?.public_id) {
+                // كود حذف Cloudinary (يمكن إضافته لاحقاً إذا احتجت)
+                // await cloudinary.uploader.destroy(data.public_id);
+            }
+        } catch (e) {
+            console.warn("Cloudinary delete skipped/failed", e);
         }
-    } catch (e) {
-        console.warn("Cloudinary delete skipped/failed", e);
+
+        // 3. أخيراً حذف الملف من قاعدة البيانات
+        const { error } = await supabase
+            .from('lesson_sources')
+            .delete()
+            .eq('id', sourceId)
+            .eq('user_id', userId); 
+
+        if (error) throw error;
+        
+        return true;
     }
+} // ✅ التصحيح: إغلاق قوس الكلاس
 
-    // 3. أخيراً حذف الملف من قاعدة البيانات
-    const { error } = await supabase
-        .from('lesson_sources')
-        .delete()
-        .eq('id', sourceId)
-        .eq('user_id', userId); // حماية إضافية: التأكد أن المستخدم هو المالك
-
-    if (error) throw error;
-    
-    return true;
-}
 // --- الدوال المساعدة (Exports) ---
 
 // دالة لتنسيق الحجم للعرض (Human Readable)
