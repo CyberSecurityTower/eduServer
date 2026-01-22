@@ -92,21 +92,52 @@ async function getLessonFiles(req, res) {
 }
 
 /**
- * 3. حذف ملف
+ * 3. حذف ملف (Smart Delete)
+ * يتعامل مع كل من الملفات المرفوعة وعناصر المخزون
  */
 async function deleteFile(req, res) {
     try {
         const { sourceId } = req.params;
         const userId = req.user?.id;
 
-        await sourceManager.deleteSource(userId, sourceId);
-        res.status(200).json({ success: true, message: 'Deleted successfully' });
+        if (!sourceId) return res.status(400).json({ error: "Source ID is required" });
+
+        // 🔍 الخطوة 1: التحقق هل هو ملف مرفوع (Upload)؟
+        const { data: uploadItem } = await supabase
+            .from('lesson_sources')
+            .select('id')
+            .eq('id', sourceId)
+            .eq('user_id', userId)
+            .maybeSingle();
+
+        if (uploadItem) {
+            console.log(`🗑️ Deleting Upload: ${sourceId}`);
+            await sourceManager.deleteSource(userId, sourceId);
+            return res.status(200).json({ success: true, message: 'Upload deleted successfully' });
+        }
+
+        // 🔍 الخطوة 2: التحقق هل هو عنصر في المخزون (Inventory)؟
+        const { data: inventoryItem } = await supabase
+            .from('user_inventory')
+            .select('id')
+            .eq('id', sourceId)
+            .eq('user_id', userId)
+            .maybeSingle();
+
+        if (inventoryItem) {
+            console.log(`🗑️ Removing Inventory Item: ${sourceId}`);
+            await sourceManager.deleteInventoryItem(userId, sourceId);
+            return res.status(200).json({ success: true, message: 'Item removed from inventory' });
+        }
+
+        // إذا لم يتم العثور عليه في الاثنين
+        return res.status(404).json({ error: 'File not found or access denied' });
 
     } catch (err) {
+        logger.error('❌ Delete Error:', err.message);
         res.status(500).json({ error: err.message });
     }
 }
-
 
 
 /**
