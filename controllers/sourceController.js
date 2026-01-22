@@ -248,6 +248,26 @@ async function moveFile(req, res) {
             finalFolderId = null;
         }
 
+        // ✅ [إصلاح هام]: التحقق من وجود المجلد قبل محاولة النقل
+        // هذا يمنع خطأ Foreign Key Constraint إذا كان الهدف مادة أو درس
+        if (finalFolderId) {
+            const { data: folderExists } = await supabase
+                .from('folders')
+                .select('id')
+                .eq('id', finalFolderId)
+                .maybeSingle();
+
+            if (!folderExists) {
+                // ⚠️ الهدف ليس مجلداً في جدول folders!
+                // هنا يمكننا التحقق إذا كان مادة (Subject) لعمل ربط تلقائي (ميزة إضافية)
+                // لكن حالياً سنمنع الخطأ فقط.
+                console.warn(`⚠️ Target ID ${finalFolderId} is not a valid folder. Canceling move.`);
+                return res.status(400).json({ 
+                    error: "Target is not a valid folder. You cannot move files directly into Subjects or Lessons, please use 'Link' instead." 
+                });
+            }
+        }
+
         // ====================================================
         // PHASE 1: البحث في المرفوعات (Lesson Sources)
         // ====================================================
@@ -272,7 +292,6 @@ async function moveFile(req, res) {
         // ====================================================
         // PHASE 2: البحث في المشتريات (Inventory) - الطريقة المباشرة
         // ====================================================
-        // البحث باستخدام ID السجل (Row ID) وهو ما يرسله الفرونت اند عادةً
         const { data: inventoryRow, error: findInvError } = await supabase
             .from('user_inventory')
             .select('id')
@@ -292,9 +311,8 @@ async function moveFile(req, res) {
         }
 
         // ====================================================
-        // PHASE 3: البحث في المشتريات - الطريقة البديلة (Product ID)
+        // PHASE 3: البحث في المشتريات (Product ID)
         // ====================================================
-        // في حال أرسل الفرونت اند ID المنتج بدلاً من ID السجل بالخطأ
         const { data: inventoryByItem, error: findItemError } = await supabase
             .from('user_inventory')
             .select('id')
@@ -307,7 +325,7 @@ async function moveFile(req, res) {
             const { error: moveError } = await supabase
                 .from('user_inventory')
                 .update({ folder_id: finalFolderId })
-                .eq('id', inventoryByItem.id); // نستخدم الـ ID الحقيقي للتحديث
+                .eq('id', inventoryByItem.id); 
 
             if (moveError) throw moveError;
             return res.json({ success: true, message: 'Purchase moved successfully', type: 'purchase' });
@@ -322,6 +340,12 @@ async function moveFile(req, res) {
     } catch (err) {
         logger.error('Move Error:', err.message);
         console.error("Full Error Details:", err);
+        
+        // تحسين رسالة الخطأ للفرونت إند
+        if (err.code === '23503') { // خطأ Foreign Key
+            return res.status(400).json({ error: "Invalid Folder ID. The target folder does not exist." });
+        }
+        
         res.status(500).json({ error: err.message });
     }
 }
@@ -330,10 +354,6 @@ async function moveFile(req, res) {
 /**
  * 🔄 تحديث: جلب المكتبة الموحدة (Unified Library Fetch)
  * تجلب المرفوعات + المشتريات وتصفيها حسب المجلد
- */
-
-/**
- * [UPDATED] جلب المكتبة الموحدة مع تضمين الدروس المرتبطة
  */
 /**
  * [FIXED] جلب المكتبة الموحدة مع دمج الروابط يدوياً
@@ -352,7 +372,6 @@ async function getAllUserSources(req, res) {
             .eq('user_id', userId);
 
         // 2. جلب المشتريات (Purchases)
-        // ملاحظة: أزلنا source_lessons من الـ select هنا لتجنب الخطأ
         const purchasesQuery = supabase
             .from('user_inventory')
             .select(`
@@ -366,24 +385,20 @@ async function getAllUserSources(req, res) {
         if (uploadsRes.error) throw uploadsRes.error;
         if (purchasesRes.error) throw purchasesRes.error;
 
-        // 3. تجميع كل المعرفات (IDs) لجلب الروابط دفعة واحدة
         const uploadIds = (uploadsRes.data || []).map(i => i.id);
         const purchaseIds = (purchasesRes.data || []).map(i => i.id);
         const allSourceIds = [...uploadIds, ...purchaseIds];
 
-        // 4. جلب جداول الربط (Junction Tables) يدوياً
         let lessonLinks = [];
         let subjectLinks = [];
 
         if (allSourceIds.length > 0) {
-            // جلب روابط الدروس
             const { data: lData } = await supabase
                 .from('source_lessons')
                 .select('source_id, lesson_id')
                 .in('source_id', allSourceIds);
             lessonLinks = lData || [];
 
-            // جلب روابط المواد
             const { data: sData } = await supabase
                 .from('source_subjects')
                 .select('source_id, subject_id')
@@ -391,14 +406,12 @@ async function getAllUserSources(req, res) {
             subjectLinks = sData || [];
         }
 
-        // دالة مساعدة لفلترة الروابط الخاصة بملف معين
         const getLinkedIds = (sourceId, linksArray, key) => {
             return linksArray
                 .filter(link => link.source_id === sourceId)
                 .map(link => link[key]);
         };
 
-        // --- معالجة المرفوعات ---
         const normalizedUploads = (uploadsRes.data || []).map(u => ({
             id: u.id,
             title: u.file_name,
@@ -408,16 +421,12 @@ async function getAllUserSources(req, res) {
             file_size: formatBytes(u.file_size || 0),
             created_at: u.created_at,
             folder_id: u.folder_id,
-            
-            // دمج الروابط يدوياً
             subject_ids: getLinkedIds(u.id, subjectLinks, 'subject_id'),
             lesson_ids: getLinkedIds(u.id, lessonLinks, 'lesson_id'), 
-            
             is_upload: true,
             is_inventory: false
         }));
 
-        // --- معالجة المشتريات ---
         const normalizedPurchases = (purchasesRes.data || []).map(p => ({
             id: p.id,
             item_id: p.store_items?.id,
@@ -428,17 +437,13 @@ async function getAllUserSources(req, res) {
             file_size: formatBytes(p.store_items?.file_size || 0), 
             created_at: p.created_at,
             folder_id: p.folder_id,
-            
-            // دمج الروابط يدوياً
             subject_ids: getLinkedIds(p.id, subjectLinks, 'subject_id'),
             lesson_ids: getLinkedIds(p.id, lessonLinks, 'lesson_id'),
-            
             is_upload: false,
             is_inventory: true
         }));
 
         const allFiles = [...normalizedUploads, ...normalizedPurchases];
-        // ترتيب حسب الأحدث
         allFiles.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
         res.json({ success: true, count: allFiles.length, sources: allFiles });
@@ -448,7 +453,6 @@ async function getAllUserSources(req, res) {
         res.status(500).json({ error: err.message });
     }
 }
-
 // دالة مساعدة بسيطة لتوحيد الأنواع
 function mapStoreTypeToMime(storeType) {
     if (!storeType) return 'document';
