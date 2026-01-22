@@ -6,25 +6,31 @@ const logger = require('../../utils/logger');
 const fs = require('fs');
 
 class SourceManager {
-    // الدالة تقبل الآن folderId كما في التعديل السابق
-    async uploadSource(userId, lessonId, filePath, displayName, description, mimeType, originalFileName, folderId = null) {
+    /**
+     * رفع ملف جديد
+     * ✅ تم إضافة معامل fileSize لضمان تسجيل الحجم الصحيح القادم من Multer
+     */
+    async uploadSource(userId, lessonId, filePath, displayName, description, mimeType, originalFileName, folderId = null, fileSize = 0) {
         try {
             logger.info(`📤 Uploading source [${displayName}]...`);
 
-            // 1. حساب الحجم
-            let fileSizeInBytes = 0;
-            if (fs.existsSync(filePath)) {
-                const stats = fs.statSync(filePath);
-                fileSizeInBytes = stats.size;
+            // 1. تحديد الحجم النهائي (الأولوية للحجم القادم من Controller)
+            let finalFileSize = fileSize;
+
+            // إذا لم يتم تمرير الحجم، نحاول حسابه من الملف
+            if (!finalFileSize || finalFileSize === 0) {
+                if (fs.existsSync(filePath)) {
+                    const stats = fs.statSync(filePath);
+                    finalFileSize = stats.size;
+                }
             }
 
-            // تحديد نوع الموارد
+            // تحديد نوع الموارد لـ Cloudinary
             let resourceType = 'raw';
             if (mimeType.startsWith('image/')) resourceType = 'image';
             else if (mimeType.startsWith('video/')) resourceType = 'video';
-            // PDF يعامل كـ image في Cloudinary لتوليد Thumbnails أحياناً، أو raw.
-            // للأمان سنبقيه كما هو، ولكن سنولد Thumbnail يدوياً
-
+            
+            // الرفع إلى Cloudinary
             const uploadResult = await cloudinary.uploader.upload(filePath, {
                 folder: 'eduapp_sources',
                 resource_type: resourceType,
@@ -34,28 +40,23 @@ class SourceManager {
                 access_mode: 'public'
             });
 
-            if (fileSizeInBytes === 0 && uploadResult.bytes) {
-                fileSizeInBytes = uploadResult.bytes;
+            // محاولة أخيرة للحصول على الحجم من Cloudinary إذا فشل كل ما سبق
+            if ((!finalFileSize || finalFileSize === 0) && uploadResult.bytes) {
+                finalFileSize = uploadResult.bytes;
             }
 
             const simpleType = mimeType.split('/')[0] === 'image' ? 'image' : 'document';
 
-            // ✅ توليد رابط الصورة المصغرة (Thumbnail Logic)
+            // توليد رابط الصورة المصغرة (Thumbnail Logic)
             let thumbnailUrl = null;
             if (resourceType === 'image') {
-                // للصور: نفس الرابط
                 thumbnailUrl = uploadResult.secure_url;
             } else if (resourceType === 'video') {
-                // للفيديو: استبدال الامتداد بـ .jpg
                 thumbnailUrl = uploadResult.secure_url.replace(/\.[^/.]+$/, ".jpg");
-            } else if (mimeType.includes('pdf')) {
-                // للـ PDF: إذا تم رفعه كـ image، يمكن عرض الصفحة الأولى. 
-                // إذا كان raw، لن يكون له thumbnail تلقائي من Cloudinary إلا بإعدادات خاصة.
-                // سنتركه null وسيظهر الـ Placeholder في التطبيق.
-                thumbnailUrl = null; 
-            }
+            } 
+            // للـ PDF نتركه null ليظهر الرمز الافتراضي في التطبيق
 
-            // 2. التحضير للإدخال (مع العمود الجديد thumbnail_url)
+            // 2. التحضير للإدخال
             const insertData = {
                 user_id: userId,
                 lesson_id: lessonId || null,
@@ -67,7 +68,7 @@ class SourceManager {
                 description: description,
                 original_file_name: originalFileName,
                 public_id: uploadResult.public_id,
-                file_size: fileSizeInBytes,
+                file_size: finalFileSize, // ✅ حفظ الحجم الصحيح هنا
                 processed: true,
                 status: 'completed'
             };
@@ -83,6 +84,7 @@ class SourceManager {
 
         } catch (err) {
             logger.error('❌ Source Upload Failed:', err.message);
+            // تنظيف الملف المؤقت في حال الخطأ
             if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
             throw err;
         }
@@ -125,8 +127,19 @@ class SourceManager {
     }
 }
 
-// --- الدوال المساعدة (خارج الكلاس تماماً) ---
+// --- الدوال المساعدة (Exports) ---
 
+// دالة لتنسيق الحجم للعرض (Human Readable)
+function formatBytes(bytes, decimals = 2) {
+    if (!+bytes) return '0 Bytes';
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
+
+// دالة لتحويل النص إلى بايت (للاستخدام عند الحاجة)
 function parseSizeToBytes(sizeStr) {
     if (!sizeStr || typeof sizeStr !== 'string') return 0;
     const units = { 'bytes': 1, 'kb': 1024, 'mb': 1024 * 1024, 'gb': 1024 * 1024 * 1024 };
@@ -137,18 +150,8 @@ function parseSizeToBytes(sizeStr) {
     return value * (units[unit] || 1);
 }
 
-function formatBytes(bytes, decimals = 2) {
-    if (!+bytes) return '0 Bytes';
-    const k = 1024;
-    const dm = decimals < 0 ? 0 : decimals;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
-}
-
-// التصدير الصحيح (Exporting an object containing everything)
 const managerInstance = new SourceManager();
 
-module.exports = managerInstance; // التصدير الافتراضي هو الـ instance
-module.exports.parseSizeToBytes = (str) => 0; // لم نعد بحاجة لهذه الدالة للحسابات الدقيقة
+module.exports = managerInstance; 
 module.exports.formatBytes = formatBytes;
+module.exports.parseSizeToBytes = parseSizeToBytes;
