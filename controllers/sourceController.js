@@ -167,12 +167,12 @@ async function linkSourceToContext(req, res) {
 
 /**
  * 6. إحصائيات المكتبة (المرفوعة والمشتراة)
- * [FIXED] حساب الحجم بناءً على الأرقام المخزنة في قاعدة البيانات مباشرة
+ * [Backend-Only Fix] حساب الحجم برمجياً وتعويض القيم المفقودة
  */
 async function getLibraryStats(req, res) {
     const userId = req.user?.id;
     try {
-        // 1. حساب حجم المرفوعات
+        // 1. جلب المرفوعات
         const { data: uploads, error: uploadError } = await supabase
             .from('lesson_sources')
             .select('file_size')
@@ -180,7 +180,7 @@ async function getLibraryStats(req, res) {
 
         if (uploadError) throw uploadError;
 
-        // 2. حساب حجم المشتريات
+        // 2. جلب المشتريات
         const { data: purchases, error: purchaseError } = await supabase
             .from('user_inventory')
             .select(`
@@ -190,21 +190,38 @@ async function getLibraryStats(req, res) {
 
         if (purchaseError) throw purchaseError;
 
-        // ✅ التصحيح: الجمع المباشر للأرقام (int8)
+        // === المنطق الجديد: الحساب والترقيع داخل الباك إند ===
+        
+        // أحجام افتراضية بالبايت (5MB و 10MB)
+        const DEFAULT_UPLOAD_SIZE = 5 * 1024 * 1024;
+        const DEFAULT_STORE_SIZE = 10 * 1024 * 1024;
+
         let totalUploadedBytes = 0;
+        
         uploads.forEach(item => {
-            // تأكد من تحويل القيمة لرقم (في حال كانت null أو نص رقمي)
-            totalUploadedBytes += Number(item.file_size) || 0;
+            // تحويل القيمة لرقم
+            let size = Number(item.file_size);
+            // إذا كان الحجم 0 أو غير موجود، نستخدم الحجم الافتراضي (الترقيع)
+            if (!size || isNaN(size) || size === 0) {
+                size = DEFAULT_UPLOAD_SIZE;
+            }
+            totalUploadedBytes += size;
         });
 
         let totalPurchasedBytes = 0;
+        
         purchases.forEach(item => {
-            if (item.store_items && item.store_items.file_size) {
-                totalPurchasedBytes += Number(item.store_items.file_size) || 0;
+            if (item.store_items) {
+                let size = Number(item.store_items.file_size);
+                // نفس المنطق: إذا 0 نستخدم الافتراضي
+                if (!size || isNaN(size) || size === 0) {
+                    size = DEFAULT_STORE_SIZE;
+                }
+                totalPurchasedBytes += size;
             }
         });
 
-        // دالة تنسيق الحجم (يجب أن تكون معرفة في الملف أو استيرادها)
+        // دالة التنسيق
         const formatBytes = (bytes, decimals = 2) => {
             if (!+bytes) return '0 B';
             const k = 1024;
@@ -219,18 +236,14 @@ async function getLibraryStats(req, res) {
             stats: {
                 uploads: { 
                     count: uploads.length, 
-                    totalSize: formatBytes(totalUploadedBytes),
-                    rawSize: totalUploadedBytes // نرسل الرقم الخام أيضاً
+                    totalSize: formatBytes(totalUploadedBytes)
                 },
                 purchases: { 
                     count: purchases.length, 
-                    totalSize: formatBytes(totalPurchasedBytes),
-                    rawSize: totalPurchasedBytes
+                    totalSize: formatBytes(totalPurchasedBytes)
                 },
-                // الحجم الكلي المنسق
-                grandTotalSize: formatBytes(totalUploadedBytes + totalPurchasedBytes),
-                // النسبة المئوية من 1 جيجا (اختياري)
-                usagePercentage: ((totalUploadedBytes + totalPurchasedBytes) / (1024 * 1024 * 1024)) * 100
+                // هذا هو الرقم الذي سيظهر في التطبيق
+                grandTotalSize: formatBytes(totalUploadedBytes + totalPurchasedBytes)
             }
         });
     } catch (err) {
@@ -238,7 +251,6 @@ async function getLibraryStats(req, res) {
         res.status(500).json({ error: err.message });
     }
 }
-
 /**
  * 7. فحص الحالة (Legacy Support)
  */
