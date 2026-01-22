@@ -190,6 +190,9 @@ router.post(
 // نقل ملف (Move)
 router.patch('/sources/:sourceId/move', requireAuth, sourceController.moveFile);
 
+//   تعديل اسم الملف
+router.patch('/sources/:sourceId/rename', requireAuth, sourceController.renameFile);
+
 // ربط ملف بمادة أو درس (يقبل arrays في الـ body)
 router.post('/sources/link', requireAuth, sourceController.linkSourceToContext);
 
