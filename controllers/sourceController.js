@@ -311,11 +311,11 @@ async function getAllUserSources(req, res) {
 
     try {
         // 1. المرفوعات (Uploads)
-        // ✅ التغيير هنا: أضفنا source_subjects(subject_id)
+        // ❌ حذفنا is_upload من هنا لأنه غير موجود في الجدول
         const uploadsQuery = supabase
             .from('lesson_sources')
             .select(`
-                id, file_name, file_type, file_url, file_size, created_at, folder_id, thumbnail_url, is_upload,
+                id, file_name, file_type, file_url, file_size, created_at, folder_id, thumbnail_url,
                 source_subjects (subject_id)
             `) 
             .eq('user_id', userId);
@@ -339,7 +339,8 @@ async function getAllUserSources(req, res) {
         // --- معالجة المرفوعات ---
         const normalizedUploads = (uploadsRes.data || []).map(u => {
             const rawSize = u.file_size || 0;
-            // ✅ استخراج مصفوفة IDs للمواد
+            
+            // استخراج معرفات المواد
             const linkedSubjectIds = u.source_subjects 
                 ? u.source_subjects.map(rel => rel.subject_id) 
                 : [];
@@ -354,10 +355,9 @@ async function getAllUserSources(req, res) {
                 created_at: u.created_at,
                 folder_id: u.folder_id,
                 
-                // ✅ الحقل الجديد المهم جداً للفلترة الذكية
                 subject_ids: linkedSubjectIds, 
                 
-                is_upload: true, 
+                is_upload: true, // ✅ نضعها هنا يدوياً (Hardcoded) لأننا نعلم أنها مرفوعة
                 is_inventory: false
             };
         });
@@ -376,7 +376,6 @@ async function getAllUserSources(req, res) {
                 created_at: p.created_at,
                 folder_id: p.folder_id,
                 
-                // المشتريات حالياً لا ترتبط بمواد عبر هذا الجدول (يمكن إضافتها لاحقاً إذا كان المتجر يدعمها)
                 subject_ids: [], 
                 
                 is_upload: false,
