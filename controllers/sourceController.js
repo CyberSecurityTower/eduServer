@@ -335,29 +335,29 @@ async function moveFile(req, res) {
 /**
  * [UPDATED] جلب المكتبة الموحدة مع تضمين الدروس المرتبطة
  */
+/**
+ * [FIXED] جلب المكتبة الموحدة مع دمج الروابط يدوياً
+ * لتجنب خطأ: Could not find a relationship
+ */
 async function getAllUserSources(req, res) {
     const userId = req.user?.id;
 
     try {
-        // 1. المرفوعات (Uploads) + جلب الدروس المرتبطة
+        // 1. جلب المرفوعات (Uploads)
         const uploadsQuery = supabase
             .from('lesson_sources')
             .select(`
-                id, file_name, file_type, file_url, file_size, created_at, folder_id, thumbnail_url,
-                source_subjects (subject_id),
-                source_lessons (lesson_id)
+                id, file_name, file_type, file_url, file_size, created_at, folder_id, thumbnail_url
             `) 
             .eq('user_id', userId);
 
-        // 2. المشتريات (Purchases) + جلب الدروس المرتبطة
-        // ملاحظة: نفترض أن source_lessons و source_subjects مربوطة بـ user_inventory.id أيضاً
+        // 2. جلب المشتريات (Purchases)
+        // ملاحظة: أزلنا source_lessons من الـ select هنا لتجنب الخطأ
         const purchasesQuery = supabase
             .from('user_inventory')
             .select(`
                 id, folder_id, created_at:purchased_at, 
-                store_items (id, title, file_url, file_size, type, thumbnail),
-                source_lessons (lesson_id),
-                source_subjects (subject_id)
+                store_items (id, title, file_url, file_size, type, thumbnail)
             `)
             .eq('user_id', userId);
 
@@ -366,8 +366,37 @@ async function getAllUserSources(req, res) {
         if (uploadsRes.error) throw uploadsRes.error;
         if (purchasesRes.error) throw purchasesRes.error;
 
-        // دالة مساعدة لاستخراج IDs
-        const extractIds = (arr, key) => arr ? arr.map(item => item[key]) : [];
+        // 3. تجميع كل المعرفات (IDs) لجلب الروابط دفعة واحدة
+        const uploadIds = (uploadsRes.data || []).map(i => i.id);
+        const purchaseIds = (purchasesRes.data || []).map(i => i.id);
+        const allSourceIds = [...uploadIds, ...purchaseIds];
+
+        // 4. جلب جداول الربط (Junction Tables) يدوياً
+        let lessonLinks = [];
+        let subjectLinks = [];
+
+        if (allSourceIds.length > 0) {
+            // جلب روابط الدروس
+            const { data: lData } = await supabase
+                .from('source_lessons')
+                .select('source_id, lesson_id')
+                .in('source_id', allSourceIds);
+            lessonLinks = lData || [];
+
+            // جلب روابط المواد
+            const { data: sData } = await supabase
+                .from('source_subjects')
+                .select('source_id, subject_id')
+                .in('source_id', allSourceIds);
+            subjectLinks = sData || [];
+        }
+
+        // دالة مساعدة لفلترة الروابط الخاصة بملف معين
+        const getLinkedIds = (sourceId, linksArray, key) => {
+            return linksArray
+                .filter(link => link.source_id === sourceId)
+                .map(link => link[key]);
+        };
 
         // --- معالجة المرفوعات ---
         const normalizedUploads = (uploadsRes.data || []).map(u => ({
@@ -380,9 +409,9 @@ async function getAllUserSources(req, res) {
             created_at: u.created_at,
             folder_id: u.folder_id,
             
-            // ✅ تضمين القوائم
-            subject_ids: extractIds(u.source_subjects, 'subject_id'),
-            lesson_ids: extractIds(u.source_lessons, 'lesson_id'), 
+            // دمج الروابط يدوياً
+            subject_ids: getLinkedIds(u.id, subjectLinks, 'subject_id'),
+            lesson_ids: getLinkedIds(u.id, lessonLinks, 'lesson_id'), 
             
             is_upload: true,
             is_inventory: false
@@ -400,15 +429,16 @@ async function getAllUserSources(req, res) {
             created_at: p.created_at,
             folder_id: p.folder_id,
             
-            // ✅ تضمين القوائم (مهم جداً للفلترة في الواجهة)
-            subject_ids: extractIds(p.source_subjects, 'subject_id'), // قد تحتاج تعديل العلاقة في Supabase لتظهر هنا
-            lesson_ids: extractIds(p.source_lessons, 'lesson_id'),   // هنا نعتمد أن source_id في جدول العلاقات يشير لـ inventory.id
+            // دمج الروابط يدوياً
+            subject_ids: getLinkedIds(p.id, subjectLinks, 'subject_id'),
+            lesson_ids: getLinkedIds(p.id, lessonLinks, 'lesson_id'),
             
             is_upload: false,
             is_inventory: true
         }));
 
         const allFiles = [...normalizedUploads, ...normalizedPurchases];
+        // ترتيب حسب الأحدث
         allFiles.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
         res.json({ success: true, count: allFiles.length, sources: allFiles });
