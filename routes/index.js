@@ -285,4 +285,6 @@ router.get('/subjects/mine', requireAuth, subjectController.getMySubjects);
 
 // ✅✅✅ أضف هذا السطر الجديد لحل المشكلة ✅✅✅
 router.get('/educational/lessons', requireAuth, subjectController.getLessonsBySubject);
+router.post('/admin/fix-file-sizes', requireAdmin, adminController.fixRealFileSizes);
+
 module.exports = router;
