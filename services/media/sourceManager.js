@@ -11,20 +11,20 @@ class SourceManager {
         try {
             logger.info(`📤 Uploading source [${displayName}]...`);
 
-            // 1. 🔥 حساب حجم الملف بالبايت (الخطوة الجديدة)
-            // نستخدم fs للحصول على الحجم الفعلي من الملف المؤقت قبل الرفع
+            // 1. حساب الحجم
             let fileSizeInBytes = 0;
             if (fs.existsSync(filePath)) {
                 const stats = fs.statSync(filePath);
                 fileSizeInBytes = stats.size;
             }
 
-            // تحديد نوع الموارد لـ Cloudinary
+            // تحديد نوع الموارد
             let resourceType = 'raw';
             if (mimeType.startsWith('image/')) resourceType = 'image';
             else if (mimeType.startsWith('video/')) resourceType = 'video';
+            // PDF يعامل كـ image في Cloudinary لتوليد Thumbnails أحياناً، أو raw.
+            // للأمان سنبقيه كما هو، ولكن سنولد Thumbnail يدوياً
 
-            // الرفع إلى Cloudinary
             const uploadResult = await cloudinary.uploader.upload(filePath, {
                 folder: 'eduapp_sources',
                 resource_type: resourceType,
@@ -34,29 +34,42 @@ class SourceManager {
                 access_mode: 'public'
             });
 
-            // إذا فشل fs في قراءة الحجم لسبب ما، نأخذه من استجابة Cloudinary كخطة بديلة
             if (fileSizeInBytes === 0 && uploadResult.bytes) {
                 fileSizeInBytes = uploadResult.bytes;
             }
 
             const simpleType = mimeType.split('/')[0] === 'image' ? 'image' : 'document';
 
-            // 2. 🔥 إضافة size_bytes للبيانات المدخلة
+            // ✅ توليد رابط الصورة المصغرة (Thumbnail Logic)
+            let thumbnailUrl = null;
+            if (resourceType === 'image') {
+                // للصور: نفس الرابط
+                thumbnailUrl = uploadResult.secure_url;
+            } else if (resourceType === 'video') {
+                // للفيديو: استبدال الامتداد بـ .jpg
+                thumbnailUrl = uploadResult.secure_url.replace(/\.[^/.]+$/, ".jpg");
+            } else if (mimeType.includes('pdf')) {
+                // للـ PDF: إذا تم رفعه كـ image، يمكن عرض الصفحة الأولى. 
+                // إذا كان raw، لن يكون له thumbnail تلقائي من Cloudinary إلا بإعدادات خاصة.
+                // سنتركه null وسيظهر الـ Placeholder في التطبيق.
+                thumbnailUrl = null; 
+            }
+
+            // 2. التحضير للإدخال (مع العمود الجديد thumbnail_url)
             const insertData = {
                 user_id: userId,
                 lesson_id: lessonId || null,
                 folder_id: folderId || null,
                 file_url: uploadResult.secure_url,
+                thumbnail_url: thumbnailUrl,
                 file_type: simpleType,
                 file_name: displayName,
                 description: description,
                 original_file_name: originalFileName,
                 public_id: uploadResult.public_id,
-                
                 file_size: fileSizeInBytes,
                 processed: true,
-                status: 'completed',
-                extracted_text: null
+                status: 'completed'
             };
 
             const { data, error } = await supabase
@@ -66,15 +79,10 @@ class SourceManager {
                 .single();
 
             if (error) throw error;
-            
-            // ملاحظة: لا نقوم بتحديث users.total_storage_used هنا
-            // لأن Trigger قاعدة البيانات سيقوم بذلك تلقائياً.
-
             return data;
 
         } catch (err) {
             logger.error('❌ Source Upload Failed:', err.message);
-            // تنظيف الملف في حال الخطأ موجود في Controller، لكن لا يضر التأكد
             if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
             throw err;
         }
