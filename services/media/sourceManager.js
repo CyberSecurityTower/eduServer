@@ -105,36 +105,79 @@ class SourceManager {
         return data;
     }
 
-    // ✅ التصحيح: إزالة كلمة function لأننا داخل Class
-    async deleteSource(userId, sourceId) {
-        // 1. حذف الروابط أولاً (يدوياً لضمان عدم حدوث خطأ)
-        await supabase.from('source_lessons').delete().eq('source_id', sourceId);
-        await supabase.from('source_subjects').delete().eq('source_id', sourceId);
-
-        // 2. محاولة حذف الملف من Cloudinary (اختياري)
+     /**
+     * 🛠️ دالة مساعدة خاصة لحذف العلاقات المشتركة
+     * تحذف الروابط من جداول الدروس والمواد بغض النظر عن نوع الملف
+     */
+    async _cleanUpRelations(sourceId) {
         try {
-            const { data } = await supabase.from('lesson_sources').select('public_id').eq('id', sourceId).single();
+            // حذف الروابط مع الدروس
+            await supabase.from('source_lessons').delete().eq('source_id', sourceId);
+            // حذف الروابط مع المواد
+            await supabase.from('source_subjects').delete().eq('source_id', sourceId);
+        } catch (error) {
+            logger.error(`⚠️ Failed to clean relations for ${sourceId}:`, error);
+            // لا نرمي الخطأ هنا لنسمح باستمرار عملية الحذف الرئيسية
+        }
+    }
+
+    /**
+     * ✅ حذف ملف مرفوع (Upload)
+     * 1. حذف العلاقات
+     * 2. حذف من Cloudinary
+     * 3. حذف من قاعدة البيانات
+     */
+    async deleteSource(userId, sourceId) {
+        // 1. تنظيف العلاقات أولاً
+        await this._cleanUpRelations(sourceId);
+
+        // 2. جلب public_id لحذف الملف من Cloudinary
+        try {
+            const { data } = await supabase
+                .from('lesson_sources')
+                .select('public_id')
+                .eq('id', sourceId)
+                .eq('user_id', userId)
+                .single();
+
             if (data?.public_id) {
-                // كود حذف Cloudinary (يمكن إضافته لاحقاً إذا احتجت)
-                // await cloudinary.uploader.destroy(data.public_id);
+                await cloudinary.uploader.destroy(data.public_id);
             }
         } catch (e) {
-            console.warn("Cloudinary delete skipped/failed", e);
+            console.warn("⚠️ Cloudinary delete skipped/failed", e.message);
         }
 
-        // 3. أخيراً حذف الملف من قاعدة البيانات
+        // 3. الحذف النهائي من الجدول
         const { error } = await supabase
             .from('lesson_sources')
             .delete()
             .eq('id', sourceId)
-            .eq('user_id', userId); 
+            .eq('user_id', userId);
 
         if (error) throw error;
-        
         return true;
     }
-} // ✅ التصحيح: إغلاق قوس الكلاس
+/**
+     * ✅ حذف عنصر من المخزون (Inventory Item)
+     * 1. حذف العلاقات (مهم جداً لأن العنصر قد يكون مربوطاً بدروس)
+     * 2. حذف من جدول مخزون المستخدم
+     * (ملاحظة: لا نحذف الملف الأصلي من store_items لأنه ملك للنظام)
+     */
+    async deleteInventoryItem(userId, itemId) {
+        // 1. تنظيف العلاقات
+        await this._cleanUpRelations(itemId);
 
+        // 2. إزالة العنصر من حقيبة المستخدم
+        const { error } = await supabase
+            .from('user_inventory')
+            .delete()
+            .eq('id', itemId) // تأكد أننا نحذف سجل المخزون وليس الآيتم نفسه
+            .eq('user_id', userId);
+
+        if (error) throw error;
+        return true;
+    }
+}
 // --- الدوال المساعدة (Exports) ---
 
 // دالة لتنسيق الحجم للعرض (Human Readable)
