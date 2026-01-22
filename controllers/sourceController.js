@@ -471,6 +471,42 @@ function mapStoreTypeToMime(storeType) {
     if (storeType.includes('video')) return 'video';
     return 'document';
 }
+/**
+ * 🆕 تعديل اسم الملف (Rename File)
+ */
+async function renameFile(req, res) {
+    const userId = req.user?.id;
+    const { sourceId } = req.params;
+    const { newName } = req.body;
+
+    if (!newName || typeof newName !== 'string' || !newName.trim()) {
+        return res.status(400).json({ error: 'New name is required' });
+    }
+
+    try {
+        // 1. محاولة التحديث في المرفوعات (Uploads)
+        const { data: upload, error: uploadError } = await supabase
+            .from('lesson_sources')
+            .update({ file_name: newName.trim() }) // نفترض أن العمود هو file_name
+            .eq('id', sourceId)
+            .eq('user_id', userId)
+            .select()
+            .single();
+
+        if (upload) {
+            return res.json({ success: true, message: 'File renamed successfully', file: upload });
+        }
+
+        // 2. إذا لم يكن في المرفوعات، نتحقق من المشتريات (Inventory)
+        // ملاحظة: المشتريات غالباً لا نغير اسمها الأصلي إلا إذا كان لديك عمود custom_name
+        // سنكتفي بإرجاع خطأ إذا لم يكن ملفاً مرفوعاً
+        return res.status(404).json({ error: 'File not found or cannot be renamed (Only uploads can be renamed)' });
+
+    } catch (err) {
+        logger.error('Rename Error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+}
 module.exports = { 
     uploadFile, 
     getLessonFiles, 
@@ -479,5 +515,6 @@ module.exports = {
     checkSourceStatus, 
     linkSourceToContext,
     getLibraryStats,
-    moveFile
+    moveFile,
+    renameFile 
 };
