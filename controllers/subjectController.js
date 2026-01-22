@@ -62,6 +62,36 @@ async function getMySubjects(req, res) {
     }
 }
 
+/**
+ * [NEW] جلب الدروس التابعة لمادة معينة
+ */
+async function getLessonsBySubject(req, res) {
+    const { subjectId } = req.query; // نأخذ المعرف من الرابط ?subjectId=...
+
+    if (!subjectId) {
+        return res.status(400).json({ error: 'Subject ID is required' });
+    }
+
+    try {
+        // نختار الحقول المهمة فقط للعرض في القائمة
+        // تأكد أن اسم العمود في جدول lessons هو 'subject_id'
+        const { data: lessons, error } = await supabase
+            .from('lessons') 
+            .select('id, title, order_index') 
+            .eq('subject_id', subjectId)
+            .order('order_index', { ascending: true }); // ترتيب الدروس
+
+        if (error) throw error;
+
+        res.json({ success: true, lessons });
+
+    } catch (err) {
+        logger.error('Get Lessons Error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+}
+
 module.exports = {
-    getMySubjects
+    getMySubjects,
+    getLessonsBySubject 
 };
