@@ -214,63 +214,89 @@ async function moveFile(req, res) {
     const { sourceId } = req.params;
     const { targetFolderId } = req.body;
 
+    console.log(`🚀 [MoveFile] Request: ID=${sourceId} -> Folder=${targetFolderId} | User=${userId}`);
+
     try {
-        // 1. تنظيف targetFolderId
+        // 1. تنظيف معرف المجلد الهدف
         let finalFolderId = targetFolderId;
         if (!targetFolderId || targetFolderId === 'root' || targetFolderId === 'null') {
             finalFolderId = null;
         }
 
-        console.log(`🚚 Attempting to move SourceID: ${sourceId} to Folder: ${finalFolderId}`);
-
-        // 2. المحاولة 1: نقل ملف مرفوع (Uploads)
-        // نبحث في جدول المرفوعات
-        const { data: uploadData, error: uploadError } = await supabase
+        // ====================================================
+        // PHASE 1: البحث في المرفوعات (Lesson Sources)
+        // ====================================================
+        const { data: uploadExists, error: findUploadError } = await supabase
             .from('lesson_sources')
-            .update({ folder_id: finalFolderId })
+            .select('id')
             .eq('id', sourceId)
             .eq('user_id', userId)
-            .select()
             .maybeSingle();
 
-        if (uploadData) {
+        if (uploadExists) {
+            console.log(`✅ Found in Uploads. Moving...`);
+            const { error: moveError } = await supabase
+                .from('lesson_sources')
+                .update({ folder_id: finalFolderId })
+                .eq('id', sourceId);
+
+            if (moveError) throw moveError;
             return res.json({ success: true, message: 'Upload moved successfully', type: 'upload' });
         }
 
-        // 3. المحاولة 2: نقل مشتريات (Inventory)
-        // نبحث باستخدام ID السجل (Inventory Record ID)
-        let { data: purchaseData, error: purchaseError } = await supabase
+        // ====================================================
+        // PHASE 2: البحث في المشتريات (Inventory) - الطريقة المباشرة
+        // ====================================================
+        // البحث باستخدام ID السجل (Row ID) وهو ما يرسله الفرونت اند عادةً
+        const { data: inventoryRow, error: findInvError } = await supabase
             .from('user_inventory')
-            .update({ folder_id: finalFolderId })
+            .select('id')
             .eq('id', sourceId)
             .eq('user_id', userId)
-            .select()
             .maybeSingle();
 
-        // 4. خطة بديلة (Fallback): إذا لم نجد السجل بالـ ID المباشر، ربما أرسل الفرونت إند الـ item_id
-        if (!purchaseData) {
-            console.log("⚠️ Direct inventory ID check failed, trying Item ID lookup...");
-            const { data: retryData } = await supabase
+        if (inventoryRow) {
+            console.log(`✅ Found in Inventory (Row ID). Moving...`);
+            const { error: moveError } = await supabase
                 .from('user_inventory')
                 .update({ folder_id: finalFolderId })
-                .eq('item_id', sourceId) // المحاولة بـ ID المنتج
-                .eq('user_id', userId)
-                .select()
-                .maybeSingle();
-            
-            purchaseData = retryData;
-        }
+                .eq('id', sourceId);
 
-        if (purchaseData) {
+            if (moveError) throw moveError;
             return res.json({ success: true, message: 'Purchase moved successfully', type: 'purchase' });
         }
 
-        // إذا وصلنا هنا، الملف غير موجود
-        console.error("❌ Move Failed: Item not found in Uploads or Inventory.");
-        return res.status(404).json({ error: 'File not found or access denied.' });
+        // ====================================================
+        // PHASE 3: البحث في المشتريات - الطريقة البديلة (Product ID)
+        // ====================================================
+        // في حال أرسل الفرونت اند ID المنتج بدلاً من ID السجل بالخطأ
+        const { data: inventoryByItem, error: findItemError } = await supabase
+            .from('user_inventory')
+            .select('id')
+            .eq('item_id', sourceId)
+            .eq('user_id', userId)
+            .maybeSingle();
+
+        if (inventoryByItem) {
+            console.log(`✅ Found in Inventory (Product ID). Moving...`);
+            const { error: moveError } = await supabase
+                .from('user_inventory')
+                .update({ folder_id: finalFolderId })
+                .eq('id', inventoryByItem.id); // نستخدم الـ ID الحقيقي للتحديث
+
+            if (moveError) throw moveError;
+            return res.json({ success: true, message: 'Purchase moved successfully', type: 'purchase' });
+        }
+
+        // ====================================================
+        // END: لم يتم العثور على الملف
+        // ====================================================
+        console.error(`❌ [MoveFile] File ${sourceId} not found anywhere for user ${userId}`);
+        return res.status(404).json({ error: 'File not found or access denied (Check logs)' });
 
     } catch (err) {
         logger.error('Move Error:', err.message);
+        console.error("Full Error Details:", err);
         res.status(500).json({ error: err.message });
     }
 }
