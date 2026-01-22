@@ -22,6 +22,7 @@ const arenaController = require('../controllers/arenaController');
 const bankController = require('../controllers/bankController');
 const storeController = require('../controllers/storeController');
 const folderController = require('../controllers/folderController');
+const subjectController = require('../controllers/subjectController'); 
 
 
 /*
@@ -273,5 +274,6 @@ router.post('/folders', requireAuth, folderController.createFolder);
 router.put('/folders/reorder', requireAuth, folderController.reorderFolders); // إعادة الترتيب
 router.patch('/folders/:folderId', requireAuth, folderController.updateFolder); // تغيير الاسم/اللون
 router.delete('/folders/:folderId', requireAuth, folderController.deleteFolder);
+router.get('/subjects/mine', requireAuth, subjectController.getMySubjects);
 
 module.exports = router;
