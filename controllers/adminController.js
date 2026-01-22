@@ -1110,6 +1110,100 @@ async function getLiveTraffic(req, res) {
   }
 }
 
+/**
+ * 🛠️ أداة إصلاح الأحجام الحقيقية
+ * تقوم بعمل Head Request لكل ملف لجلب حجمه الحقيقي من السيرفر
+ */
+async function fixRealFileSizes(req, res) {
+  // حماية
+  if (req.headers['x-admin-secret'] !== process.env.NIGHTLY_JOB_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  // رد فوري
+  res.json({ message: '🔧 Started fixing file sizes in background...' });
+
+  runFileSizeFixer();
+}
+
+async function runFileSizeFixer() {
+  console.log('⚖️ STARTING REAL SIZE CALCULATION...');
+
+  try {
+    // 1. جلب المرفوعات التي حجمها 0
+    const { data: uploads } = await supabase
+      .from('lesson_sources')
+      .select('id, file_url')
+      .or('file_size.is.null,file_size.eq.0');
+
+    console.log(`📂 Found ${uploads?.length || 0} uploads with 0 size.`);
+
+    let updatedCount = 0;
+
+    if (uploads) {
+      for (const file of uploads) {
+        if (!file.file_url) continue;
+
+        try {
+          // نطلب "رأس" الملف فقط (خفيف جداً) لنعرف الحجم
+          const response = await axios.head(file.file_url);
+          const realSize = parseInt(response.headers['content-length'], 10);
+
+          if (realSize && !isNaN(realSize)) {
+            await supabase
+              .from('lesson_sources')
+              .update({ file_size: realSize })
+              .eq('id', file.id);
+            
+            updatedCount++;
+            console.log(`✅ Fixed Upload ${file.id}: ${realSize} bytes`);
+          }
+        } catch (err) {
+          console.error(`❌ Failed to fetch size for ${file.id}:`, err.message);
+        }
+        // تأخير بسيط لتجنب الحظر
+        await new Promise(r => setTimeout(r, 200)); 
+      }
+    }
+
+    // 2. جلب عناصر المتجر (store_items) التي حجمها 0
+    const { data: items } = await supabase
+      .from('store_items')
+      .select('id, file_url')
+      .or('file_size.is.null,file_size.eq.0');
+
+    console.log(`🛒 Found ${items?.length || 0} store items with 0 size.`);
+
+    if (items) {
+      for (const item of items) {
+        if (!item.file_url) continue;
+
+        try {
+          const response = await axios.head(item.file_url);
+          const realSize = parseInt(response.headers['content-length'], 10);
+
+          if (realSize && !isNaN(realSize)) {
+            await supabase
+              .from('store_items')
+              .update({ file_size: realSize })
+              .eq('id', item.id);
+            
+            updatedCount++;
+            console.log(`✅ Fixed Store Item ${item.id}: ${realSize} bytes`);
+          }
+        } catch (err) {
+          console.error(`❌ Failed to fetch size for item ${item.id}:`, err.message);
+        }
+        await new Promise(r => setTimeout(r, 200));
+      }
+    }
+
+    console.log(`🎉 FINISHED! Updated ${updatedCount} files with REAL sizes.`);
+
+  } catch (e) {
+    console.error('Fatal Fixer Error:', e);
+  }
+}
 // ✅ دالة جديدة لتشغيل الإنقاذ يدوياً
 async function triggerStreakRescue(req, res) {
   if (req.headers['x-job-secret'] !== CONFIG.NIGHTLY_JOB_SECRET) {
@@ -1151,5 +1245,6 @@ module.exports = {
   getLiveTraffic,
   triggerStreakRescue,
   debugCurriculumContext,
-  generateAtomicStructuresBatch 
+  generateAtomicStructuresBatch,
+  fixRealFileSizes
 };
