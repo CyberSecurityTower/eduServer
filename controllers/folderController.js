@@ -9,7 +9,7 @@ async function getUserFolders(req, res) {
   const userId = req.user?.id;
   try {
     const { data, error } = await supabase
-      .from('user_folders')
+      .from('folders')
       .select('*')
       .eq('user_id', userId)
       .order('order_index', { ascending: true }); // الترتيب مهم للواجهة
