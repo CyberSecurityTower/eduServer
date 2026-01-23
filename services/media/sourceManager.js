@@ -6,18 +6,15 @@ const logger = require('../../utils/logger');
 const fs = require('fs');
 
 class SourceManager {
-    /**
-     * رفع ملف جديد
-     * ✅ تم إضافة معامل fileSize لضمان تسجيل الحجم الصحيح القادم من Multer
+     /**
+     * رفع ملف جديد مع توليد صور المعاينة للـ PDF
      */
     async uploadSource(userId, lessonId, filePath, displayName, description, mimeType, originalFileName, folderId = null, fileSize = 0) {
         try {
             logger.info(`📤 Uploading source [${displayName}]...`);
 
-            // 1. تحديد الحجم النهائي (الأولوية للحجم القادم من Controller)
+            // 1. تحديد الحجم
             let finalFileSize = fileSize;
-
-            // إذا لم يتم تمرير الحجم، نحاول حسابه من الملف
             if (!finalFileSize || finalFileSize === 0) {
                 if (fs.existsSync(filePath)) {
                     const stats = fs.statSync(filePath);
@@ -25,50 +22,91 @@ class SourceManager {
                 }
             }
 
-            // تحديد نوع الموارد لـ Cloudinary
-            let resourceType = 'raw';
+            // 2. تحديد نوع الموارد
+            // ⚠️ ملاحظة مهمة: لكي نتمكن من استخراج صور من PDF، يفضل رفعه كـ 'auto' أو 'image' في كلاوديناري وليس 'raw'
+            let resourceType = 'raw'; 
             if (mimeType.startsWith('image/')) resourceType = 'image';
             else if (mimeType.startsWith('video/')) resourceType = 'video';
-            
+            else if (mimeType === 'application/pdf') resourceType = 'image'; // ✅ خدعة: نرفع PDF كصورة ليتم معالجته
+
             // الرفع إلى Cloudinary
             const uploadResult = await cloudinary.uploader.upload(filePath, {
                 folder: 'eduapp_sources',
                 resource_type: resourceType,
                 use_filename: true,
                 public_id: `user_${userId}_${Date.now()}`,
-                type: 'upload',
-                access_mode: 'public'
+                // للـ PDF نضيف flag لضمان تحميله كمستند قابل للتصفح
+                flags: mimeType === 'application/pdf' ? "attachment" : undefined 
             });
 
-            // محاولة أخيرة للحصول على الحجم من Cloudinary إذا فشل كل ما سبق
+            // تحديث الحجم إذا لم يتوفر سابقاً
             if ((!finalFileSize || finalFileSize === 0) && uploadResult.bytes) {
                 finalFileSize = uploadResult.bytes;
             }
 
             const simpleType = mimeType.split('/')[0] === 'image' ? 'image' : 'document';
+            const isPdf = mimeType === 'application/pdf';
 
-            // توليد رابط الصورة المصغرة (Thumbnail Logic)
+            // 3. 🌟 توليد الصور المصغرة ومعاينة الصفحات
             let thumbnailUrl = null;
-            if (resourceType === 'image') {
-                thumbnailUrl = uploadResult.secure_url;
-            } else if (resourceType === 'video') {
-                thumbnailUrl = uploadResult.secure_url.replace(/\.[^/.]+$/, ".jpg");
-            } 
-            // للـ PDF نتركه null ليظهر الرمز الافتراضي في التطبيق
+            let previewImages = [];
 
-            // 2. التحضير للإدخال
+            if (resourceType === 'image' && !isPdf) {
+                // إذا كان صورة عادية
+                thumbnailUrl = uploadResult.secure_url;
+                previewImages.push(uploadResult.secure_url); // الصورة نفسها كمعاينة
+
+            } else if (resourceType === 'video') {
+                // إذا كان فيديو، نأخذ لقطة بامتداد jpg
+                thumbnailUrl = uploadResult.secure_url.replace(/\.[^/.]+$/, ".jpg");
+
+            } else if (isPdf) {
+                // 🔥 سحر الـ PDF: نكون الروابط يدوياً للصفحات
+                // رابط الصورة الأولى (Thumbnail) - نضيف pg_1
+                // مثال الرابط: .../image/upload/pg_1/v1234/file.pdf
+                // لكن Cloudinary ذكي، إذا غيرنا الامتداد لـ .jpg سيعطينا الصفحة الأولى
+                
+                // الطريقة الأضمن مع Cloudinary URL generation:
+                const baseUrl = uploadResult.secure_url;
+                // حذف الامتداد .pdf وإضافته كـ .jpg للصورة المصغرة
+                thumbnailUrl = baseUrl.replace('.pdf', '.jpg');
+
+                // توليد روابط لأول 5 صفحات
+                // التنسيق: .../upload/w_800,q_auto,pg_1/id.jpg
+                // سنقوم بتركيب الرابط بناءً على public_id ليكون أدق
+                const versionStr = `v${uploadResult.version}`;
+                const baseUrlPrefix = uploadResult.secure_url.split(versionStr)[0] + versionStr;
+                const publicIdWithFormat = uploadResult.public_id; // عادة يكون بدون امتداد
+
+                for (let i = 1; i <= 5; i++) {
+                    // نستخدم cloudinary.url لتوليد رابط نظيف (أو نركبه يدوياً)
+                    // تركيب يدوي سريع ومضمون:
+                    // نضيف pg_{i} قبل الـ public_id
+                    // ونغير الامتداد لـ jpg
+                    const pageUrl = cloudinary.url(publicIdWithFormat, {
+                        resource_type: 'image',
+                        page: i,
+                        format: 'jpg',
+                        transformation: [{ width: 600, quality: "auto" }] // تقليل الحجم قليلاً للمعاينة
+                    });
+                    previewImages.push(pageUrl);
+                }
+            }
+
+            // 4. التحضير للإدخال
             const insertData = {
                 user_id: userId,
                 lesson_id: lessonId || null,
                 folder_id: folderId || null,
                 file_url: uploadResult.secure_url,
-                thumbnail_url: thumbnailUrl,
+                thumbnail_url: thumbnailUrl, // ✅ الآن سيحمل صورة الصفحة الأولى للـ PDF
                 file_type: simpleType,
                 file_name: displayName,
                 description: description,
                 original_file_name: originalFileName,
                 public_id: uploadResult.public_id,
-                file_size: finalFileSize, // ✅ حفظ الحجم الصحيح هنا
+                file_size: finalFileSize,
+                preview_images: previewImages, // ✅ مصفوفة الصور الخمس
                 processed: true,
                 status: 'completed'
             };
@@ -84,7 +122,6 @@ class SourceManager {
 
         } catch (err) {
             logger.error('❌ Source Upload Failed:', err.message);
-            // تنظيف الملف المؤقت في حال الخطأ
             if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
             throw err;
         }
