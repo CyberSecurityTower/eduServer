@@ -459,10 +459,10 @@ async function getAllUserSources(req, res) {
 
     try {
         // 1. جلب المرفوعات
-        // 🔥 التعديل 1: إضافة lesson_id و subject_id إلى جملة الاستعلام (Select)
+        // 🔥 تصحيح: حذفنا subject_id لأنه غير موجود في الجدول، وأبقينا lesson_id
         const uploadsQuery = supabase
             .from('lesson_sources')
-            .select(`id, file_name, file_type, file_url, file_size, created_at, folder_id, lesson_id, subject_id, thumbnail_url, preview_images`) 
+            .select(`id, file_name, file_type, file_url, file_size, created_at, folder_id, lesson_id, thumbnail_url, preview_images`) 
             .eq('user_id', userId);
 
         // 2. جلب المشتريات
@@ -488,7 +488,7 @@ async function getAllUserSources(req, res) {
         if (uploadsRes.error) throw uploadsRes.error;
         if (purchasesRes.error) throw purchasesRes.error;
 
-        // دالة تحويل الحجم العادية
+        // دالة تنسيق الحجم
         const formatBytes = (bytes, decimals = 2) => {
             if (!+bytes) return '0 B';
             const k = 1024;
@@ -503,7 +503,7 @@ async function getAllUserSources(req, res) {
         const allSourceIds = [...uploadIds, ...purchaseIds];
 
         // جلب الروابط من الجداول الوسيطة
-         let lessonLinks = [], subjectLinks = [];
+        let lessonLinks = [], subjectLinks = [];
         if (allSourceIds.length > 0) {
             const { data: lData } = await supabase.from('source_lessons').select('source_id, lesson_id').in('source_id', allSourceIds);
             lessonLinks = lData || [];
@@ -513,7 +513,7 @@ async function getAllUserSources(req, res) {
 
         const getLinkedIds = (sourceId, linksArray, key) => linksArray.filter(link => link.source_id === sourceId).map(link => link[key]);
 
-        // 🔥 التعديل 2: دالة مساعدة لدمج الرابط الأصلي مع الروابط الإضافية بدون تكرار
+        // 🔥 دالة الدمج: تدمج الـ ID الأصلي مع الروابط الإضافية
         const mergeIds = (originId, linkedIds) => {
             const set = new Set(linkedIds);
             if (originId) set.add(originId);
@@ -530,10 +530,14 @@ async function getAllUserSources(req, res) {
             file_size: formatBytes(u.file_size),
             created_at: u.created_at,
             folder_id: u.folder_id,
-            // 🔥 هنا يتم الدمج: الأصلي (u.subject_id) + المربوط
-            subject_ids: mergeIds(u.subject_id, getLinkedIds(u.id, subjectLinks, 'subject_id')),
-            // 🔥 هنا يتم الدمج: الأصلي (u.lesson_id) + المربوط
+            
+            // 🔥 تعديل هنا: المواد نأخذها فقط من الروابط (لأن العمود غير موجود في الجدول الأصلي)
+            subject_ids: getLinkedIds(u.id, subjectLinks, 'subject_id'),
+
+            // 🔥 هنا يتم الدمج: الدرس الأصلي (u.lesson_id) + الدروس المربوطة
+            // هذا سيجعل الدرس الأصلي يظهر كـ Checked في الواجهة
             lesson_ids: mergeIds(u.lesson_id, getLinkedIds(u.id, lessonLinks, 'lesson_id')), 
+            
             is_upload: true,
             is_inventory: false
         }));
@@ -549,7 +553,7 @@ async function getAllUserSources(req, res) {
             file_size: formatBytes(p.store_items?.file_size), 
             created_at: p.created_at,
             folder_id: p.folder_id,
-            subject_ids: getLinkedIds(p.id, subjectLinks, 'subject_id'), // المشتريات ليس لها أصل، فقط روابط
+            subject_ids: getLinkedIds(p.id, subjectLinks, 'subject_id'),
             lesson_ids: getLinkedIds(p.id, lessonLinks, 'lesson_id'),
             is_upload: false,
             is_inventory: true
