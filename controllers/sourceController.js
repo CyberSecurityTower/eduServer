@@ -440,7 +440,7 @@ async function getAllUserSources(req, res) {
         // 1. جلب المرفوعات
         const uploadsQuery = supabase
             .from('lesson_sources')
-            .select(`id, file_name, file_type, file_url, file_size, created_at, folder_id, thumbnail_url`) 
+            .select(`id, file_name, file_type, file_url, file_size, created_at, folder_id, thumbnail_url, preview_images`) 
             .eq('user_id', userId);
 
         // 2. جلب المشتريات
@@ -486,6 +486,7 @@ async function getAllUserSources(req, res) {
             type: u.file_type || 'file',
             file_url: u.file_url,
             thumbnail_url: u.thumbnail_url || null,
+            preview_images: u.preview_images || [],
             file_size: formatBytes(u.file_size), // ✅ دالة نظيفة
             created_at: u.created_at,
             folder_id: u.folder_id,
