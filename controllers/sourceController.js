@@ -436,7 +436,6 @@ async function getAllUserSources(req, res) {
     const userId = req.user?.id;
 
     try {
-        // ... (نفس استعلامات قاعدة البيانات السابقة) ...
         // 1. جلب المرفوعات
         const uploadsQuery = supabase
             .from('lesson_sources')
@@ -444,13 +443,25 @@ async function getAllUserSources(req, res) {
             .eq('user_id', userId);
 
         // 2. جلب المشتريات
-        const purchasesQuery = supabase
+         const purchasesQuery = supabase
             .from('user_inventory')
-            .select(`id, folder_id, created_at:purchased_at, store_items (id, title, file_url, file_size, type, thumbnail)`)
+            .select(`
+                id, 
+                folder_id, 
+                created_at:purchased_at, 
+                store_items (
+                    id, 
+                    title, 
+                    file_url, 
+                    file_size, 
+                    type, 
+                    thumbnail_url,   
+                    preview_images   
+                )
+            `)
             .eq('user_id', userId);
 
         const [uploadsRes, purchasesRes] = await Promise.all([uploadsQuery, purchasesQuery]);
-
         if (uploadsRes.error) throw uploadsRes.error;
         if (purchasesRes.error) throw purchasesRes.error;
 
@@ -502,8 +513,9 @@ async function getAllUserSources(req, res) {
             title: p.store_items?.title || 'Purchased Item',
             type: mapStoreTypeToMime(p.store_items?.type),
             file_url: p.store_items?.file_url,
-            thumbnail_url: p.store_items?.thumbnail || null,
-            file_size: formatBytes(p.store_items?.file_size), // ✅ دالة نظيفة
+            thumbnail_url: p.store_items?.thumbnail_url || null,
+            preview_images: p.store_items?.preview_images || [], 
+            file_size: formatBytes(p.store_items?.file_size), 
             created_at: p.created_at,
             folder_id: p.folder_id,
             subject_ids: getLinkedIds(p.id, subjectLinks, 'subject_id'),
