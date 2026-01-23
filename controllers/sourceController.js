@@ -141,14 +141,14 @@ async function deleteFile(req, res) {
 
 
 /**
- * 5. [UPDATED] ربط مصدر (مرفوع أو مشترى) بدروس أو مواد متعددة
+ * 5. [UPDATED] ربط مصدر (مزامنة: حذف القديم وإضافة الجديد)
  */
 async function linkSourceToContext(req, res) {
-  const { sourceId, lessonIds, subjectIds } = req.body; // نستقبل المصفوفات
+  const { sourceId, lessonIds, subjectIds } = req.body;
   const userId = req.user?.id;
 
   try {
-    // 1. التحقق من وجود المصدر وصلاحية المستخدم
+    // 1. التحقق من وجود المصدر وصلاحية المستخدم (نفس الكود القديم)
     let { data: uploadItem } = await supabase
         .from('lesson_sources')
         .select('id')
@@ -158,11 +158,10 @@ async function linkSourceToContext(req, res) {
 
     let validSourceId = uploadItem ? uploadItem.id : null;
     
-    // إذا لم يكن مرفوعاً، نتحقق من المخزون
     if (!validSourceId) {
         const { data: inventoryItem } = await supabase
             .from('user_inventory')
-            .select('id') // نستخدم ID السجل في Inventory
+            .select('id')
             .eq('id', sourceId)
             .eq('user_id', userId)
             .maybeSingle();
@@ -172,34 +171,41 @@ async function linkSourceToContext(req, res) {
 
     if (!validSourceId) return res.status(403).json({ error: "File not found or access denied" });
 
-    const promises = [];
+    // =========================================================
+    // 🔥 التعديل يبدأ من هنا (Logic Change) 🔥
+    // =========================================================
 
-    // 2. الربط المتعدد بالدروس (Batch Insert)
+    // 2. تنظيف الروابط القديمة (Delete Old Links)
+    // نحذف كل شيء يخص هذا الملف لنعيد بناء الروابط بناءً على القائمة الجديدة
+    const deletePromises = [
+        supabase.from('source_lessons').delete().eq('source_id', validSourceId),
+        supabase.from('source_subjects').delete().eq('source_id', validSourceId)
+    ];
+    await Promise.all(deletePromises);
+
+    const insertPromises = [];
+
+    // 3. إضافة الروابط الجديدة (Insert New Selected Links)
     if (lessonIds && Array.isArray(lessonIds) && lessonIds.length > 0) {
-        // نكون مصفوفة كائنات للإدخال
         const lessonLinks = lessonIds.map(lId => ({ 
             source_id: validSourceId, 
             lesson_id: lId 
         }));
-        
-        // نستخدم upsert لتجنب الأخطاء إذا كان الرابط موجوداً مسبقاً
-        // وتأكد من أنك تضبط onConflict إذا كان لديك قيد فريد (Unique Constraint)
-        // أو استخدم insert مع { ignoreDuplicates: true } إذا كانت مدعومة
-        promises.push(supabase.from('source_lessons').upsert(lessonLinks, { onConflict: 'source_id, lesson_id' }));
+        // نستخدم insert بدلاً من upsert لأننا نظفنا الجدول مسبقاً
+        insertPromises.push(supabase.from('source_lessons').insert(lessonLinks));
     }
 
-    // 3. الربط المتعدد بالمواد
     if (subjectIds && Array.isArray(subjectIds) && subjectIds.length > 0) {
         const subjectLinks = subjectIds.map(sId => ({ 
             source_id: validSourceId, 
             subject_id: sId 
         }));
-        promises.push(supabase.from('source_subjects').upsert(subjectLinks, { onConflict: 'source_id, subject_id' }));
+        insertPromises.push(supabase.from('source_subjects').insert(subjectLinks));
     }
 
-    if (promises.length > 0) await Promise.all(promises);
+    if (insertPromises.length > 0) await Promise.all(insertPromises);
 
-    res.json({ success: true, message: 'Linked successfully' });
+    res.json({ success: true, message: 'Links updated successfully' });
 
   } catch (err) {
     logger.error('Linking Error:', err);
