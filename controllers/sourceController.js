@@ -1,3 +1,4 @@
+
 // controllers/sourceController.js
 'use strict';
 
@@ -448,21 +449,22 @@ async function moveFile(req, res) {
 }
 
 /**
- * [FIXED] جلب المكتبة الموحدة مع دمج الروابط يدوياً
- * التعديل: جلب lesson_id و subject_id الأصليين ودمجهم في المصفوفات
+ * 🔄 تحديث: جلب المكتبة الموحدة (Unified Library Fetch)
+ * تجلب المرفوعات + المشتريات وتصفيها حسب المجلد
  */
+/**
+ * [FIXED] جلب المكتبة الموحدة مع دمج الروابط يدوياً
+ * لتجنب خطأ: Could not find a relationship
+ */
+
 async function getAllUserSources(req, res) {
     const userId = req.user?.id;
 
     try {
-        // 1. جلب المرفوعات (تم إضافة lesson_id و subject_id للقائمة المختارة) ✅
+        // 1. جلب المرفوعات
         const uploadsQuery = supabase
             .from('lesson_sources')
-            .select(`
-                id, file_name, file_type, file_url, file_size, created_at, 
-                folder_id, thumbnail_url, preview_images,
-                lesson_id, subject_id
-            `) 
+            .select(`id, file_name, file_type, file_url, file_size, created_at, folder_id, thumbnail_url, preview_images`) 
             .eq('user_id', userId);
 
         // 2. جلب المشتريات
@@ -488,9 +490,9 @@ async function getAllUserSources(req, res) {
         if (uploadsRes.error) throw uploadsRes.error;
         if (purchasesRes.error) throw purchasesRes.error;
 
-        // دالة تحويل الحجم
+        // دالة تحويل الحجم العادية (بدون ترقيع)
         const formatBytes = (bytes, decimals = 2) => {
-            if (!+bytes) return '0 B'; 
+            if (!+bytes) return '0 B'; // إذا 0 رجع 0، ما تزيدش من عندك
             const k = 1024;
             const dm = decimals < 0 ? 0 : decimals;
             const sizes = ['B', 'KB', 'MB', 'GB'];
@@ -502,7 +504,7 @@ async function getAllUserSources(req, res) {
         const purchaseIds = (purchasesRes.data || []).map(i => i.id);
         const allSourceIds = [...uploadIds, ...purchaseIds];
 
-        // جلب الروابط من الجداول الوسيطة
+        // ... (جلب الروابط links كما هي) ...
          let lessonLinks = [], subjectLinks = [];
         if (allSourceIds.length > 0) {
             const { data: lData } = await supabase.from('source_lessons').select('source_id, lesson_id').in('source_id', allSourceIds);
@@ -513,12 +515,6 @@ async function getAllUserSources(req, res) {
 
         const getLinkedIds = (sourceId, linksArray, key) => linksArray.filter(link => link.source_id === sourceId).map(link => link[key]);
 
-        // ✅ دالة مساعدة لدمج المعرف الأصلي مع الروابط الإضافية بدون تكرار
-        const mergeIds = (originalId, linkedIds) => {
-            const set = new Set(linkedIds);
-            if (originalId) set.add(originalId);
-            return Array.from(set);
-        };
 
         const normalizedUploads = (uploadsRes.data || []).map(u => ({
             id: u.id,
@@ -527,14 +523,11 @@ async function getAllUserSources(req, res) {
             file_url: u.file_url,
             thumbnail_url: u.thumbnail_url || null,
             preview_images: u.preview_images || [],
-            file_size: formatBytes(u.file_size),
+            file_size: formatBytes(u.file_size), // ✅ دالة نظيفة
             created_at: u.created_at,
             folder_id: u.folder_id,
-            
-            // ✅ الدمج هنا: نرسل للتطبيق قائمة موحدة تحتوي الأصل + الروابط
-            subject_ids: mergeIds(u.subject_id, getLinkedIds(u.id, subjectLinks, 'subject_id')),
-            lesson_ids: mergeIds(u.lesson_id, getLinkedIds(u.id, lessonLinks, 'lesson_id')), 
-            
+            subject_ids: getLinkedIds(u.id, subjectLinks, 'subject_id'),
+            lesson_ids: getLinkedIds(u.id, lessonLinks, 'lesson_id'), 
             is_upload: true,
             is_inventory: false
         }));
@@ -550,11 +543,8 @@ async function getAllUserSources(req, res) {
             file_size: formatBytes(p.store_items?.file_size), 
             created_at: p.created_at,
             folder_id: p.folder_id,
-            
-            // المشتريات ليس لها أصل في lesson_sources، نكتفي بالروابط
             subject_ids: getLinkedIds(p.id, subjectLinks, 'subject_id'),
             lesson_ids: getLinkedIds(p.id, lessonLinks, 'lesson_id'),
-            
             is_upload: false,
             is_inventory: true
         }));
