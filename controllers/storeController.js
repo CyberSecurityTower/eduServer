@@ -83,43 +83,117 @@ async function getMyInventory(req, res) {
 }
 
 // 4. إضافة منتج (Admin)
+
+// 4. إضافة منتج (Admin) - نسخة محدثة ذكية 🌟
 async function addStoreItem(req, res) {
   const file = req.file;
   if (!file) return res.status(400).json({ error: 'File is required' });
-  const { title, description, price, category, content, type, pathId, subjectId } = req.body;
+  
+  // استخراج البيانات من الـ Body
+  const { title, description, price, category, pathId, subjectId } = req.body;
+  
+  // ⚠️ ملاحظة: بما أن العمود في القاعدة jsonb، يجب التأكد أن ما نرسله هو JSON صالح
+  // أو نقوم بتحويله هنا إذا كان المرسل نصاً عادياً
+  let finalTitle = title;
+  let finalDesc = description;
+
+  try {
+      // محاولة تحويل النص إلى JSON إذا كان مرسلاً كنص
+      try { finalTitle = JSON.parse(title); } catch (e) {}
+      try { finalDesc = JSON.parse(description); } catch (e) {}
+  } catch(e) {}
+
   let finalFilePath = file.path;
 
   try {
-    // 1. 🔥 الحصول على الحجم بالبايت
+    // 1. تحديد الحجم
     const stats = fs.statSync(finalFilePath);
     const fileSizeInBytes = stats.size;
+    const mimeType = file.mimetype;
 
-    const uploadResult = await cloudinary.uploader.upload(finalFilePath, { folder: 'edustore_products', resource_type: 'auto' });
+    // 2. إعدادات Cloudinary الذكية
+    let resourceType = 'raw';
+    if (mimeType.startsWith('image/')) resourceType = 'image';
+    else if (mimeType.startsWith('video/')) resourceType = 'video';
+    else if (mimeType === 'application/pdf') resourceType = 'image'; // ✅ خدعة الـ PDF
 
-    // 2. 🔥 تخزين size_bytes
+    // الرفع
+    const uploadResult = await cloudinary.uploader.upload(finalFilePath, { 
+        folder: 'edustore_products', 
+        resource_type: resourceType,
+        flags: mimeType === 'application/pdf' ? "attachment" : undefined 
+    });
+
+    // 3. توليد الصور (Thumbnail + Preview Images)
+    let thumbnailUrl = null;
+    let previewImages = [];
+    const isPdf = mimeType === 'application/pdf';
+
+    if (resourceType === 'image' && !isPdf) {
+        thumbnailUrl = uploadResult.secure_url;
+        previewImages.push(uploadResult.secure_url);
+    } else if (resourceType === 'video') {
+        thumbnailUrl = uploadResult.secure_url.replace(/\.[^/.]+$/, ".jpg");
+    } else if (isPdf) {
+        // ✅ منطق استخراج الصور من PDF
+        const baseUrl = uploadResult.secure_url;
+        thumbnailUrl = baseUrl.replace('.pdf', '.jpg'); // الصفحة الأولى غلاف
+
+        // توليد 5 صور للمعاينة
+        const publicId = uploadResult.public_id;
+        for (let i = 1; i <= 5; i++) {
+            // نستخدم cloudinary.url أو التركيب اليدوي
+            // هنا نركب الرابط يدوياً للسرعة والدقة
+            // الشكل: https://res.cloudinary.com/.../image/upload/pg_1/v123.../id.jpg
+            const versionIndex = baseUrl.lastIndexOf('/v');
+            const prefix = baseUrl.substring(0, versionIndex); // الجزء قبل الفيرجن
+            const version = baseUrl.substring(versionIndex, baseUrl.lastIndexOf('/')); // الفيرجن
+            
+            // الطريقة الأبسط: استبدال .pdf بـ .jpg وإضافة باراميتر الصفحة
+            // Cloudinary URL structure helper
+            const imageUrl = cloudinary.url(publicId, {
+                resource_type: 'image',
+                format: 'jpg',
+                page: i,
+                transformation: [{ width: 800, quality: "auto" }]
+            });
+            previewImages.push(imageUrl);
+        }
+    }
+
+    // 4. الحفظ في قاعدة البيانات
     const { data, error } = await supabase.from('store_items').insert({
-        title, 
-        description, 
+        title: finalTitle,        // سيتم حفظه كـ jsonb
+        description: finalDesc,   // سيتم حفظه كـ jsonb
         price: parseInt(price) || 0,
         file_url: uploadResult.secure_url,
-        
         file_size: fileSizeInBytes,
         category: category || 'general',
         path_id: pathId || null,
         subject_id: subjectId || null,
-        is_active: true
+        is_active: true,
+        
+        // ✅ الأعمدة الجديدة
+        thumbnail_url: thumbnailUrl,
+        preview_images: previewImages,
+        
+        // حساب عدد الصفحات (اختياري، نضعه 0 أو نستخرجه لاحقاً)
+        pages_count: previewImages.length > 0 ? previewImages.length : null 
     }).select().single();
 
     if (error) throw error;
+    
+    // تنظيف الملف المؤقت
     if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    
     res.json({ success: true, item: data });
 
   } catch (err) {
     if (file?.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    console.error("Admin Upload Error:", err);
     res.status(500).json({ error: err.message });
   }
 }
-
 // 5. جلب العناصر المتوفرة فقط
 async function getAvailableItems(req, res) {
     try {
