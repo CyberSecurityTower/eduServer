@@ -141,14 +141,14 @@ async function deleteFile(req, res) {
 
 
 /**
- * 5. [UPDATED] ربط مصدر (مرفوع أو مشترى) بدرس أو مادة
+ * 5. [UPDATED] ربط مصدر (مرفوع أو مشترى) بدروس أو مواد متعددة
  */
 async function linkSourceToContext(req, res) {
-  const { sourceId, lessonIds, subjectIds } = req.body;
+  const { sourceId, lessonIds, subjectIds } = req.body; // نستقبل المصفوفات
   const userId = req.user?.id;
 
   try {
-    // 1. التحقق هل المصدر موجود في المرفوعات؟
+    // 1. التحقق من وجود المصدر وصلاحية المستخدم
     let { data: uploadItem } = await supabase
         .from('lesson_sources')
         .select('id')
@@ -156,14 +156,14 @@ async function linkSourceToContext(req, res) {
         .eq('user_id', userId)
         .maybeSingle();
 
-    // 2. إذا لم يكن مرفوعاً، نتحقق هل هو في المخزون (مشتريات)؟
     let validSourceId = uploadItem ? uploadItem.id : null;
     
+    // إذا لم يكن مرفوعاً، نتحقق من المخزون
     if (!validSourceId) {
         const { data: inventoryItem } = await supabase
             .from('user_inventory')
-            .select('id')
-            .eq('id', sourceId) // نستخدم ID السجل في Inventory
+            .select('id') // نستخدم ID السجل في Inventory
+            .eq('id', sourceId)
             .eq('user_id', userId)
             .maybeSingle();
             
@@ -174,22 +174,33 @@ async function linkSourceToContext(req, res) {
 
     const promises = [];
 
-    // الربط بالدروس
-    if (lessonIds && Array.isArray(lessonIds)) {
-        const lessonLinks = lessonIds.map(lId => ({ source_id: validSourceId, lesson_id: lId }));
-        // نستخدم upsert لتجنب التكرار
+    // 2. الربط المتعدد بالدروس (Batch Insert)
+    if (lessonIds && Array.isArray(lessonIds) && lessonIds.length > 0) {
+        // نكون مصفوفة كائنات للإدخال
+        const lessonLinks = lessonIds.map(lId => ({ 
+            source_id: validSourceId, 
+            lesson_id: lId 
+        }));
+        
+        // نستخدم upsert لتجنب الأخطاء إذا كان الرابط موجوداً مسبقاً
+        // وتأكد من أنك تضبط onConflict إذا كان لديك قيد فريد (Unique Constraint)
+        // أو استخدم insert مع { ignoreDuplicates: true } إذا كانت مدعومة
         promises.push(supabase.from('source_lessons').upsert(lessonLinks, { onConflict: 'source_id, lesson_id' }));
     }
 
-    // الربط بالمواد
-    if (subjectIds && Array.isArray(subjectIds)) {
-        const subjectLinks = subjectIds.map(sId => ({ source_id: validSourceId, subject_id: sId }));
+    // 3. الربط المتعدد بالمواد
+    if (subjectIds && Array.isArray(subjectIds) && subjectIds.length > 0) {
+        const subjectLinks = subjectIds.map(sId => ({ 
+            source_id: validSourceId, 
+            subject_id: sId 
+        }));
         promises.push(supabase.from('source_subjects').upsert(subjectLinks, { onConflict: 'source_id, subject_id' }));
     }
 
-    await Promise.all(promises);
+    if (promises.length > 0) await Promise.all(promises);
 
     res.json({ success: true, message: 'Linked successfully' });
+
   } catch (err) {
     logger.error('Linking Error:', err);
     res.status(500).json({ error: err.message });
