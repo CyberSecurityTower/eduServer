@@ -170,7 +170,14 @@ async function linkSourceToContext(req, res) {
     }
 
     if (!validSourceId) return res.status(403).json({ error: "File not found or access denied" });
-
+  // 🔥 خطوة جديدة: فك الارتباط بالأب الأصلي (للملفات المرفوعة فقط)
+    // هذا يجعل الملف يعتمد 100% على الروابط التي سنضيفها في الأسفل
+    if (uploadItem) {
+        await supabase
+            .from('lesson_sources')
+            .update({ lesson_id: null, subject_id: null })
+            .eq('id', validSourceId);
+    }
     // =========================================================
     // 🔥 التعديل يبدأ من هنا (Logic Change) 🔥
     // =========================================================
