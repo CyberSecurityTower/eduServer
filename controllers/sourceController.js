@@ -149,7 +149,7 @@ async function linkSourceToContext(req, res) {
   const userId = req.user?.id;
 
   try {
-    // 1. التحقق من وجود المصدر وصلاحية المستخدم (نفس الكود القديم)
+    // 1. التحقق من وجود المصدر وصلاحية المستخدم
     let { data: uploadItem } = await supabase
         .from('lesson_sources')
         .select('id')
@@ -159,6 +159,7 @@ async function linkSourceToContext(req, res) {
 
     let validSourceId = uploadItem ? uploadItem.id : null;
     
+    // التحقق في المخزون (Inventory) إذا لم يكن في المرفوعات
     if (!validSourceId) {
         const { data: inventoryItem } = await supabase
             .from('user_inventory')
@@ -171,20 +172,22 @@ async function linkSourceToContext(req, res) {
     }
 
     if (!validSourceId) return res.status(403).json({ error: "File not found or access denied" });
-  // 🔥 خطوة جديدة: فك الارتباط بالأب الأصلي (للملفات المرفوعة فقط)
-    // هذا يجعل الملف يعتمد 100% على الروابط التي سنضيفها في الأسفل
-    if (uploadItem) {
-        await supabase
-            .from('lesson_sources')
-            .update({ lesson_id: null, subject_id: null })
-            .eq('id', validSourceId);
-    }
+
     // =========================================================
-    // 🔥 التعديل يبدأ من هنا (Logic Change) 🔥
+    // 🔥 الحل الجذري هنا 🔥
     // =========================================================
 
-    // 2. تنظيف الروابط القديمة (Delete Old Links)
-    // نحذف كل شيء يخص هذا الملف لنعيد بناء الروابط بناءً على القائمة الجديدة
+    // 2. إذا كان ملفاً مرفوعاً (Upload)، نقوم بفك ارتباطه "الصلب" بالأصل فوراً
+    // هذا يحول lesson_id إلى NULL، مما يجعله يعتمد فقط على الروابط التي سنضيفها في الأسفل
+    if (uploadItem) {
+        // ملاحظة: حذفنا subject_id من هنا لأنه غير موجود في قاعدة بياناتك ويسبب خطأ
+        await supabase
+            .from('lesson_sources')
+            .update({ lesson_id: null }) 
+            .eq('id', validSourceId);
+    }
+
+    // 3. تنظيف الروابط القديمة من الجداول الوسيطة
     const deletePromises = [
         supabase.from('source_lessons').delete().eq('source_id', validSourceId),
         supabase.from('source_subjects').delete().eq('source_id', validSourceId)
@@ -193,13 +196,13 @@ async function linkSourceToContext(req, res) {
 
     const insertPromises = [];
 
-    // 3. إضافة الروابط الجديدة (Insert New Selected Links)
+    // 4. إضافة الروابط الجديدة (بما فيها الدرس الأصلي إذا كان مختاراً)
+    // الآن، سواء كان الدرس هو الأصل أم لا، سيتم معاملته كرابط عادي في جدول source_lessons
     if (lessonIds && Array.isArray(lessonIds) && lessonIds.length > 0) {
         const lessonLinks = lessonIds.map(lId => ({ 
             source_id: validSourceId, 
             lesson_id: lId 
         }));
-        // نستخدم insert بدلاً من upsert لأننا نظفنا الجدول مسبقاً
         insertPromises.push(supabase.from('source_lessons').insert(lessonLinks));
     }
 
