@@ -127,21 +127,56 @@ class SourceManager {
         }
     }
 
-    async getSourcesByLesson(userId, lessonId) {
-        const { data, error } = await supabase
-            .from('lesson_sources')
-            .select('*')
-            .eq('lesson_id', lessonId)
-            .eq('user_id', userId)
-            .order('created_at', { ascending: false });
+   async getSourcesByLesson(userId, lessonId) {
+        try {
+            // 1. جلب الروابط من الجدول الوسيط (source_lessons)
+            const { data: linkedData, error: linkError } = await supabase
+                .from('source_lessons')
+                .select('source_id')
+                .eq('lesson_id', lessonId);
 
-        if (error) {
-            logger.error('Get Sources Error:', error.message);
+            if (linkError) throw linkError;
+
+            // استخراج مصفوفة الآيديهات (IDs) للملفات المرتبطة
+            const linkedSourceIds = (linkedData || []).map(item => item.source_id);
+
+            // 2. بناء الاستعلام لجلب تفاصيل الملفات
+            // نريد الملفات التي:
+            // أ) lesson_id الخاص بها يساوي الدرس الحالي (مباشر)
+            // ب) أو الـ id الخاص بها موجود في قائمة الروابط (مرتبط)
+            
+            let query = supabase
+                .from('lesson_sources')
+                .select('*')
+                .eq('user_id', userId); // أمان إضافي: التأكد أن الملف يخص المستخدم
+
+            if (linkedSourceIds.length > 0) {
+                // دمج الشرطين: إما الدرس مباشر أو ضمن القائمة المرتبطة
+                query = query.or(`lesson_id.eq.${lessonId},id.in.(${linkedSourceIds.join(',')})`);
+            } else {
+                // لا توجد ملفات مرتبطة، نجلب المباشرة فقط
+                query = query.eq('lesson_id', lessonId);
+            }
+
+            const { data: sources, error: sourceError } = await query.order('created_at', { ascending: false });
+
+            if (sourceError) throw sourceError;
+
+            // 3. إضافة علامة صغيرة (Flag) لتمييز الملفات المرتبطة (اختياري للفرونت إند)
+            // الملف يعتبر "مرتبطاً" إذا كان lesson_id الخاص به لا يساوي الدرس الحالي
+            const enrichedSources = sources.map(source => ({
+                ...source,
+                is_linked: source.lesson_id !== lessonId // true إذا كان مستورداً من مكان آخر
+            }));
+
+            return enrichedSources;
+
+        } catch (err) {
+            logger.error('❌ Get Lesson Sources Error:', err.message);
+            // في حال الخطأ نرجع مصفوفة فارغة لتجنب كراش التطبيق
             return [];
         }
-        return data;
     }
-
      /**
      * 🛠️ دالة مساعدة خاصة لحذف العلاقات المشتركة
      * تحذف الروابط من جداول الدروس والمواد بغض النظر عن نوع الملف
