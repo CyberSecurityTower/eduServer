@@ -22,7 +22,7 @@ async function fetchFileAsBase64(url) {
 }
 
 // ============================================================
-// 1. استرجاع التاريخ (Strict Lesson Mode)
+// 1. Fetch History (Strict Lesson Mode)
 // ============================================================
 async function getChatHistory(req, res) {
   const { userId, lessonId, cursor } = req.query; 
@@ -30,7 +30,7 @@ async function getChatHistory(req, res) {
 
   let contextId = lessonId;
 
-  // تنظيف الـ ID
+  // Clean ID
   if (!contextId || contextId === 'undefined' || contextId === 'null') {
       contextId = 'general';
   }
@@ -69,13 +69,14 @@ async function getChatHistory(req, res) {
 }
 
 // ============================================================
-// 2. معالجة الشات (Enhanced Lesson Context)
+// 2. Process Chat (Enhanced Lesson Context + Custom Instructions)
 // ============================================================
+
 async function processChat(req, res) {
-  let { userId, message, files = [], currentContext, webSearch, location  } = req.body;
+  // ✅ 1. Destructure new fields: customInstruction, metadata
+  let { userId, message, files = [], currentContext, webSearch, location, customInstruction, metadata } = req.body;
   
-  // 1. تحديد المعرف النهائي بصرامة
-  // نأخذ الـ ID من السياق أو الجسم، وننظفه
+  // 1. Strict Context Definition
   const rawLessonId = currentContext?.lessonId || req.body.lessonId;
   let contextId = rawLessonId;
 
@@ -86,40 +87,35 @@ async function processChat(req, res) {
 
   try {
     // ============================================================
-    // 🧠 خطوة ذكية: جلب عنوان الدرس ومحتواه بالتوازي
+    // 🧠 Smart Step: Parallel Fetch of Title and Content
     // ============================================================
-    let lessonTitle = currentContext?.lessonTitle || "General Chat"; // قيمة افتراضية
+    let lessonTitle = currentContext?.lessonTitle || "General Chat"; 
     let contentSnippet = ""; 
 
     if (contextId !== 'general') {
         console.log(`📚 Fetching DB Context for Lesson ID: ${contextId}`);
         
-        // نستخدم Promise.all لتنفيذ الاستعلامين في نفس الوقت
         const [lessonResult, contentResult] = await Promise.all([
-            // 1. جلب العنوان من جدول lessons
+            // 1. Get Title
             supabase.from('lessons').select('title').eq('id', contextId).maybeSingle(),
-            // 2. جلب المحتوى من جدول lessons_content
+            // 2. Get Content
             supabase.from('lessons_content').select('content').eq('lesson_id', contextId).maybeSingle()
         ]);
 
-        // معالجة نتيجة العنوان
         if (lessonResult.data?.title) {
             lessonTitle = lessonResult.data.title;
             console.log(`✅ Lesson Title Found: "${lessonTitle}"`);
         }
 
-        // معالجة نتيجة المحتوى
         if (contentResult.data?.content) {
-            // نأخذ مقتطف كبير (20000 حرف) لضمان تغطية الدرس
             contentSnippet = contentResult.data.content.substring(0, 20000);
             console.log(`✅ Lesson Content Loaded (${contentSnippet.length} chars)`);
         } else {
             console.warn(`⚠️ No content found for lesson: ${contextId}`);
         }
     }
-    // ============================================================
 
-    // 2. البحث عن الجلسة أو إنشاؤها
+    // 2. Find or Create Session
     let sessionId;
     const { data: existingSession } = await supabase
         .from('chat_sessions')
@@ -137,12 +133,12 @@ async function processChat(req, res) {
             user_id: userId,
             context_id: contextId,
             context_type: contextId === 'general' ? 'general' : 'lesson',
-            summary: lessonTitle // ✅ تخزين العنوان الحقيقي للجلسة
+            summary: lessonTitle 
         }).select().single();
         sessionId = newSession.id;
     }
 
-    // 3. تجهيز الملفات الحالية
+    // 3. Process Uploaded Files
     const geminiAttachments = []; 
     const dbAttachments = [];     
 
@@ -167,7 +163,7 @@ async function processChat(req, res) {
         }
     }
 
-    // 4. بناء الذاكرة الحية (الصور السابقة)
+    // 4. Build Live Vision Memory
     const { data: historyData } = await supabase
         .from('chat_messages')
         .select('role, content, attachments')
@@ -194,31 +190,45 @@ async function processChat(req, res) {
         return { role: msg.role === 'user' ? 'user' : 'model', parts: parts };
     }));
 
-    // 5. حفظ رسالة المستخدم
+    // ✅ 5. Save User Message (With merged Metadata)
+    // We merge the system contextId with any incoming client metadata
+    const finalMetadata = { context: contextId, ...(metadata || {}) };
+
     await supabase.from('chat_messages').insert({
         session_id: sessionId,
         user_id: userId, 
         role: 'user', 
         content: message,
         attachments: dbAttachments, 
-        metadata: { context: contextId }
+        metadata: finalMetadata // ✅ Updated
     });
 
-    // 6. استدعاء الذكاء الاصطناعي مع السياق المحسن
+    // 6. AI Generation
     const userProfile = await getProfile(userId);
     const locationContext = location || "Algeria"; 
 
-    // ✅ تمرير العنوان والمحتوى المحملين من قاعدة البيانات للـ Prompt
     const personaPrompt = PROMPTS.chat.interactiveChat(
         message, 
         userProfile, 
         locationContext, 
-        lessonTitle,     // ✅ العنوان من جدول lessons
-        contentSnippet   // ✅ المحتوى من جدول lessons_content
+        lessonTitle,     
+        contentSnippet   
     );
+
+    // ✅ 7. Handle Custom Instructions (Inject into System Prompt)
+    let dynamicInstructions = "";
+    if (customInstruction) {
+        dynamicInstructions = `
+        IMPORTANT CONTEXT FROM USER INTERACTION:
+        ${customInstruction}
+        (Please take this context into account while answering the user's message).
+        `;
+    }
 
     const finalSystemPrompt = `
     ${personaPrompt}
+
+    ${dynamicInstructions}
 
     🛑 **INSTRUCTIONS:**
     1. You are specifically tutoring the lesson: "${lessonTitle}".
@@ -239,7 +249,7 @@ async function processChat(req, res) {
         label: 'ChatBrain_FullVision'
     });
 
-    // 7. معالجة الرد
+    // 8. Process Response
     let parsedResponse;
     try {
         const cleanText = (typeof aiResult === 'object' ? aiResult.text : aiResult)
@@ -249,9 +259,8 @@ async function processChat(req, res) {
         parsedResponse = { reply: typeof aiResult === 'object' ? aiResult.text : aiResult, widgets: [] };
     }
 
-    // 8. Gatekeeper & Widgets
+    // 9. Gatekeeper & Widgets
     let finalWidgets = parsedResponse.widgets || [];
-    // التحقق من lessonId الأصلي لإتمام الدرس
     const targetLessonId = (contextId !== 'general') ? contextId : null;
     
     if (parsedResponse.lesson_signal?.type === 'complete' && targetLessonId) {
@@ -264,7 +273,7 @@ async function processChat(req, res) {
         }
     }
 
-    // 9. حفظ رد البوت
+    // 10. Save Assistant Response
     await supabase.from('chat_messages').insert({
         session_id: sessionId,
         user_id: userId, 
@@ -275,7 +284,7 @@ async function processChat(req, res) {
 
     res.status(200).json({
         reply: parsedResponse.reply,
-        widgets: finalWidgets, // تأكدنا من إرسال الويدجت المحدثة
+        widgets: finalWidgets,
         sessionId: sessionId
     });
 
