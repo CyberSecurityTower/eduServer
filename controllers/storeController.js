@@ -82,23 +82,17 @@ async function getMyInventory(req, res) {
   }
 }
 
-// 4. إضافة منتج (Admin)
 
 // 4. إضافة منتج (Admin) - نسخة محدثة ذكية 🌟
 async function addStoreItem(req, res) {
   const file = req.file;
   if (!file) return res.status(400).json({ error: 'File is required' });
   
-  // استخراج البيانات من الـ Body
   const { title, description, price, category, pathId, subjectId } = req.body;
   
-  // ⚠️ ملاحظة: بما أن العمود في القاعدة jsonb، يجب التأكد أن ما نرسله هو JSON صالح
-  // أو نقوم بتحويله هنا إذا كان المرسل نصاً عادياً
   let finalTitle = title;
   let finalDesc = description;
-
   try {
-      // محاولة تحويل النص إلى JSON إذا كان مرسلاً كنص
       try { finalTitle = JSON.parse(title); } catch (e) {}
       try { finalDesc = JSON.parse(description); } catch (e) {}
   } catch(e) {}
@@ -106,51 +100,54 @@ async function addStoreItem(req, res) {
   let finalFilePath = file.path;
 
   try {
-    // 1. تحديد الحجم
     const stats = fs.statSync(finalFilePath);
     const fileSizeInBytes = stats.size;
     const mimeType = file.mimetype;
 
-    // 2. إعدادات Cloudinary الذكية
+    // ✅ 1. تحديد نوع الملف للتخزين في قاعدة البيانات (DB Type)
+    let dbType = 'file';
+    if (mimeType === 'application/pdf') dbType = 'pdf';
+    else if (mimeType.startsWith('image/')) dbType = 'image';
+    else if (mimeType.startsWith('video/')) dbType = 'video';
+    else if (mimeType.startsWith('audio/')) dbType = 'audio';
+
+    // ✅ 2. تحديد نوع المورد لـ Cloudinary (Resource Type)
+    // Cloudinary يعامل الصوت عادة كـ video للتمكن من تشغيله
     let resourceType = 'raw';
     if (mimeType.startsWith('image/')) resourceType = 'image';
-    else if (mimeType.startsWith('video/')) resourceType = 'video';
-    else if (mimeType === 'application/pdf') resourceType = 'image'; // ✅ خدعة الـ PDF
+    else if (mimeType.startsWith('video/') || mimeType.startsWith('audio/')) resourceType = 'video';
+    else if (mimeType === 'application/pdf') resourceType = 'image'; // خدعة الـ PDF للتنقل بين الصفحات
 
     // الرفع
     const uploadResult = await cloudinary.uploader.upload(finalFilePath, { 
         folder: 'edustore_products', 
         resource_type: resourceType,
+        // PDF فقط يحتاج flags attachment للحفاظ عليه كمستند
         flags: mimeType === 'application/pdf' ? "attachment" : undefined 
     });
 
-    // 3. توليد الصور (Thumbnail + Preview Images)
+    // ✅ 3. توليد الصور المصغرة (Thumbnails) بذكاء
     let thumbnailUrl = null;
     let previewImages = [];
-    const isPdf = mimeType === 'application/pdf';
 
-    if (resourceType === 'image' && !isPdf) {
+    if (dbType === 'image') {
         thumbnailUrl = uploadResult.secure_url;
         previewImages.push(uploadResult.secure_url);
-    } else if (resourceType === 'video') {
+    } 
+    else if (dbType === 'video') {
+        // Cloudinary يولد تلقائياً jpg للفيديو بتغيير الامتداد
         thumbnailUrl = uploadResult.secure_url.replace(/\.[^/.]+$/, ".jpg");
-    } else if (isPdf) {
-        // ✅ منطق استخراج الصور من PDF
+    }
+    else if (dbType === 'audio') {
+        // للصوت، لا يوجد صورة، يمكننا وضع رابط صورة افتراضية أو تركه null والفرونت يضع أيقونة
+        thumbnailUrl = null; 
+    }
+    else if (dbType === 'pdf') {
         const baseUrl = uploadResult.secure_url;
-        thumbnailUrl = baseUrl.replace('.pdf', '.jpg'); // الصفحة الأولى غلاف
-
-        // توليد 5 صور للمعاينة
+        thumbnailUrl = baseUrl.replace('.pdf', '.jpg');
+        // توليد معاينة للصفحات
         const publicId = uploadResult.public_id;
         for (let i = 1; i <= 5; i++) {
-            // نستخدم cloudinary.url أو التركيب اليدوي
-            // هنا نركب الرابط يدوياً للسرعة والدقة
-            // الشكل: https://res.cloudinary.com/.../image/upload/pg_1/v123.../id.jpg
-            const versionIndex = baseUrl.lastIndexOf('/v');
-            const prefix = baseUrl.substring(0, versionIndex); // الجزء قبل الفيرجن
-            const version = baseUrl.substring(versionIndex, baseUrl.lastIndexOf('/')); // الفيرجن
-            
-            // الطريقة الأبسط: استبدال .pdf بـ .jpg وإضافة باراميتر الصفحة
-            // Cloudinary URL structure helper
             const imageUrl = cloudinary.url(publicId, {
                 resource_type: 'image',
                 format: 'jpg',
@@ -163,8 +160,8 @@ async function addStoreItem(req, res) {
 
     // 4. الحفظ في قاعدة البيانات
     const { data, error } = await supabase.from('store_items').insert({
-        title: finalTitle,        // سيتم حفظه كـ jsonb
-        description: finalDesc,   // سيتم حفظه كـ jsonb
+        title: finalTitle,
+        description: finalDesc,
         price: parseInt(price) || 0,
         file_url: uploadResult.secure_url,
         file_size: fileSizeInBytes,
@@ -173,17 +170,18 @@ async function addStoreItem(req, res) {
         subject_id: subjectId || null,
         is_active: true,
         
-        // ✅ الأعمدة الجديدة
+        // البيانات الجديدة
         thumbnail_url: thumbnailUrl,
         preview_images: previewImages,
         
-        // حساب عدد الصفحات (اختياري، نضعه 0 أو نستخرجه لاحقاً)
+        // ✅ هنا نضع النوع الحقيقي بدلاً من تثبيته على pdf
+        type: dbType, 
+        
         pages_count: previewImages.length > 0 ? previewImages.length : null 
     }).select().single();
 
     if (error) throw error;
     
-    // تنظيف الملف المؤقت
     if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
     
     res.json({ success: true, item: data });
