@@ -16,14 +16,14 @@ const streakController = require('../controllers/streakController');
 const searchController = require('../controllers/searchController');
 const sourceController = require('../controllers/sourceController');
 const uploadMiddleware = require('../middleware/upload');
-const smartQueueMiddleware = require('../middleware/smartQueue'); // استيراد الجديد
+const smartQueueMiddleware = require('../middleware/smartQueue'); 
 const chatBrainController = require('../controllers/ChatBrainController'); 
 const arenaController = require('../controllers/arenaController'); 
 const bankController = require('../controllers/bankController');
 const storeController = require('../controllers/storeController');
 const folderController = require('../controllers/folderController');
 const subjectController = require('../controllers/subjectController'); 
-
+const workLensController = require('../controllers/workLensController');
 
 /*
 // ⏰ تشغيل منقذ الستريك كل ساعة (60 دقيقة)
@@ -280,11 +280,13 @@ router.delete('/folders/:folderId', requireAuth, folderController.deleteFolder);
 
 
 
-// ✅ المسار الجديد لجلب المواد
+//  المسار الجديد لجلب المواد
 router.get('/subjects/mine', requireAuth, subjectController.getMySubjects);
 
-// ✅✅✅ أضف هذا السطر الجديد لحل المشكلة ✅✅✅
 router.get('/educational/lessons', requireAuth, subjectController.getLessonsBySubject);
 router.post('/admin/fix-file-sizes', requireAdmin, adminController.fixRealFileSizes);
-
+// ==========================================
+// 🔍 WorkLens (Unified Search System)
+// ==========================================
+router.post('/worklens/search', requireAuth, workLensController.executeSearch);
 module.exports = router;
