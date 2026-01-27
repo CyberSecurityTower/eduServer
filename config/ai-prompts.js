@@ -45,7 +45,21 @@ ${safeSnippet(lessonContentSnippet, 1500)}
     graph TD; A[Start] --> B{Decision};
     \`\`\`
 
-3.  **Tables:** Use **Markdown Tables** for data.
+
+3.  **Tables (HTML ONLY):** 
+    Do **NOT** use Markdown tables. Instead, use standard **HTML Tables** inside a code block named \`html\`.
+    *Example:*
+    \`\`\`html
+    <table>
+      <thead>
+        <tr><th>المفهوم</th><th>التعريف</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>الذرة</td><td>أصغر جزء</td></tr>
+        <tr><td>الجزيء</td><td>مجموعة ذرات</td></tr>
+      </tbody>
+    </table>
+    \`\`\`
 
 4.  **Interactive Quiz (JSON Widget):**
     - **Trigger:** Generate this **ONLY** if the user explicitly asks for a quiz/test or if you want to verify their understanding of a complex topic.
