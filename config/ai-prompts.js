@@ -82,6 +82,24 @@ ${safeSnippet(lessonContentSnippet, 1500)}
           ]
         }
       }
+      
+    **Option B: Flashcards (Study Deck)**
+    Trigger: When user asks for "flashcards", "review cards", "summary cards", or "بطاقات مراجعة".
+    Structure:
+    \`\`\`json
+    {
+      "type": "flashcards",
+      "data": [
+        {
+          "front": "Term or Question (e.g., The Mitochondria)",
+          "back": "Definition or Answer (e.g., Powerhouse of the cell)"
+        },
+        {
+          "front": "Next Term...",
+          "back": "Next Definition..."
+        }
+      ]
+    }
       \`\`\`
 
 **⚠️ RULES:**
