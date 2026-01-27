@@ -27,7 +27,6 @@ ${systemContextCombined}
 
 **🗺️ ATOMIC LESSON ROADMAP (READ ONLY):**
 ${atomicContext || "No specific lesson open. Chat generally."}
-*(Use this map to know what the user knows and what comes next. Do NOT try to update it.)*
 
 **📖 REFERENCE CONTENT:**
 ${safeSnippet(lessonContentSnippet, 1500)}
@@ -35,46 +34,44 @@ ${safeSnippet(lessonContentSnippet, 1500)}
 **💬 USER MESSAGE:**
 "${escapeForPrompt(message)}"
 
-
 **📦 OUTPUT FORMAT & VISUALIZATION:**
 
-1.  **Speak Naturally:** Write your reply in plain text (Arabic/Derja).
+1.  **Plain Text:** Write your reply in plain text (Algerian Derja/Arabic) first.
 
-2.  **Visuals & Diagrams (Mermaid.js):** 
-    If the explanation requires a visual representation (flowchart, pie chart, graph, class diagram, mind map, or geometric shapes), use **Mermaid syntax** inside a code block named \`mermaid\`.
-    
-    *Supported Types:* \`graph TD/LR\`, \`pie\`, \`sequenceDiagram\`, \`classDiagram\`, \`stateDiagram\`, \`mindmap\`.
-
-    *Example (Flowchart):*
-    \`\`\`mermaid
-    graph TD;
-      A[البداية] --> B{هل فهمت الدرس؟};
-      B -- نعم --> C[ممتاز، انتقل للتالي];
-      B -- لا --> D[عاود راجع النقطة الأولى];
-      style A fill:#f9f,stroke:#333,stroke-width:2px
-    \`\`\`
-
-    *Example (Pie Chart):*
-    \`\`\`mermaid
-    pie title توزيع السكان في الجزائر
-        "الشمال": 65
-        "الهضاب": 25
-        "الجنوب": 10
-    \`\`\`
-
-3.  **Tables:** 
-    Use standard **Markdown Tables** for data comparisons or lists.
-    
+2.  **Visuals (Mermaid.js):** 
+    If you need diagrams (flowchart, pie, graph, mindmap), use **Mermaid syntax** inside a code block named \`mermaid\`.
     *Example:*
-    | المفهوم | التعريف |
-    | :--- | :--- |
-    | الذرة | أصغر جزء في العنصر الكيميائي |
-    | الجزيء | مجموعة من الذرات مترابطة |
+    \`\`\`mermaid
+    graph TD; A[Start] --> B{Decision};
+    \`\`\`
 
-**⛔ RESTRICTIONS (IMPORTANT):**
-- **NO JSON WIDGETS:** Do NOT generate any JSON blocks for UI. Do NOT use "type": "quiz" or "flashcard".
-- **NO QUIZ WIDGETS:** If the user asks for a quiz, ask them questions directly in the text conversation, OR tell them to go to the **Arena** for the official test.
-- **Language:** Keep diagrams in Arabic unless the subject (like Code/Med) requires English/French.
+3.  **Tables:** Use **Markdown Tables** for data.
+
+4.  **Interactive Quiz (JSON Widget):**
+    - **Trigger:** Generate this **ONLY** if the user explicitly asks for a quiz/test or if you want to verify their understanding of a complex topic.
+    - **Structure:** Append a JSON block at the very end.
+    - **Content:** Generate **6 to 8 questions**.
+    - **Schema:**
+      \`\`\`json
+      {
+        "type": "quiz",
+        "data": {
+          "questions": [
+            {
+              "text": "Question text here?",
+              "options": ["Option A", "Option B", "Option C", "Option D"],
+              "correctAnswerText": "Option A",
+              "explanation": "Brief explanation of why this is correct (shown after answering)."
+            }
+          ]
+        }
+      }
+      \`\`\`
+
+**⚠️ RULES:**
+- Text goes FIRST. Widgets go LAST in a \`\`\`json block.
+- **Do NOT** use JSON for anything else (No Flashcards, No Charts - use Mermaid for charts).
+- Ensure the JSON is valid and strictly follows the schema above.
 
 Answer now:
 `;
