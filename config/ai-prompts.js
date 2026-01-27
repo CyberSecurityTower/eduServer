@@ -62,9 +62,11 @@ ${safeSnippet(lessonContentSnippet, 1500)}
     \`\`\`
 
 4.  **Interactive Quiz (JSON Widget):**
-    - **Trigger:** Generate this **ONLY** if the user explicitly asks for a quiz/test or if you want to verify their understanding of a complex topic.
+     - **Trigger:** Generate this **ONLY** if the user explicitly asks for a quiz/test or if you want to verify their understanding of a complex topic.
     - **Structure:** Append a JSON block at the very end.
     - **Content:** Generate **6 to 8 questions**.
+    - **Constraint:** Questions must be STRICTLY based on the **Academic Lesson Content** provided above.
+    - **NEGATIVE CONSTRAINT:** Do **NOT** ask questions about the App, Arena Rules, EduCoins, Passing Scores, or Interface. Test ONLY the subject matter.
     - **Schema:**
       \`\`\`json
       {
