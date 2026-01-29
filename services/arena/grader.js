@@ -5,7 +5,8 @@
 const supabase = require('../data/supabase');
 const logger = require('../../utils/logger');
 
-// --- دوال المساعدة (كما هي) ---
+// --- 1. دوال المساعدة (Helpers) ---
+
 function isEqual(a, b) {
     if (a === b) return true;
     if (Array.isArray(a) && Array.isArray(b)) {
@@ -27,7 +28,10 @@ function checkAnswer(dbQuestion, userAnswer) {
     const type = dbQuestion.widget_type;
     const content = dbQuestion.content;
     try {
-        if (['MCQ', 'TRUE_FALSE', 'YES_NO'].includes(type)) return String(content.correct_answer).trim() === String(userAnswer).trim();
+        // تنظيف المدخلات للمقارنة النصية
+        if (['MCQ', 'TRUE_FALSE', 'YES_NO'].includes(type)) {
+            return String(content.correct_answer).trim().toLowerCase() === String(userAnswer).trim().toLowerCase();
+        }
         if (type === 'MCM') {
             if (!Array.isArray(userAnswer)) return false;
             const correct = content.correct_answer || [];
@@ -43,10 +47,11 @@ function checkAnswer(dbQuestion, userAnswer) {
     }
 }
 
-// 🔥 دالة: حساب وتحديث تقدم المادة من الباك إند
+// --- 2. دالة تحديث تقدم المادة (Backend Progress) ---
+
 async function updateSubjectProgressFromBackend(userId, lessonId, currentLessonScore) {
     try {
-        // 1. معرفة المادة التابع لها هذا الدرس
+        // أ. معرفة المادة التابع لها هذا الدرس
         const { data: lessonMeta, error: metaError } = await supabase
             .from('lessons')
             .select('subject_id')
@@ -56,7 +61,7 @@ async function updateSubjectProgressFromBackend(userId, lessonId, currentLessonS
         if (metaError || !lessonMeta) return; 
         const subjectId = lessonMeta.subject_id;
 
-        // 2. حساب العدد الكلي لدروس هذه المادة
+        // ب. حساب العدد الكلي لدروس هذه المادة
         const { count: totalLessons, error: countError } = await supabase
             .from('lessons')
             .select('*', { count: 'exact', head: true })
@@ -64,7 +69,7 @@ async function updateSubjectProgressFromBackend(userId, lessonId, currentLessonS
 
         if (countError || totalLessons === 0) return;
 
-        // 3. جلب مجموع درجات الطالب في هذه المادة
+        // ج. جلب مجموع درجات الطالب في هذه المادة
         const { data: sumData } = await supabase
             .from('user_lesson_stats')
             .select('mastery_percent')
@@ -76,13 +81,13 @@ async function updateSubjectProgressFromBackend(userId, lessonId, currentLessonS
             finalSum = sumData.reduce((acc, curr) => acc + (curr.mastery_percent || 0), 0);
         }
 
-        // المعادلة
+        // د. المعادلة
         let subjectMastery = (finalSum / totalLessons);
         if (subjectMastery > 100) subjectMastery = 100;
 
         console.log(`📊 [Backend Calc] Subject: ${subjectId} | Mastery: ${subjectMastery}%`);
 
-        // 5. تحديث جدول المادة
+        // هـ. تحديث جدول المادة
         await supabase
             .from('user_subject_stats')
             .upsert({
@@ -97,12 +102,13 @@ async function updateSubjectProgressFromBackend(userId, lessonId, currentLessonS
     }
 }
 
+// --- 3. الدالة الرئيسية: تصحيح الامتحان (Grade Exam) ---
 
 async function gradeArenaExam(userId, lessonId, userSubmission) {
     try {
         if (!userSubmission || userSubmission.length === 0) throw new Error("Empty submission");
 
-        // 1. جلب الأسئلة الصحيحة
+        // 1. جلب الأسئلة الصحيحة من قاعدة البيانات
         const questionIds = userSubmission.map(s => s.questionId);
         const { data: correctData, error } = await supabase
             .from('question_bank')
@@ -111,53 +117,57 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
 
         if (error) throw error;
 
-        const { data: structData, error: structError } = await supabase
+        // 2. 🔥 جلب العناوين العربية (هيكلة الدرس)
+        // هذا الجزء يضمن عرض أسماء المهارات بالعربي بدلاً من الرموز الإنجليزية
+        const { data: structData } = await supabase
             .from('atomic_lesson_structures')
             .select('structure_data')
             .eq('lesson_id', lessonId)
             .single();
 
-        // إنشاء خريطة (Map) لربط الـ ID بالعنوان: { 'roman_conquest': 'مراحل التوسع الروماني' }
         const atomTitlesMap = {};
-        if (structData && structData.structure_data && structData.structure_data.elements) {
+        
+        if (structData?.structure_data?.elements) {
             structData.structure_data.elements.forEach(el => {
-                // نأخذ العنوان إذا وجد، وإلا نستخدم الـ ID كاحتياط
-                atomTitlesMap[el.id] = el.title || el.id;
+                // الأولوية للعنوان العربي، ثم الإنجليزي، ثم المعرف
+                atomTitlesMap[el.id] = el.title_ar || el.title || el.id; 
             });
+            // console.log("✅ Titles Map Loaded:", Object.keys(atomTitlesMap).length, "atoms found.");
+        } else {
+            console.warn("⚠️ No structure data found for lesson:", lessonId);
         }
 
-        // 2. تجهيز خريطة الأسئلة وبدء التصحيح
+        // 3. تصحيح الأسئلة وحساب التغييرات
         const questionMap = new Map();
         correctData.forEach(q => questionMap.set(q.id, q));
 
         let correctCount = 0;
         const totalQuestions = userSubmission.length;
-        const atomUpdates = {}; 
+        const atomUpdates = {}; // لتجميع النقاط لكل مهارة (Atom)
         
         for (const sub of userSubmission) {
             const dbQuestion = questionMap.get(sub.questionId);
             if (!dbQuestion) continue;
 
-            const isCorrect = checkAnswer(dbQuestion, sub.answer);
+            const isCorrect = checkAnswer(dbQuestion, sub.answer); 
             const atomId = dbQuestion.atom_id;
 
             if (!atomUpdates[atomId]) atomUpdates[atomId] = 0;
 
             if (isCorrect) {
                 correctCount++;
-                atomUpdates[atomId] += 100;
+                atomUpdates[atomId] += 100; // زيادة عند الإجابة الصحيحة
             } else {
-                atomUpdates[atomId] -= 50;
+                atomUpdates[atomId] -= 50;  // خصم عند الخطأ
             }
         }
 
-        // حساب الدرجة النهائية للامتحان
-        let finalScoreOutOf20 = 0;
-        if (totalQuestions > 0) finalScoreOutOf20 = (correctCount / totalQuestions) * 20;
-        finalScoreOutOf20 = Math.round(finalScoreOutOf20 * 2) / 2;
+        // حساب الدرجة النهائية للامتحان (من 20) والنسبة المئوية
+        let finalScoreOutOf20 = (totalQuestions > 0) ? ((correctCount / totalQuestions) * 20) : 0;
+        finalScoreOutOf20 = Math.round(finalScoreOutOf20 * 2) / 2; // التقريب لأقرب 0.5
         const finalPercentage = Math.round((correctCount / totalQuestions) * 100);
 
-        // 4. جلب حالة الاتقان الحالية (القديمة) من قاعدة البيانات
+        // 4. جلب حالة الاتقان الحالية (القديمة) لتحديثها
         const { data: currentProgress } = await supabase
             .from('atomic_user_mastery')
             .select('elements_scores')
@@ -165,50 +175,56 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
             .eq('lesson_id', lessonId)
             .single();
 
-        // تجهيز كائن الدرجات الجديد وكائن التفاصيل للفرونت إند
         let dbScores = currentProgress?.elements_scores || {}; 
         
-        // 🔥 إنشاء مصفوفة لتفاصيل التغيير مع العناوين
+        // 🔥 مصفوفة لتفاصيل التغيير مع العناوين (للفرونت إند)
         const masteryChanges = [];
 
         Object.keys(atomUpdates).forEach(atomId => {
-            // القيمة القديمة (قبل التحديث)
+            // القيمة القديمة
             const oldScore = dbScores[atomId]?.score || 0;
             
-            // حساب القيمة الجديدة
+            // حساب القيمة الجديدة (بين 0 و 100)
             const delta = atomUpdates[atomId];
             let newScore = Math.max(0, Math.min(100, oldScore + delta));
             
-            // تحديث الكائن الذي سيتم حفظه في الداتابيس
+            // تحديث كائن التخزين
             dbScores[atomId] = { 
                 score: newScore, 
                 last_updated: new Date().toISOString() 
             };
 
-            // إضافة تفاصيل التغيير للمصفوفة التي سنرسلها للفرونت
+            // تحديد عنوان العرض (Display Title)
+            let displayTitle = atomTitlesMap[atomId];
+            if (!displayTitle) {
+                // Fallback: تحويل roman_conquest_stages إلى Roman Conquest Stages
+                displayTitle = atomId.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+            }
+
+            // إضافة تفاصيل التغيير للمصفوفة
             masteryChanges.push({
                 atom_id: atomId,
-                title: atomTitlesMap[atomId] || atomId, // 🆕 إدراج العنوان العربي هنا
+                title: displayTitle, // ✅ العنوان جاهز للعرض
                 old_score: oldScore,
                 new_score: newScore,
                 delta: delta, 
             });
         });
 
-        // 5. الحفظ في atomic_user_mastery
+        // 5. حفظ التغييرات في قاعدة البيانات (atomic_user_mastery)
         const { error: upsertError } = await supabase
             .from('atomic_user_mastery')
             .upsert({
                 user_id: userId,
                 lesson_id: lessonId,
-                elements_scores: dbScores, // نرسل الكائن المحدث
+                elements_scores: dbScores,
                 last_updated: new Date().toISOString()
             }, { onConflict: 'user_id, lesson_id' });
 
         if (upsertError) console.error("❌ SUPABASE UPSERT ERROR:", upsertError);
-        else console.log("✅ Update Success for User:", userId);
+        else console.log("✅ Mastery Update Success for User:", userId);
 
-        // تحديث تقدم المادة والكوينز
+        // 6. مهام الخلفية: تحديث تقدم المادة والكوينز
         setTimeout(() => {
             updateSubjectProgressFromBackend(userId, lessonId, finalPercentage);
         }, 1000);
@@ -216,6 +232,7 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
         let coinsEarned = 0;
         if (finalPercentage >= 50) {
             coinsEarned = Math.floor(finalPercentage / 2);
+            // تسجيل المعاملة في الخلفية
             await supabase.rpc('process_coin_transaction', {
                 p_user_id: userId,
                 p_amount: coinsEarned,
@@ -224,7 +241,7 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
             });
         }
 
-        // 6. إرجاع النتيجة مع بيانات masteryChanges الغنية بالعناوين
+        // 7. إرجاع النتيجة النهائية
         return {
             success: true,
             score: finalScoreOutOf20,
@@ -233,7 +250,7 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
             correctCount,
             totalQuestions,
             coinsEarned,
-            masteryChanges 
+            masteryChanges // ✅ تحتوي الآن على العناوين
         };
 
     } catch (error) {
