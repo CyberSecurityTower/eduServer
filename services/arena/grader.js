@@ -208,19 +208,27 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
         // 5. تطبيق "المعادلة العادلة" لإتقان الدرس (Lesson Mastery)
         const oldMastery = oldStats?.mastery_percent || 0;
         const oldHighest = oldStats?.highest_score || 0;
-        const wasPassed = oldMastery >= 50;
+        
+        // ✅ التحقق القوي: هل سبق له النجاح؟ (بناءً على النسبة أو أعلى درجة)
+        const wasPassed = oldMastery >= 50 || oldHighest >= 50;
+        
         let newMastery = finalPercentage;
 
         if (oldStats) {
             if (finalPercentage >= oldMastery) {
-                newMastery = finalPercentage; // تحسن
+                newMastery = finalPercentage; // تحسن -> نعتمد الدرجة الجديدة
             } else {
-                // تراجع: وزن 70% للقديم و 30% للجديد (عقاب خفيف)
+                // تراجع: وزن 70% للقديم و 30% للجديد
                 newMastery = Math.round((oldMastery * 0.7) + (finalPercentage * 0.3));
-                if (wasPassed && newMastery < 50) newMastery = 50; // شبكة أمان
+                
+                // ✅ شبكة الأمان المعززة: 
+                // إذا كان ناجحاً سابقاً، لا نسمح للنسبة بالهبوط تحت 50% أبداً
+                // حتى لو حصل على صفر في المحاولة الجديدة
+                if (wasPassed && newMastery < 50) {
+                    newMastery = 50; 
+                }
             }
         }
-
         // 6. تحديث مهارات الـ Atoms وحساب مصفوفة التغييرات للفرونت إند
         let dbScores = masteryRes.data?.elements_scores || {};
         const masteryChanges = [];
