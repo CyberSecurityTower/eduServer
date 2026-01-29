@@ -97,11 +97,12 @@ async function updateSubjectProgressFromBackend(userId, lessonId, currentLessonS
     }
 }
 
+
 async function gradeArenaExam(userId, lessonId, userSubmission) {
     try {
         if (!userSubmission || userSubmission.length === 0) throw new Error("Empty submission");
 
-        // 1. جلب الأسئلة الصحيحة للتحقق من الإجابات
+        // 1. جلب الأسئلة الصحيحة
         const questionIds = userSubmission.map(s => s.questionId);
         const { data: correctData, error } = await supabase
             .from('question_bank')
@@ -110,22 +111,22 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
 
         if (error) throw error;
 
-        // 🆕 2. جلب هيكلة الدرس للحصول على العناوين (Titles) العربية
-        // هذا الاستعلام ضروري لربط الـ ID مثل 'roman_conquest' بالعنوان 'مراحل التوسع الروماني'
         const { data: structData, error: structError } = await supabase
             .from('atomic_lesson_structures')
             .select('structure_data')
             .eq('lesson_id', lessonId)
             .single();
 
+        // إنشاء خريطة (Map) لربط الـ ID بالعنوان: { 'roman_conquest': 'مراحل التوسع الروماني' }
         const atomTitlesMap = {};
         if (structData && structData.structure_data && structData.structure_data.elements) {
             structData.structure_data.elements.forEach(el => {
-                atomTitlesMap[el.id] = el.title;
+                // نأخذ العنوان إذا وجد، وإلا نستخدم الـ ID كاحتياط
+                atomTitlesMap[el.id] = el.title || el.id;
             });
         }
 
-        // 3. تجهيز خريطة الأسئلة وبدء التصحيح
+        // 2. تجهيز خريطة الأسئلة وبدء التصحيح
         const questionMap = new Map();
         correctData.forEach(q => questionMap.set(q.id, q));
 
@@ -133,7 +134,6 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
         const totalQuestions = userSubmission.length;
         const atomUpdates = {}; 
         
-        // حساب الفروقات (Deltas) بناء على الإجابات
         for (const sub of userSubmission) {
             const dbQuestion = questionMap.get(sub.questionId);
             if (!dbQuestion) continue;
@@ -145,9 +145,9 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
 
             if (isCorrect) {
                 correctCount++;
-                atomUpdates[atomId] += 100; // زيادة للإجابة الصحيحة
+                atomUpdates[atomId] += 100;
             } else {
-                atomUpdates[atomId] -= 50;  // خصم للإجابة الخاطئة
+                atomUpdates[atomId] -= 50;
             }
         }
 
@@ -233,7 +233,7 @@ async function gradeArenaExam(userId, lessonId, userSubmission) {
             correctCount,
             totalQuestions,
             coinsEarned,
-            masteryChanges // 🔥 المصفوفة الجاهزة للعرض
+            masteryChanges 
         };
 
     } catch (error) {
