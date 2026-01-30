@@ -973,45 +973,48 @@ async function getActivityChart(req, res) {
 }
 
 // تحديث دالة Dashboard Stats الموجودة لتطابق التنسيق المطلوب
+
 async function getDashboardStatsV2(req, res) {
   try {
-    // 1. عدد المستخدمين النشطين (آخر 30 يوم)
-    const lastMonth = new Date();
-    lastMonth.setDate(lastMonth.getDate() - 30);
+    const now = new Date();
     
-    const { count: activeUsers } = await supabase
-      .from('users')
-      .select('*', { count: 'exact', head: true })
-      .gte('last_active_at', lastMonth.toISOString());
+    // 1. حساب بداية اليوم (لحساب النشطين اليوم)
+    const startOfDay = new Date(now.setHours(0, 0, 0, 0)).toISOString();
+    
+    // 2. حساب آخر 5 دقائق (لحساب النشطين الآن - Realtime)
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
 
-    // 2. إجمالي الطلبات والتكاليف (للشهر الحالي)
+    // تنفيذ الاستعلامات بشكل متوازي (Parallel) للسرعة
+    const [totalUsers, dailyActive, liveUsers] = await Promise.all([
+      // A. إجمالي المسجلين
+      supabase.from('users').select('*', { count: 'exact', head: true }),
+      
+      // B. النشطين اليوم
+      supabase.from('users').select('*', { count: 'exact', head: true }).gt('last_active_at', startOfDay),
+      
+      // C. النشطين الآن (Live)
+      supabase.from('users').select('*', { count: 'exact', head: true }).gt('last_active_at', fiveMinutesAgo)
+    ]);
+
+    // جلب التكاليف (اختياري، كما كان سابقاً)
     const { data: monthlyCost } = await supabase
       .from('view_monthly_ai_costs')
-      .select('*')
+      .select('estimated_cost_usd')
       .limit(1)
-      .single();
-
-    // 3. حالة المفاتيح
-    const keysStats = keyManager.getAllKeysStatus();
-    const activeKeys = keysStats.filter(k => k.status !== 'dead').length;
-    const deadKeys = keysStats.filter(k => k.status === 'dead').length;
+      .maybeSingle();
 
     const response = {
-      active_users: activeUsers || 0,
-      total_requests: monthlyCost?.total_requests || 0,
+      live_users: liveUsers.count || 0,        // ✅ المطلوب 1
+      daily_active: dailyActive.count || 0,    // ✅ المطلوب 2
+      total_users: totalUsers.count || 0,      // ✅ المطلوب 3
       financials: {
         month_cost: monthlyCost?.estimated_cost_usd || 0,
-        limit: 200 // حد افتراضي
-      },
-      keys_summary: {
-        active: activeKeys,
-        dead: deadKeys,
-        total: keysStats.length
       }
     };
 
     res.json(response);
   } catch (e) {
+    console.error('Stats Error:', e);
     res.status(500).json({ error: e.message });
   }
 }
