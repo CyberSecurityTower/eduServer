@@ -289,4 +289,9 @@ router.post('/admin/fix-file-sizes', requireAdmin, adminController.fixRealFileSi
 // 🔍 WorkLens (Unified Search System)
 // ==========================================
 router.post('/worklens/search', requireAuth, workLensController.executeSearch);
+
+
+
+router.get('/admin/users-list', requireAdmin, adminController.getUsersList); // ✅ المسار الجديد
+
 module.exports = router;
