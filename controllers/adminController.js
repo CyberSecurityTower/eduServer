@@ -1207,6 +1207,37 @@ async function runFileSizeFixer() {
     console.error('Fatal Fixer Error:', e);
   }
 }
+
+// أضف هذه الدالة مع الدوال الأخرى
+async function getRecentTransactions(req, res) {
+  try {
+    const { data, error } = await supabase
+      .from('coin_transactions')
+      .select(`
+        id, amount, reason, created_at,
+        users (first_name, last_name, email)
+      `)
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    if (error) throw error;
+
+    // تنسيق البيانات قليلاً
+    const formatted = data.map(tx => ({
+      id: tx.id,
+      amount: tx.amount,
+      reason: tx.reason,
+      created_at: tx.created_at,
+      user_name: tx.users ? `${tx.users.first_name} ${tx.users.last_name || ''}` : 'Unknown User',
+      user_email: tx.users?.email
+    }));
+
+    res.json(formatted);
+  } catch (e) {
+    logger.error('Get Transactions Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+}
 // ✅ دالة جديدة لتشغيل الإنقاذ يدوياً
 async function triggerStreakRescue(req, res) {
   if (req.headers['x-job-secret'] !== CONFIG.NIGHTLY_JOB_SECRET) {
@@ -1282,5 +1313,6 @@ module.exports = {
   debugCurriculumContext,
   generateAtomicStructuresBatch,
   fixRealFileSizes,
-  getUsersList
+  getUsersList,
+  getRecentTransactions
 };
