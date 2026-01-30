@@ -83,115 +83,252 @@ async function getMyInventory(req, res) {
 }
 
 
-// 4. إضافة منتج (Admin) - نسخة محدثة ذكية 🌟
+
+// 4. [UPDATED] إضافة منتج (Admin) - نسخة محدثة ومرنة 🌟
 async function addStoreItem(req, res) {
   const file = req.file;
   if (!file) return res.status(400).json({ error: 'File is required' });
   
+  // 1. استخراج البيانات وتنظيفها
   const { title, description, price, category, pathId, subjectId } = req.body;
   
-  let finalTitle = title;
-  let finalDesc = description;
-  try {
-      try { finalTitle = JSON.parse(title); } catch (e) {}
-      try { finalDesc = JSON.parse(description); } catch (e) {}
-  } catch(e) {}
+  // دالة مساعدة لتنظيف المعرفات (لأن FormData تحول null إلى نص "null")
+  const cleanId = (id) => (!id || id === 'null' || id === 'undefined' || id === '') ? null : id;
 
-  let finalFilePath = file.path;
+  const finalPathId = cleanId(pathId);
+  const finalSubjectId = cleanId(subjectId);
+
+  // دالة مساعدة لتحليل JSON الآمن
+  const parseJsonSafe = (str) => {
+      try {
+          if (typeof str === 'string' && (str.startsWith('{') || str.startsWith('"'))) {
+              return JSON.parse(str);
+          }
+          return str;
+      } catch (e) {
+          return str;
+      }
+  };
+
+  const finalTitle = parseJsonSafe(title);
+  const finalDesc = parseJsonSafe(description);
+  const finalFilePath = file.path;
 
   try {
     const stats = fs.statSync(finalFilePath);
     const fileSizeInBytes = stats.size;
     const mimeType = file.mimetype;
 
-    // ✅ 1. تحديد نوع الملف للتخزين في قاعدة البيانات (DB Type)
+    // ✅ 2. تحديد نوع الملف (DB Type vs Cloudinary Resource Type)
     let dbType = 'file';
-    if (mimeType === 'application/pdf') dbType = 'pdf';
-    else if (mimeType.startsWith('image/')) dbType = 'image';
-    else if (mimeType.startsWith('video/')) dbType = 'video';
-    else if (mimeType.startsWith('audio/')) dbType = 'audio';
+    let resourceType = 'raw'; // الافتراضي
 
-    // ✅ 2. تحديد نوع المورد لـ Cloudinary (Resource Type)
-    // Cloudinary يعامل الصوت عادة كـ video للتمكن من تشغيله
-    let resourceType = 'raw';
-    if (mimeType.startsWith('image/')) resourceType = 'image';
-    else if (mimeType.startsWith('video/') || mimeType.startsWith('audio/')) resourceType = 'video';
-    else if (mimeType === 'application/pdf') resourceType = 'image'; // خدعة الـ PDF للتنقل بين الصفحات
+    if (mimeType === 'application/pdf') {
+        dbType = 'pdf';
+        resourceType = 'image'; // نرفع PDF كصورة لتمكين إنشاء Thumbnails، لكن نضيف flag للتحميل
+    } else if (mimeType.startsWith('image/')) {
+        dbType = 'image';
+        resourceType = 'image';
+    } else if (mimeType.startsWith('video/')) {
+        dbType = 'video';
+        resourceType = 'video';
+    } else if (mimeType.startsWith('audio/')) {
+        dbType = 'audio';
+        resourceType = 'video'; // Cloudinary يعامل الصوت كفيديو للمعالجة
+    }
 
-    // الرفع
+    // ✅ 3. الرفع إلى Cloudinary
+    console.log(`📤 Uploading ${dbType} to Cloudinary...`);
     const uploadResult = await cloudinary.uploader.upload(finalFilePath, { 
         folder: 'edustore_products', 
         resource_type: resourceType,
-        // PDF فقط يحتاج flags attachment للحفاظ عليه كمستند
+        // لملفات PDF: هذا يجعل الرابط يحفز التحميل بدلاً من العرض المباشر كصورة
         flags: mimeType === 'application/pdf' ? "attachment" : undefined 
     });
 
-    // ✅ 3. توليد الصور المصغرة (Thumbnails) بذكاء
+    // ✅ 4. توليد الصور المصغرة والمعاينة (Smart Previews)
     let thumbnailUrl = null;
     let previewImages = [];
 
     if (dbType === 'image') {
         thumbnailUrl = uploadResult.secure_url;
+        // للصورة نفسها، المعاينة هي الصورة
         previewImages.push(uploadResult.secure_url);
     } 
     else if (dbType === 'video') {
-        // Cloudinary يولد تلقائياً jpg للفيديو بتغيير الامتداد
+        // تغيير الامتداد إلى jpg للحصول على صورة من الفيديو
         thumbnailUrl = uploadResult.secure_url.replace(/\.[^/.]+$/, ".jpg");
     }
-    else if (dbType === 'audio') {
-        // للصوت، لا يوجد صورة، يمكننا وضع رابط صورة افتراضية أو تركه null والفرونت يضع أيقونة
-        thumbnailUrl = null; 
-    }
     else if (dbType === 'pdf') {
-        const baseUrl = uploadResult.secure_url;
-        thumbnailUrl = baseUrl.replace('.pdf', '.jpg');
-        // توليد معاينة للصفحات
-        const publicId = uploadResult.public_id;
-        for (let i = 1; i <= 5; i++) {
-            const imageUrl = cloudinary.url(publicId, {
+        // الصورة المصغرة هي الصفحة الأولى
+        // نستخدم public_id لتوليد رابط صورة ثابت
+        thumbnailUrl = cloudinary.url(uploadResult.public_id, {
+            resource_type: 'image',
+            format: 'jpg',
+            page: 1,
+            transformation: [{ width: 400, quality: "auto" }] // جودة متوسطة للغلاف
+        });
+
+        // توليد معاينة لأول 3 صفحات (يمكن زيادتها)
+        for (let i = 1; i <= 3; i++) {
+            const pageUrl = cloudinary.url(uploadResult.public_id, {
                 resource_type: 'image',
                 format: 'jpg',
                 page: i,
-                transformation: [{ width: 800, quality: "auto" }]
+                transformation: [{ width: 800, quality: "auto" }] // جودة عالية للمعاينة
             });
-            previewImages.push(imageUrl);
+            previewImages.push(pageUrl);
         }
     }
+    // للصوت audio نتركها null أو نضع صورة افتراضية في الفرونت إند
 
-    // 4. الحفظ في قاعدة البيانات
+    // ✅ 5. الحفظ في قاعدة البيانات Supabase
     const { data, error } = await supabase.from('store_items').insert({
         title: finalTitle,
         description: finalDesc,
         price: parseInt(price) || 0,
+        
+        // معلومات الملف
         file_url: uploadResult.secure_url,
         file_size: fileSizeInBytes,
-        category: category || 'general',
-        path_id: pathId || null,
-        subject_id: subjectId || null,
-        is_active: true,
+        type: dbType,
         
-        // البيانات الجديدة
+        // التصنيف والربط
+        category: category || 'general',
+        path_id: finalPathId,       // تم التنظيف
+        subject_id: finalSubjectId, // تم التنظيف
+        
+        // المظهر
         thumbnail_url: thumbnailUrl,
         preview_images: previewImages,
+        pages_count: previewImages.length > 0 ? previewImages.length : null,
         
-        // ✅ هنا نضع النوع الحقيقي بدلاً من تثبيته على pdf
-        type: dbType, 
-        
-        pages_count: previewImages.length > 0 ? previewImages.length : null 
+        is_active: true
     }).select().single();
 
     if (error) throw error;
     
-    if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
-    
+    // نجاح
     res.json({ success: true, item: data });
 
   } catch (err) {
-    if (file?.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
-    console.error("Admin Upload Error:", err);
+    console.error("❌ Admin Upload Error:", err);
     res.status(500).json({ error: err.message });
+  } finally {
+    // ✅ 6. تنظيف الملفات المؤقتة دائماً
+    if (file?.path && fs.existsSync(file.path)) {
+        try {
+            fs.unlinkSync(file.path);
+        } catch (unlinkErr) {
+            console.warn("⚠️ Failed to delete temp file:", unlinkErr.message);
+        }
+    }
   }
 }
+
+// 🆕 8. تحديث بيانات منتج (Admin)
+async function updateStoreItem(req, res) {
+    const { itemId } = req.params;
+    const { title, description, price, isActive, pathId } = req.body;
+
+    try {
+        const updates = {};
+        if (title !== undefined) updates.title = title;
+        if (description !== undefined) updates.description = description;
+        if (price !== undefined) updates.price = parseInt(price);
+        if (isActive !== undefined) updates.is_active = isActive;
+        if (pathId !== undefined) updates.path_id = pathId;
+
+        const { data, error } = await supabase
+            .from('store_items')
+            .update(updates)
+            .eq('id', itemId)
+            .select()
+            .single();
+
+        if (error) throw error;
+        res.json({ success: true, item: data, message: 'Item updated successfully' });
+
+    } catch (err) {
+        logger.error('Update Store Item Error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+}
+
+// 🆕 9. حذف منتج نهائياً (Admin)
+async function deleteStoreItem(req, res) {
+    const { itemId } = req.params;
+
+    try {
+        // 1. جلب رابط الملف ونوعه من قاعدة البيانات قبل الحذف
+        // نحتاج النوع (type) لمعرفة هل نحذفه كـ image أم video أم raw من كلاوديناري
+        const { data: item, error: fetchError } = await supabase
+            .from('store_items')
+            .select('file_url, type') 
+            .eq('id', itemId)
+            .single();
+
+        if (fetchError || !item) {
+            return res.status(404).json({ error: 'Item not found' });
+        }
+
+        // 2. حذف الملف من Cloudinary (إذا وجد الرابط)
+        if (item.file_url) {
+            try {
+                // استخراج public_id من الرابط
+                // مثال الرابط: https://res.cloudinary.com/.../upload/v12345/edustore_products/filename.pdf
+                const urlParts = item.file_url.split('/');
+                const uploadIndex = urlParts.indexOf('upload');
+                
+                if (uploadIndex !== -1) {
+                    // نتخطى 'upload' و 'v1234' (رقم الإصدار)
+                    // النتيجة تكون: edustore_products/filename.pdf
+                    const pathParts = urlParts.slice(uploadIndex + 2);
+                    let publicIdWithExt = pathParts.join('/');
+                    
+                    // إزالة الامتداد (.pdf, .jpg) للحصول على public_id الصافي
+                    // Cloudinary destroy API يتطلب public_id بدون امتداد (للصور والفيديو)
+                    let publicId = publicIdWithExt.substring(0, publicIdWithExt.lastIndexOf('.'));
+
+                    // تحديد نوع المورد (Resource Type) بناءً على ما خزنناه في الداتابيز
+                    let resourceType = 'image'; // الافتراضي (الـ PDF يُرفع كـ image عادة)
+                    
+                    if (item.type === 'video' || item.type === 'audio') {
+                        resourceType = 'video';
+                    } else if (item.type === 'file') {
+                        resourceType = 'raw';
+                        // للملفات الخام (Raw)، أحياناً يتطلب الأمر الإبقاء على الامتداد، لكن الغالب بدون
+                    }
+
+                    console.log(`🗑️ Deleting Cloudinary Asset: ${publicId} [${resourceType}]`);
+                    
+                    await cloudinary.uploader.destroy(publicId, { 
+                        resource_type: resourceType,
+                        invalidate: true // مسح الكاش من CDN
+                    });
+                }
+            } catch (cloudErr) {
+                // نسجل الخطأ لكن لا نوقف العملية، الأهم حذف السجل من الداتابيز
+                logger.error(`⚠️ Cloudinary Delete Warning: ${cloudErr.message}`);
+            }
+        }
+
+        // 3. الحذف من قاعدة البيانات
+        const { error } = await supabase
+            .from('store_items')
+            .delete()
+            .eq('id', itemId);
+
+        if (error) throw error;
+
+        res.json({ success: true, message: 'Item deleted permanently (DB + Cloud Asset)' });
+
+    } catch (err) {
+        logger.error('Delete Store Item Error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+}
+
 // 5. جلب العناصر المتوفرة فقط
 async function getAvailableItems(req, res) {
     try {
@@ -252,5 +389,7 @@ module.exports = {
     addStoreItem,
     getAvailableItems,
     removeFromInventory,
-    getItemContent
+    getItemContent,
+    updateStoreItem,
+    deleteStoreItem  
 };
