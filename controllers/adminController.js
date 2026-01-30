@@ -1217,6 +1217,38 @@ async function triggerStreakRescue(req, res) {
   res.json({ message: '🚑 Streak Rescue Mission Launched!' });
 }
 
+// دالة لجلب قائمة المستخدمين حسب الفلتر
+async function getUsersList(req, res) {
+  try {
+    const { filter } = req.query; // 'live', 'daily', 'all'
+    
+    let query = supabase
+      .from('users')
+      .select('id, first_name, last_name, email, last_active_at, role, group_id')
+      .order('last_active_at', { ascending: false })
+      .limit(100); // نحدد الحد الأقصى بـ 100 لتسريع العرض
+
+    const now = new Date();
+
+    if (filter === 'live') {
+        // النشطون في آخر 5 دقائق
+        const fiveMinAgo = new Date(now.getTime() - 5 * 60000).toISOString();
+        query = query.gt('last_active_at', fiveMinAgo);
+    } else if (filter === 'daily') {
+        // النشطون منذ بداية اليوم
+        const startOfDay = new Date(now.setHours(0,0,0,0)).toISOString();
+        query = query.gt('last_active_at', startOfDay);
+    } 
+    // 'all' لا تحتاج شرط إضافي (ستجلب آخر 100 سجل)
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+}
 module.exports = {
   initAdminController,
   indexSpecificLesson,
@@ -1249,5 +1281,6 @@ module.exports = {
   triggerStreakRescue,
   debugCurriculumContext,
   generateAtomicStructuresBatch,
-  fixRealFileSizes
+  fixRealFileSizes,
+  getUsersList
 };
