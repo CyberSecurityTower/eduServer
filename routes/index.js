@@ -292,6 +292,8 @@ router.post('/worklens/search', requireAuth, workLensController.executeSearch);
 
 
 
+// تحت قسم Admin Panel Routes
+router.get('/admin/transactions', requireAdmin, adminController.getRecentTransactions);
 router.get('/admin/users-list', requireAdmin, adminController.getUsersList); // ✅ المسار الجديد
 
 module.exports = router;
