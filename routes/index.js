@@ -259,6 +259,11 @@ router.post(
     storeController.addStoreItem
 );
 
+// ✅ تحديث بيانات منتج
+router.patch('/admin/store/:itemId', requireAdmin, storeController.updateStoreItem);
+
+// ✅ حذف منتج
+router.delete('/admin/store/:itemId', requireAdmin, storeController.deleteStoreItem);
 // 5. قراءة محتوى الملف (Secure Access)
 // هذا المسار يستخدم getItemContent للتحقق من الملكية قبل إرجاع النص والرابط
 router.get('/store/item/:itemId/content', requireAuth, storeController.getItemContent);
