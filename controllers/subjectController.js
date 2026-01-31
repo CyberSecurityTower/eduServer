@@ -4,6 +4,44 @@
 const supabase = require('../services/data/supabase');
 const logger = require('../utils/logger');
 
+// دالة لجلب الأقسام والأفواج بذكاء
+async function getAcademicHierarchy(req, res) {
+  const { pathId } = req.query;
+
+  if (!pathId) {
+    return res.status(400).json({ error: 'pathId is required' });
+  }
+
+  try {
+    // 1. جلب الأقسام المرتبطة بهذا المسار
+    const { data: sections, error: secError } = await supabase
+      .from('sections')
+      .select('id, name')
+      .eq('path_id', pathId)
+      .order('name', { ascending: true });
+
+    if (secError) throw secError;
+
+    // 2. جلب الأفواج المرتبطة بهذا المسار
+    const { data: groups, error: grpError } = await supabase
+      .from('study_groups')
+      .select('id, name, section_id')
+      .eq('path_id', pathId)
+      .order('name', { ascending: true });
+
+    if (grpError) throw grpError;
+
+    // إرجاع البيانات
+    res.json({
+      sections: sections || [],
+      groups: groups || []
+    });
+
+  } catch (error) {
+    console.error("Hierarchy Error:", error);
+    res.status(500).json({ error: error.message });
+  }
+}
 /**
  * جلب المواد الخاصة بالطالب بناءً على مساره + الفصل الدراسي العالمي للنظام
  */
@@ -93,5 +131,6 @@ async function getLessonsBySubject(req, res) {
 
 module.exports = {
     getMySubjects,
-    getLessonsBySubject 
+    getLessonsBySubject ,
+    getAcademicHierarchy
 };
