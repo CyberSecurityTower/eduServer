@@ -301,4 +301,6 @@ router.post('/worklens/search', requireAuth, workLensController.executeSearch);
 router.get('/admin/transactions', requireAdmin, adminController.getRecentTransactions);
 router.get('/admin/users-list', requireAdmin, adminController.getUsersList); // ✅ المسار الجديد
 
+// مسار عام (Public) لجلب الهرمية عند التسجيل
+router.get('/academic/hierarchy', subjectController.getAcademicHierarchy);
 module.exports = router;
