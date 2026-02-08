@@ -24,7 +24,8 @@ const storeController = require('../controllers/storeController');
 const folderController = require('../controllers/folderController');
 const subjectController = require('../controllers/subjectController'); 
 const workLensController = require('../controllers/workLensController');
-
+const leaderController = require('../controllers/leaderController');
+const verifyLeader = require('../middleware/verifyLeader');
 /*
 // ⏰ تشغيل منقذ الستريك كل ساعة (60 دقيقة)
 setInterval(() => {
@@ -296,10 +297,26 @@ router.post('/admin/fix-file-sizes', requireAdmin, adminController.fixRealFileSi
 router.post('/worklens/search', requireAuth, workLensController.executeSearch);
 
 
+// ==========================================
+// 10. LeaderSpace Routes (منطقة القادة) 👮‍♂️
+// ==========================================
+
+// جميع المسارات هنا تتطلب توثيق المستخدم + التحقق من كونه ليدر
+router.use('/leader', requireAuth, verifyLeader);
+
+// 1. إرسال تنبيه للفوج
+router.post('/leader/broadcast', leaderController.broadcastToGroup);
+
+// 2. تعديل جدول التوقيت (تغيير قاعة، وقت، إلغاء حصة)
+router.patch('/leader/schedule/:scheduleId', leaderController.updateScheduleItem);
+
+// 3. إضافة امتحان
+router.post('/leader/exam', leaderController.createGroupExam);
+
 
 // تحت قسم Admin Panel Routes
 router.get('/admin/transactions', requireAdmin, adminController.getRecentTransactions);
-router.get('/admin/users-list', requireAdmin, adminController.getUsersList); // ✅ المسار الجديد
+router.get('/admin/users-list', requireAdmin, adminController.getUsersList); 
 
 // مسار عام (Public) لجلب الهرمية عند التسجيل
 router.get('/academic/hierarchy', subjectController.getAcademicHierarchy);
