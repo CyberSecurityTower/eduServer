@@ -64,51 +64,121 @@ async function broadcastToGroup(req, res) {
     return res.status(500).json({ error: err.message });
   }
 }
+// controllers/leaderController.js - إضافات وتعديلات
 
 /**
- * 📅 Update Schedule
- * تعديل حصة في الجدول (يجب التأكد أن الحصة تابعة لفوج الليدر)
+ * دالة مساعدة لمعالجة النصوص المترجمة
+ * إذا أرسل الليدر نصاً عادياً، نقوم بنسخه في كل اللغات
  */
-async function updateScheduleItem(req, res) {
-  const { scheduleId } = req.params;
-  const updates = req.body; // { room, start_time, type, etc... }
+const formatI18n = (input) => {
+  if (!input) return null;
+  // إذا كان النص قادماً ككائن مترجم جاهز، نرجعه كما هو
+  if (typeof input === 'object' && (input.ar || input.en || input.fr)) {
+    return {
+      ar: input.ar || input.en || input.fr,
+      en: input.en || input.ar || input.fr,
+      fr: input.fr || input.ar || input.en
+    };
+  }
+  // إذا كان نصاً بسيطاً، نكرره في كل الحقول
+  return { ar: input, en: input, fr: input };
+};
+
+/**
+ * ➕ Create Schedule Item
+ * إضافة حصة جديدة للجدول
+ */
+async function createScheduleItem(req, res) {
+  const { 
+    day_of_week, start_time, end_time, type, 
+    subject_name, professor_name, room, notes, semester 
+  } = req.body;
   const { groupId } = req.leaderProfile;
 
   try {
-    // 1. الأمن أولاً: هل هذه الحصة تابعة لفوج هذا الليدر؟
-    const { data: scheduleItem, error: fetchError } = await supabase
-        .from('group_schedules')
-        .select('group_id')
-        .eq('id', scheduleId)
-        .single();
-
-    if (fetchError || !scheduleItem) {
-        return res.status(404).json({ error: 'Schedule item not found.' });
-    }
-
-    // 2. نقطة التحقق الحاسمة (The Gatekeeper Check)
-    if (scheduleItem.group_id !== groupId) {
-        logger.warn(`🚨 Security Alert: Leader of ${groupId} tried to edit schedule of ${scheduleItem.group_id}`);
-        return res.status(403).json({ error: 'You can only edit schedules for your own group.' });
-    }
-
-    // 3. التنفيذ الآمن
     const { data, error } = await supabase
-        .from('group_schedules')
-        .update(updates)
-        .eq('id', scheduleId)
-        .select()
-        .single();
+      .from('group_schedules')
+      .insert({
+        group_id: groupId,
+        day_of_week: day_of_week.toLowerCase(),
+        start_time,
+        end_time,
+        type, // cours, td, tp, online
+        subject_name: formatI18n(subject_name),
+        professor_name: formatI18n(professor_name),
+        room,
+        notes,
+        semester: semester || 'S1',
+        created_at: new Date().toISOString()
+      })
+      .select()
+      .single();
 
     if (error) throw error;
-
-    return res.json({ success: true, data });
-
+    res.status(201).json({ success: true, data });
   } catch (err) {
-    logger.error('Update Schedule Error:', err.message);
-    return res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 }
+
+/**
+ * 📝 Update Schedule Item (نسخة شاملة)
+ */
+async function updateScheduleItem(req, res) {
+  const { scheduleId } = req.params;
+  const { groupId } = req.leaderProfile;
+  const updates = req.body;
+
+  try {
+    // التأكد من الملكية
+    const { data: item } = await supabase.from('group_schedules').select('group_id').eq('id', scheduleId).single();
+    if (!item || item.group_id !== groupId) {
+        return res.status(403).json({ error: 'Unauthorized to edit this schedule.' });
+    }
+
+    // تجهيز البيانات مع معالجة الترجمة للحقول النصية
+    const finalUpdates = { ...updates };
+    if (updates.subject_name) finalUpdates.subject_name = formatI18n(updates.subject_name);
+    if (updates.professor_name) finalUpdates.professor_name = formatI18n(updates.professor_name);
+    if (updates.day_of_week) finalUpdates.day_of_week = updates.day_of_week.toLowerCase();
+
+    const { data, error } = await supabase
+      .from('group_schedules')
+      .update(finalUpdates)
+      .eq('id', scheduleId)
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * 🗑️ Delete Schedule Item
+ */
+async function deleteScheduleItem(req, res) {
+  const { scheduleId } = req.params;
+  const { groupId } = req.leaderProfile;
+
+  try {
+    // التأكد من الملكية
+    const { data: item } = await supabase.from('group_schedules').select('group_id').eq('id', scheduleId).single();
+    if (!item || item.group_id !== groupId) {
+        return res.status(403).json({ error: 'Unauthorized to delete this schedule.' });
+    }
+
+    const { error } = await supabase.from('group_schedules').delete().eq('id', scheduleId);
+    if (error) throw error;
+
+    res.json({ success: true, message: 'Schedule item deleted.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
 
 /**
  * 📝 Create Exam
@@ -165,5 +235,7 @@ async function createGroupExam(req, res) {
 module.exports = {
   broadcastToGroup,
   updateScheduleItem,
-  createGroupExam
+  createGroupExam,
+  createScheduleItem,
+  deleteScheduleItem
 };
