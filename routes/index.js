@@ -307,12 +307,12 @@ router.use('/leader', requireAuth, verifyLeader);
 // 1. إرسال تنبيه للفوج
 router.post('/leader/broadcast', leaderController.broadcastToGroup);
 
-// 2. تعديل جدول التوقيت (تغيير قاعة، وقت، إلغاء حصة)
-router.patch('/leader/schedule/:scheduleId', leaderController.updateScheduleItem);
-
 // 3. إضافة امتحان
 router.post('/leader/exam', leaderController.createGroupExam);
 
+router.post('/leader/schedule', leaderController.createScheduleItem); // إضافة
+router.patch('/leader/schedule/:scheduleId', leaderController.updateScheduleItem); // تعديل شامل
+router.delete('/leader/schedule/:scheduleId', leaderController.deleteScheduleItem); // حذف
 
 // تحت قسم Admin Panel Routes
 router.get('/admin/transactions', requireAdmin, adminController.getRecentTransactions);
