@@ -313,6 +313,7 @@ router.post('/leader/exam', leaderController.createGroupExam);
 router.post('/leader/schedule', leaderController.createScheduleItem); // إضافة
 router.patch('/leader/schedule/:scheduleId', leaderController.updateScheduleItem); // تعديل شامل
 router.delete('/leader/schedule/:scheduleId', leaderController.deleteScheduleItem); // حذف
+router.get('/leader/students', leaderController.getMyGroupStudents);
 
 // تحت قسم Admin Panel Routes
 router.get('/admin/transactions', requireAdmin, adminController.getRecentTransactions);
