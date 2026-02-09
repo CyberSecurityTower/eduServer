@@ -299,11 +299,12 @@ function initChatBrainController(dependencies) {
 }
 
 async function clearLessonHistory(req, res) {
-  const { userId } = req.user;
+  const userId = req.user.id;
   const { lessonId } = req.params;
 
+  console.log(`🗑️ [DELETE REQUEST] User: ${userId} is clearing Lesson: ${lessonId}`);
+
   try {
-    // 1. العثور على الجلسة المرتبطة بالدرس والمستخدم
     const { data: session } = await supabase
       .from('chat_sessions')
       .select('id')
@@ -311,22 +312,16 @@ async function clearLessonHistory(req, res) {
       .eq('context_id', lessonId)
       .maybeSingle();
 
-    if (!session) {
-      return res.json({ success: true, message: "No session found to clear." });
+    if (session) {
+        console.log(`Found Session ID: ${session.id}, deleting messages...`);
+        const { error } = await supabase.from('chat_messages').delete().eq('session_id', session.id);
+        if (error) throw error;
     }
 
-    // 2. حذف جميع الرسائل في هذه الجلسة
-    const { error } = await supabase
-      .from('chat_messages')
-      .delete()
-      .eq('session_id', session.id);
-
-    if (error) throw error;
-
-    res.json({ success: true, message: "History cleared successfully." });
-  } catch (error) {
-    console.error("Error clearing history:", error);
-    res.status(500).json({ error: "Failed to clear history" });
+    res.json({ success: true, message: "History cleared" });
+  } catch (e) {
+    console.error("Delete Error:", e);
+    res.status(500).json({ error: e.message });
   }
 }
 
