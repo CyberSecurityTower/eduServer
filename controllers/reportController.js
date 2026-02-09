@@ -25,7 +25,7 @@ async function submitContentReport(req, res) {
         // بناءً على الصورة، الجدول يحتوي على id, user_id, message_content, reason, created_at
         // سنضيف الـ lessonId داخل حقل الـ reason أو message إذا لم يوجد عمود مخصص، 
         // لكن الأفضل إضافته كعمود إذا كان موجوداً.
-        message_content: messageContent,
+        message_content: `[Lesson: ${lessonId}] - ${messageContent}`,
         reason: reason,
         created_at: new Date().toISOString()
       })
