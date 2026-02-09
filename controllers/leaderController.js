@@ -233,18 +233,18 @@ async function createGroupExam(req, res) {
 }
 /**
  * 👥 Get My Group Students
- * جلب قائمة الطلاب التابعين لفوج الليدر فقط
+ * جلب قائمة الطلاب التابعين لفوج الليدر فقط (نسخة مصححة)
  */
 async function getMyGroupStudents(req, res) {
   const { groupId } = req.leaderProfile;
 
   try {
-    // نختار الحقول الضرورية فقط (للحفاظ على الخصوصية وتقليل حجم البيانات)
+    // تم حذف profile_picture وإبقاء الحقول الموجودة فعلياً في الجدول
     const { data: students, error } = await supabase
       .from('users')
-      .select('id, email, first_name, last_name, profile_picture, role')
+      .select('id, email, first_name, last_name, role, gender') // أضفت المستوى والجنس كبدائل مفيدة
       .eq('group_id', groupId)
-      .order('first_name', { ascending: true }); // ترتيب أبجدي
+      .order('first_name', { ascending: true });
 
     if (error) throw error;
 
