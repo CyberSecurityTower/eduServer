@@ -231,11 +231,41 @@ async function createGroupExam(req, res) {
         res.status(500).json({ error: err.message });
     }
 }
+/**
+ * 👥 Get My Group Students
+ * جلب قائمة الطلاب التابعين لفوج الليدر فقط
+ */
+async function getMyGroupStudents(req, res) {
+  const { groupId } = req.leaderProfile;
+
+  try {
+    // نختار الحقول الضرورية فقط (للحفاظ على الخصوصية وتقليل حجم البيانات)
+    const { data: students, error } = await supabase
+      .from('users')
+      .select('id, email, first_name, last_name, profile_picture, role')
+      .eq('group_id', groupId)
+      .order('first_name', { ascending: true }); // ترتيب أبجدي
+
+    if (error) throw error;
+
+    res.status(200).json({
+      success: true,
+      group_id: groupId,
+      count: students.length,
+      students: students
+    });
+
+  } catch (err) {
+    logger.error('Get Group Students Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+}
 
 module.exports = {
   broadcastToGroup,
   updateScheduleItem,
   createGroupExam,
   createScheduleItem,
-  deleteScheduleItem
+  deleteScheduleItem,
+  getMyGroupStudents
 };
