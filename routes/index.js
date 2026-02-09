@@ -26,6 +26,8 @@ const subjectController = require('../controllers/subjectController');
 const workLensController = require('../controllers/workLensController');
 const leaderController = require('../controllers/leaderController');
 const verifyLeader = require('../middleware/verifyLeader');
+const reportController = require('../controllers/reportController');
+
 /*
 // ⏰ تشغيل منقذ الستريك كل ساعة (60 دقيقة)
 setInterval(() => {
@@ -321,4 +323,8 @@ router.get('/admin/users-list', requireAdmin, adminController.getUsersList);
 
 // مسار عام (Public) لجلب الهرمية عند التسجيل
 router.get('/academic/hierarchy', subjectController.getAcademicHierarchy);
+
+// 2. إضافة المسار في قسم User App Features
+// نستخدم requireAuth لضمان أننا نعرف من هو المستخدم الذي قام بالابلاغ
+router.post('/content/report', requireAuth, reportController.submitContentReport);
 module.exports = router;
