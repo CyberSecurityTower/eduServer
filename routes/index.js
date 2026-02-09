@@ -323,7 +323,8 @@ router.get('/admin/users-list', requireAdmin, adminController.getUsersList);
 
 // مسار عام (Public) لجلب الهرمية عند التسجيل
 router.get('/academic/hierarchy', subjectController.getAcademicHierarchy);
-
+// حذف تاريخ المحادثة لدرس معين
+router.delete('/chat/history/lesson/:lessonId', requireAuth, chatBrainController.clearLessonHistory);
 // 2. إضافة المسار في قسم User App Features
 // نستخدم requireAuth لضمان أننا نعرف من هو المستخدم الذي قام بالابلاغ
 router.post('/content/report', requireAuth, reportController.submitContentReport);
