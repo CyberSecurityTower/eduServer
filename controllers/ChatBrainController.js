@@ -298,4 +298,37 @@ function initChatBrainController(dependencies) {
     console.log('🧠 ChatBrainController initialized (FULL VISION MODE).');
 }
 
-module.exports = { processChat, getChatHistory, initChatBrainController };
+async function clearLessonHistory(req, res) {
+  const { userId } = req.user;
+  const { lessonId } = req.params;
+
+  try {
+    // 1. العثور على الجلسة المرتبطة بالدرس والمستخدم
+    const { data: session } = await supabase
+      .from('chat_sessions')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('context_id', lessonId)
+      .maybeSingle();
+
+    if (!session) {
+      return res.json({ success: true, message: "No session found to clear." });
+    }
+
+    // 2. حذف جميع الرسائل في هذه الجلسة
+    const { error } = await supabase
+      .from('chat_messages')
+      .delete()
+      .eq('session_id', session.id);
+
+    if (error) throw error;
+
+    res.json({ success: true, message: "History cleared successfully." });
+  } catch (error) {
+    console.error("Error clearing history:", error);
+    res.status(500).json({ error: "Failed to clear history" });
+  }
+}
+
+// أضفها للمصدّرات
+module.exports = { processChat, getChatHistory, clearLessonHistory, initChatBrainController };
