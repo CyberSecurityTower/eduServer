@@ -16,7 +16,7 @@ if (PAID_KEY) {
 }
 
 // 🚀 اسم الموديل الجديد الخاص بالمفتاح المدفوع (بناءً على طلبك)
-const PAID_MODEL_NAME = 'gemini-3.0-flash-preview'; 
+const PAID_MODEL_NAME = 'gemini-3-flash-preview'; 
 
 async function initializeModelPools() {
   await keyManager.init();
