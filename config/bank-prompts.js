@@ -132,13 +132,13 @@ You must generate exactly 12 questions in total.
 }
 
 ### 📦 DATABASE OUTPUT FORMAT (STRICT SQL SCRIPT):
-Output ONLY a valid PostgreSQL script wrapped in a ```sql block. DO NOT write any greetings or explanations.
+Output ONLY a valid PostgreSQL script wrapped in a \`\`\`sql block. DO NOT write any greetings or explanations.
 All Arabic text must be Formal Academic Arabic.
 You MUST use Postgres Dollar-Quoting ($$) to wrap the JSON array to prevent escaping issues.
 
 Use exactly this format:
 
-```sql
+\`\`\`sql
 INSERT INTO question_bank (lesson_id, atom_id, widget_type, difficulty, points, is_verified, content)
 SELECT 
   lesson_id, 
@@ -151,14 +151,14 @@ SELECT
 FROM json_populate_recordset(null::question_bank, $$
 [
   {
-    "lesson_id": "USE_THE_LESSON_ID_PROVIDED_BELOW",
+    "lesson_id": "${lessonId}",
     "atom_id": "USE_THE_EXACT_ATOM_ID_FROM_THE_LIST",
     "widget_type": "MCQ", 
     "difficulty": 2,
     "points": 15,
     "is_verified": true,
     "content": { 
-      "text": "السؤال هنا؟",
+      "text": "نص السؤال هنا؟",
       "options": [{"id": "opt1", "text": "خيار 1"}, {"id": "opt2", "text": "خيار 2"}],
       "explanation": "الشرح هنا",
       "correct_answer": "opt1"
@@ -167,6 +167,7 @@ FROM json_populate_recordset(null::question_bank, $$
   ... (All 12 objects here) ...
 ]
 $$);
+\`\`\`
 ### EXECUTION:
 Analyze the content, calculate the distribution, and generate the JSON array of exactly 12 questions now.
 You must use all widgets & if an atom has 2 questions or more ensure all of them with different widget.
