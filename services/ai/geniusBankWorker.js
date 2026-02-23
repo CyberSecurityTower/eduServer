@@ -10,15 +10,12 @@ const logger = require('../../utils/logger');
 const systemHealth = require('../monitoring/systemHealth');
 const keyManager = require('./keyManager');
 
-const activeProcessingIds = new Set();
-
 class GeniusBankWorker {
     
     constructor() {
         this.STOP_SIGNAL = false;
         this.isWorking = false;
-        this.failedSessionIds = new Set(); 
-        this.targetSubjectId = null; // 🔥 تخزين المادة المستهدفة
+        this.taskQueue = []; // 🔥 الطابور المركزي للدروس
     }
 
     stop() {
@@ -30,24 +27,30 @@ class GeniusBankWorker {
         return false;
     }
 
-    // 🔥 الجديد: استقبال subjectId
     async startMission(subjectId = null) {
         if (this.isWorking) {
             logger.warn('⚠️ Mission already running.');
             return;
         }
 
-        this.targetSubjectId = subjectId; // حفظه لاستخدامه في البحث
         const targetLog = subjectId ? `Targeting Subject: ${subjectId}` : 'Targeting ALL';
-        
         logger.info(`🚀 Genius Bank Mission Started (Turbo Mode). ${targetLog}`);
         
         systemHealth.setMaintenanceMode(true);
         this.STOP_SIGNAL = false;
         this.isWorking = true;
-        this.failedSessionIds.clear();
+        this.taskQueue = [];
 
         try {
+            // 1. 🧠 بناء الطابور مرة واحدة قبل انطلاق العمال
+            await this._buildTaskQueue(subjectId);
+
+            if (this.taskQueue.length === 0) {
+                logger.info('✅ No lessons need processing. Everything is up to date!');
+                return;
+            }
+
+            // 2. إطلاق العمال
             const worker1 = this._workerLoop(1);
             const worker2 = this._workerLoop(2);
 
@@ -59,19 +62,53 @@ class GeniusBankWorker {
             logger.error('💥 Critical Mission Failure:', err);
         } finally {
             systemHealth.setMaintenanceMode(false);
-            activeProcessingIds.clear();
             this.isWorking = false;
         }
+    }
+
+    /**
+     * 🔥 الجديد: تجهيز كل الدروس المطلوبة ووضعها في طابور
+     */
+    async _buildTaskQueue(subjectId) {
+        logger.info('🔍 Scanning database to build Task Queue...');
+
+        // أ. جلب الدروس (إما للمادة المحددة أو الكل)
+        let query = supabase.from('lessons').select('id, title, subject_id');
+        if (subjectId) query = query.eq('subject_id', subjectId);
+        const { data: lessons, error: lessonError } = await query;
+
+        if (lessonError || !lessons) {
+            logger.error('Failed to fetch lessons for Queue.');
+            return;
+        }
+
+        // ب. جلب الدروس التي تمتلك هيكلاً ذرياً
+        const { data: structures } = await supabase.from('atomic_lesson_structures').select('lesson_id');
+        const lessonsWithAtoms = new Set(structures?.map(s => s.lesson_id) || []);
+
+        // ج. جلب الدروس التي تمتلك أسئلة مسبقاً
+        const { data: existingBanks } = await supabase.from('question_bank').select('lesson_id');
+        const lessonsWithQuestions = new Set(existingBanks?.map(b => b.lesson_id) || []);
+
+        // د. تصفية الدروس المطلوبة فقط وإضافتها للطابور
+        for (const lesson of lessons) {
+            if (lessonsWithAtoms.has(lesson.id) && !lessonsWithQuestions.has(lesson.id)) {
+                this.taskQueue.push(lesson);
+            }
+        }
+
+        logger.info(`🎯 Found ${this.taskQueue.length} lessons ready for generation.`);
     }
 
     async _workerLoop(workerId) {
         logger.info(`👷 Worker #${workerId} online.`);
 
         while (!this.STOP_SIGNAL) {
-            const lesson = await this._findNextTarget(workerId);
+            // 🔥 السحب من الطابور (عملية متزامنة وآمنة 100% من التداخل)
+            const lesson = this.taskQueue.shift();
 
             if (!lesson) {
-                logger.info(`💤 Worker #${workerId}: No eligible lessons found (Queue empty).`);
+                logger.info(`💤 Worker #${workerId}: Queue empty. Going to sleep.`);
                 break; 
             }
 
@@ -79,52 +116,6 @@ class GeniusBankWorker {
             
             if (!this.STOP_SIGNAL) await sleep(1000); 
         }
-    }
-
-    /**
-     * 🧠 البحث الصارم والمحدد
-     */
-    async _findNextTarget(workerId) {
-        // 1. جلب الدروس (إما للمادة المحددة، أو للكل)
-        let query = supabase.from('lessons').select('id, title, subject_id');
-        if (this.targetSubjectId) {
-            query = query.eq('subject_id', this.targetSubjectId);
-        }
-
-        const { data: lessons, error } = await query;
-
-        if (error || !lessons) {
-            logger.error(`[Worker #${workerId}] Failed to fetch lessons.`);
-            return null;
-        }
-
-        // 2. فحص الدروس واحداً تلو الآخر بدقة
-        for (const lesson of lessons) {
-            if (activeProcessingIds.has(lesson.id) || this.failedSessionIds.has(lesson.id)) continue;
-
-            // أ. هل يمتلك الدرس هيكلاً ذرياً؟
-            const { data: atomic } = await supabase
-                .from('atomic_lesson_structures')
-                .select('id')
-                .eq('lesson_id', lesson.id)
-                .maybeSingle();
-
-            if (!atomic) continue; // لا يمتلك هيكل ذري، تجاوزه
-
-            // ب. هل يمتلك أسئلة مسبقاً؟ (بحث صارم في الداتابيز مباشرة)
-            const { count } = await supabase
-                .from('question_bank')
-                .select('*', { count: 'exact', head: true })
-                .eq('lesson_id', lesson.id);
-
-            if (count > 0) continue; // يمتلك أسئلة، تجاوزه
-
-            // ج. نجح في كل الاختبارات! هذا هو هدفنا.
-            activeProcessingIds.add(lesson.id);
-            return lesson;
-        }
-
-        return null; // لا يوجد المزيد
     }
 
     async _processLesson(workerId, lesson) {
@@ -147,7 +138,6 @@ class GeniusBankWorker {
 
             if (!lessonContent || !atomicJson || !atomicJson.elements) {
                 logger.warn(`${logPrefix} | ❌ Missing Content or Atomic Structure. Skipping.`);
-                this.failedSessionIds.add(lesson.id);
                 return;
             }
 
@@ -196,10 +186,7 @@ class GeniusBankWorker {
 
         } catch (err) {
             logger.error(`${logPrefix} | ❌ Error: ${err.message}`);
-            this.failedSessionIds.add(lesson.id);
-        } finally {
-            activeProcessingIds.delete(lesson.id);
-        }
+        } 
     }
 }
 
