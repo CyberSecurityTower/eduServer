@@ -18,6 +18,7 @@ class GeniusBankWorker {
         this.STOP_SIGNAL = false;
         this.isWorking = false;
         this.failedSessionIds = new Set(); 
+        this.targetSubjectId = null; // 🔥 تخزين المادة المستهدفة
     }
 
     stop() {
@@ -29,13 +30,17 @@ class GeniusBankWorker {
         return false;
     }
 
-    async startMission() {
+    // 🔥 الجديد: استقبال subjectId
+    async startMission(subjectId = null) {
         if (this.isWorking) {
             logger.warn('⚠️ Mission already running.');
             return;
         }
 
-        logger.info('🚀 Genius Bank Mission Started (Turbo Mode - 12 Qs Batch).');
+        this.targetSubjectId = subjectId; // حفظه لاستخدامه في البحث
+        const targetLog = subjectId ? `Targeting Subject: ${subjectId}` : 'Targeting ALL';
+        
+        logger.info(`🚀 Genius Bank Mission Started (Turbo Mode). ${targetLog}`);
         
         systemHealth.setMaintenanceMode(true);
         this.STOP_SIGNAL = false;
@@ -48,7 +53,7 @@ class GeniusBankWorker {
 
             await Promise.all([worker1, worker2]);
 
-            logger.success(this.STOP_SIGNAL ? '🚫 Mission Stopped by User.' : '🏁 Mission Accomplished: All lessons processed.');
+            logger.success(this.STOP_SIGNAL ? '🚫 Mission Stopped by User.' : '🏁 Mission Accomplished.');
 
         } catch (err) {
             logger.error('💥 Critical Mission Failure:', err);
@@ -77,71 +82,61 @@ class GeniusBankWorker {
     }
 
     /**
-     * 🧠 البحث الذكي: جلب كل الدروس ثم فلترتها في الذاكرة لتجنب فخ الـ Limit
+     * 🧠 البحث الصارم والمحدد
      */
     async _findNextTarget(workerId) {
-        // 1. جلب كل الدروس التي تمتلك هيكل ذري
-        const { data: allStructures, error: structError } = await supabase
-            .from('atomic_lesson_structures')
-            .select('lesson_id');
+        // 1. جلب الدروس (إما للمادة المحددة، أو للكل)
+        let query = supabase.from('lessons').select('id, title, subject_id');
+        if (this.targetSubjectId) {
+            query = query.eq('subject_id', this.targetSubjectId);
+        }
 
-        if (structError || !allStructures) {
-            logger.error(`[Worker #${workerId}] DB Error: ${structError?.message}`);
+        const { data: lessons, error } = await query;
+
+        if (error || !lessons) {
+            logger.error(`[Worker #${workerId}] Failed to fetch lessons.`);
             return null;
         }
 
-        // 2. جلب كل الدروس التي تمتلك أسئلة مسبقاً
-        // نقوم بجلب lesson_id فقط لتقليل استهلاك الذاكرة
-        const { data: existingBanks } = await supabase
-            .from('question_bank')
-            .select('lesson_id');
+        // 2. فحص الدروس واحداً تلو الآخر بدقة
+        for (const lesson of lessons) {
+            if (activeProcessingIds.has(lesson.id) || this.failedSessionIds.has(lesson.id)) continue;
 
-        // وضعها في Set لتكون سرعة البحث فيها O(1)
-        const lessonsWithQuestions = new Set(existingBanks?.map(q => q.lesson_id) || []);
+            // أ. هل يمتلك الدرس هيكلاً ذرياً؟
+            const { data: atomic } = await supabase
+                .from('atomic_lesson_structures')
+                .select('id')
+                .eq('lesson_id', lesson.id)
+                .maybeSingle();
 
-        // 3. البحث عن أول درس ليس له أسئلة
-        for (const item of allStructures) {
-            const lessonId = item.lesson_id;
+            if (!atomic) continue; // لا يمتلك هيكل ذري، تجاوزه
 
-            // تجاوز الدرس إذا كان: قيد المعالجة، فشل سابقاً، أو يمتلك أسئلة بالفعل
-            if (activeProcessingIds.has(lessonId) || 
-                this.failedSessionIds.has(lessonId) || 
-                lessonsWithQuestions.has(lessonId)) {
-                continue;
-            }
+            // ب. هل يمتلك أسئلة مسبقاً؟ (بحث صارم في الداتابيز مباشرة)
+            const { count } = await supabase
+                .from('question_bank')
+                .select('*', { count: 'exact', head: true })
+                .eq('lesson_id', lesson.id);
 
-            // وجدنا درساً يحتاج للتوليد!
-            activeProcessingIds.add(lessonId);
+            if (count > 0) continue; // يمتلك أسئلة، تجاوزه
 
-            // جلب عنوان الدرس للمساعدة في السياق
-            const { data: lessonData } = await supabase
-                .from('lessons')
-                .select('title')
-                .eq('id', lessonId)
-                .single();
-
-            return {
-                id: lessonId,
-                title: lessonData?.title || lessonId
-            };
+            // ج. نجح في كل الاختبارات! هذا هو هدفنا.
+            activeProcessingIds.add(lesson.id);
+            return lesson;
         }
 
-        return null; // انتهت كل الدروس
+        return null; // لا يوجد المزيد
     }
 
     async _processLesson(workerId, lesson) {
-        const logPrefix = `[Worker #${workerId}] 📘 ${lesson.title} (${lesson.id})`;
+        const logPrefix = `[Worker #${workerId}] 📘 [${lesson.subject_id}] ${lesson.title} (${lesson.id})`;
         logger.info(`${logPrefix} | ⏳ Fetching Data & Generating 12 Questions...`);
 
         try {
-            // 1. جلب المحتوى من lessons_content وهيكلة الجيسون من atomic_lesson_structures
-            // ملاحظة: تأكدنا من البحث باستخدام lesson.id
             const [contentRes, structureRes] = await Promise.all([
                 supabase.from('lessons_content').select('content').eq('lesson_id', lesson.id).maybeSingle(),
                 supabase.from('atomic_lesson_structures').select('structure_data').eq('lesson_id', lesson.id).maybeSingle()
             ]);
 
-            // دعم للحالة التي قد يكون فيها عمود الربط اسمه id بدلاً من lesson_id في جدول المحتوى
             let lessonContent = contentRes.data?.content;
             if (!lessonContent) {
                  const fallbackContent = await supabase.from('lessons_content').select('content').eq('id', lesson.id).maybeSingle();
@@ -156,32 +151,23 @@ class GeniusBankWorker {
                 return;
             }
 
-            // 2. تجهيز البرومبت وتمرير كل البيانات التي طلبها المستخدم
             const prompt = QUESTION_GENERATION_PROMPT(lesson.title, lesson.id, lessonContent, atomicJson.elements);
             
-            // 3. استدعاء الذكاء الاصطناعي مع التدوير الذكي للمفاتيح (Failover)
             const totalKeys = keyManager.getKeyCount();
             const res = await generateWithFailover('analysis', prompt, { 
                 label: `BankGen_${lesson.id}`,
                 timeoutMs: 180000, 
-                maxRetries: totalKeys > 0 ? totalKeys : 3 // يجرب كل المفاتيح قبل الاستسلام
+                maxRetries: totalKeys > 0 ? totalKeys : 3 
             });
 
             const rawText = await extractTextFromResult(res);
 
-            // 4. استخراج JSON من داخل كود الـ SQL (بين علامتي $$)
             const jsonMatch = rawText.match(/\$\$\s*(\[\s*\{[\s\S]*\}\s*\])\s*\$\$/);
-            
             let questionsArray = [];
             
             if (jsonMatch && jsonMatch[1]) {
-                try {
-                    questionsArray = JSON.parse(jsonMatch[1]);
-                } catch (e) {
-                    logger.error(`${logPrefix} | JSON Parse Error from SQL extraction.`);
-                }
+                try { questionsArray = JSON.parse(jsonMatch[1]); } catch (e) {}
             } else {
-                // محاولة احتياطية
                 const fallbackMatch = rawText.match(/\[\s*\{[\s\S]*\}\s*\]/);
                 if (fallbackMatch) {
                      try { questionsArray = JSON.parse(fallbackMatch[0]); } catch(e){}
@@ -189,10 +175,9 @@ class GeniusBankWorker {
             }
 
             if (!questionsArray || questionsArray.length === 0) {
-                throw new Error("AI output parsing failed (No valid JSON found in SQL output)");
+                throw new Error("AI output parsing failed (No valid JSON found)");
             }
 
-            // 5. الإدراج في قاعدة البيانات
             const validQuestions = questionsArray.map(q => ({
                 lesson_id: lesson.id,
                 atom_id: q.atom_id,
