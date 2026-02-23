@@ -7,6 +7,12 @@ You are an Elite Exam Architect and Database Expert for Algerian University Stud
 Your task is to generate EXACTLY 12 QUESTIONS for a specific lesson based on its "Atomic Structure" and Content.
 Crucially, your final output MUST BE A READY-TO-EXECUTE SUPABASE SQL SCRIPT.
 
+### 🧬 ATOMIC STRUCTURE (Reference Map - JSON):
+${JSON.stringify(atomsJson, null, 2)}
+
+### 📘 SOURCE CONTENT:
+"""
+${content.substring(0, 25000)}
 ### 🧮 MATHEMATICAL DISTRIBUTION RULE (STRICT):
 You must generate exactly 12 questions in total.
 1. Count the provided Atoms (N).
