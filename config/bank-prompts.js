@@ -1,10 +1,11 @@
+
 // config/bank-prompts.js
 'use strict';
 
-const QUESTION_GENERATION_PROMPT = (lessonTitle, content, atomsList) => `
-
+// 1. هنا كان الخطأ: تم تصحيح المعاملات لتطابق ما يرسله الـ Worker
+const QUESTION_GENERATION_PROMPT = (lessonTitle, lessonId, content, atomsJson) => `
 You are an Elite Exam Architect and Database Expert for Algerian University Students.
-Your task is to generate EXACTLY 12 QUESTIONS for a specific lesson based on its "Atomic Structure" and Content.
+Your task is to generate EXACTLY 12 QUESTIONS for the lesson: "${lessonTitle}" based on its "Atomic Structure" and Content.
 Crucially, your final output MUST BE A READY-TO-EXECUTE SUPABASE SQL SCRIPT.
 
 ### 🧬 ATOMIC STRUCTURE (Reference Map - JSON):
@@ -13,6 +14,8 @@ ${JSON.stringify(atomsJson, null, 2)}
 ### 📘 SOURCE CONTENT:
 """
 ${content.substring(0, 25000)}
+"""
+
 ### 🧮 MATHEMATICAL DISTRIBUTION RULE (STRICT):
 You must generate exactly 12 questions in total.
 1. Count the provided Atoms (N).
@@ -177,7 +180,7 @@ $$);
 ### EXECUTION:
 Analyze the content, calculate the distribution, and generate the JSON array of exactly 12 questions now.
 You must use all widgets & if an atom has 2 questions or more ensure all of them with different widget.
-**Questions & options must be shorter in lenght as you can because the user has just 15 seconds to read question and choices and answer
+**Questions & options must be shorter in lenght as you can because the user has just 15 seconds to read question and choices and answer**
 `;
 
 module.exports = { QUESTION_GENERATION_PROMPT };
