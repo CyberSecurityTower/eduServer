@@ -1,3 +1,4 @@
+
 // controllers/bankController.js
 'use strict';
 
@@ -10,16 +11,20 @@ async function triggerBankGeneration(req, res) {
         return res.status(401).json({ error: 'Unauthorized' });
     }
 
+    // 🔥 الجديد: استقبال أيدي المادة
+    const { subjectId } = req.body;
+
     res.json({ 
         success: true, 
-        message: '🚀 Smart Bank Engine Started. Check logs for progress.',
+        message: `🚀 Smart Bank Engine Started. Targeting Subject: ${subjectId || 'ALL'}. Check logs.`,
         status: 'Maintenance Mode ON'
     });
 
-    geniusBankWorker.startMission();
+    // إرسال الأيدي للمحرك
+    geniusBankWorker.startMission(subjectId);
 }
 
-// 2. إيقاف العملية (الجديد)
+// 2. إيقاف العملية
 async function stopBankGeneration(req, res) {
     if (req.headers['x-admin-secret'] !== CONFIG.NIGHTLY_JOB_SECRET) {
         return res.status(401).json({ error: 'Unauthorized' });
