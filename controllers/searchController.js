@@ -53,7 +53,7 @@ async function quickSearch(req, res) {
 
         // 3. إعداد الاتصال بجوجل
         const genAI = new GoogleGenerativeAI(apiKey);
-        const modelName = 'gemini-2.5-flash-lite';
+        const modelName = 'gemini-3.1-flash-lite-preview';
         console.log(`🤖 Initializing Model: ${modelName}`);
         
         const model = genAI.getGenerativeModel({ model: modelName });
