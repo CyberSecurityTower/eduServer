@@ -3,7 +3,8 @@ const { _callModelInstance } = require('./index');
 const CONFIG = require('../../config');
 
 async function generateWithFailover(poolName, prompt, opts = {}) {
-    const targetModel = CONFIG.MODEL[poolName] || 'gemini-1.5-flash';
+    // تم تغيير الفولباك إلى 3-flash بدلاً من 1.5-flash
+    const targetModel = CONFIG.MODEL[poolName] || 'gemini-2.5-flash';
 
     return await _callModelInstance(
         targetModel,
@@ -14,7 +15,7 @@ async function generateWithFailover(poolName, prompt, opts = {}) {
         opts.history,
         opts.attachments,
         opts.enableSearch,
-        opts.maxRetries // 👈 أضفنا هذا المعامل الجديد
+        opts.maxRetries 
     );
 }
 module.exports = generateWithFailover;
