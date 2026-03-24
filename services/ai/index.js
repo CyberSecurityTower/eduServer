@@ -1,4 +1,3 @@
-
 // services/ai/index.js
 'use strict';
 
@@ -8,15 +7,14 @@ const { withTimeout, sleep } = require('../../utils');
 const keyManager = require('./keyManager');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-// 💎 1. تهيئة عميل جوجل المدفوع (مستقل تماماً عن المفاتيح المجانية)
+// 💎 1. تهيئة عميل جوجل المدفوع
 const PAID_KEY = process.env.PAID_KEY;
 let paidClient = null;
 if (PAID_KEY) {
     paidClient = new GoogleGenerativeAI(PAID_KEY);
 }
 
-// 🚀 اسم الموديل الجديد الخاص بالمفتاح المدفوع (بناءً على طلبك)
-const PAID_MODEL_NAME = 'gemini-3-flash-preview'; 
+// ⚠️ تم حذف PAID_MODEL_NAME الثابت لنجعل النظام يختار النموذج برمجياً حسب نوع المهمة
 
 async function initializeModelPools() {
   await keyManager.init();
@@ -24,7 +22,6 @@ async function initializeModelPools() {
   logger.success(`🤖 AI Genius Hive-Mind Active | Free Nodes: ${count} | Paid Node: ${paidClient ? 'ACTIVE 💎' : 'OFFLINE'}`);
 }
 
-// 🛠️ دالة مساعدة لتنفيذ الطلب الفعلي (لجعل الكود نظيفاً وتجنب التكرار)
 async function executeGeminiRequest(client, modelName, prompt, timeoutMs, systemInstruction, history, attachments, enableSearch) {
     const tools = enableSearch ? [{ googleSearch: {} }] : [];
     
@@ -67,24 +64,23 @@ async function executeGeminiRequest(client, modelName, prompt, timeoutMs, system
 // 🧠 قلب النظام: هنا يحدث اتخاذ القرار الذكي
 async function _callModelInstance(targetModelName, prompt, timeoutMs, label, systemInstruction, history, attachments, enableSearch) {
   
+  // ✅ تحديد الموديل الديناميكي (إذا لم يتم تمريره، نستخدم 3-flash الافتراضي الجديد)
+  const selectedModel = targetModelName || 'gemini-3-flash-preview';
+
   // ====================================================================
-  // 🟢 المرحلة الأولى: محاولة استخدام مفتاح مجاني (الموديلات القديمة)
+  // 🟢 المرحلة الأولى: محاولة استخدام مفتاح مجاني
   // ====================================================================
   const freeKeyObj = await keyManager.acquireKey();
   
   if (freeKeyObj) {
       try {
-          // نستخدم الموديل العادي الممرر للمفاتيح المجانية (مثل gemini-2.5-flash)
-          const selectedModel = targetModelName || 'gemini-2.5-flash';
-          
-          logger.info(`🟢 Attempting FREE KEY [${freeKeyObj.nickname}] for [${label}]...`);
+          logger.info(`🟢 Attempting FREE KEY [${freeKeyObj.nickname}] with Model [${selectedModel}] for [${label}]...`);
           
           const result = await executeGeminiRequest(
               freeKeyObj.client, selectedModel, prompt, timeoutMs, 
               systemInstruction, history, attachments, enableSearch
           );
 
-          // ✅ نجاح المفتاح المجاني (نرسل مكافأة للمفتاح في الداتابيز لترتفع صحته)
           keyManager.reportResult(freeKeyObj.key, true);
           return result;
 
@@ -94,23 +90,22 @@ async function _callModelInstance(targetModelName, prompt, timeoutMs, label, sys
           if (errStr.includes('429') || errStr.includes('Quota')) errType = '429';
           else if (errStr.includes('Candidate was stopped')) errType = 'safety';
 
-          // 🚨 فشل المفتاح المجاني -> نعاقبه ونعزله (لكي يحصل المستخدم القادم على مفتاح مختلف)
           keyManager.reportResult(freeKeyObj.key, false, errType);
           logger.warn(`⚠️ Free Key [${freeKeyObj.nickname}] Failed. Moving to PAID KEY...`);
       }
   } else {
-      logger.warn(`⚠️ No Free Keys available (All are resting). Moving directly to PAID KEY...`);
+      logger.warn(`⚠️ No Free Keys available. Moving directly to PAID KEY...`);
   }
 
   // ====================================================================
-  // 💎 المرحلة الثانية: تدخل المفتاح المدفوع (Gemini 3 Flash)
+  // 💎 المرحلة الثانية: تدخل المفتاح المدفوع
   // ====================================================================
   if (paidClient) {
       try {
-          logger.success(`💎 Using PAID KEY with Model [${PAID_MODEL_NAME}] for [${label}]...`);
+          logger.success(`💎 Using PAID KEY with Model [${selectedModel}] for [${label}]...`);
           
           const result = await executeGeminiRequest(
-              paidClient, PAID_MODEL_NAME, prompt, timeoutMs, 
+              paidClient, selectedModel, prompt, timeoutMs, 
               systemInstruction, history, attachments, enableSearch
           );
           
@@ -122,7 +117,6 @@ async function _callModelInstance(targetModelName, prompt, timeoutMs, label, sys
       }
   }
 
-  // إذا لم يكن المفتاح المدفوع موجوداً وفشلت كل المجانية
   throw new Error('AI Service Unavailable: System Overload.');
 }
 
