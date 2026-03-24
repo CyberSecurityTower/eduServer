@@ -8,7 +8,7 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@google/generative-ai": "*",
+    "@google/generative-ai": "latest",
     "@supabase/supabase-js": "^2.39.0",
     "cli-progress": "^3.12.0",
     "cloudinary": "^2.0.1",
