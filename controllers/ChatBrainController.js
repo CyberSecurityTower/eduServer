@@ -235,7 +235,7 @@ async function processChat(req, res) {
     2. Answer strictly based on the provided content snippet if applicable.
     3. You have vision access to the last 10 messages (Images/PDFs).
     4. Answer in **Algerian Derja**.
-    
+    5. CRITICAL: You MUST return EXACTLY ONE valid JSON object. Do NOT write any conversational text outside the JSON block.
     **OUTPUT JSON:** { "reply": "...", "widgets": [], "lesson_signal": ... }
     `;
 
@@ -249,14 +249,37 @@ async function processChat(req, res) {
         label: 'ChatBrain_FullVision'
     });
 
-    // 8. Process Response
+  // 8. Process Response
     let parsedResponse;
+    const rawText = typeof aiResult === 'object' ? aiResult.text : aiResult;
+
     try {
-        const cleanText = (typeof aiResult === 'object' ? aiResult.text : aiResult)
-                          .replace(/```json/g, '').replace(/```/g, '').trim();
-        parsedResponse = JSON.parse(cleanText);
+        // 1. محاولة استخراج كتل الجيسون فقط من النص
+        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+            let cleanJsonStr = jsonMatch[0].replace(/```(?:json)?/g, '').trim();
+            // تصليح الأخطاء الشائعة في الجيسون (مثل الفواصل الزائدة)
+            cleanJsonStr = cleanJsonStr.replace(/,\s*([}\]])/g, '$1');
+            parsedResponse = JSON.parse(cleanJsonStr);
+
+            // إذا كان حقل reply فارغاً داخل الجيسون، نأخذ النص الذي كتبه الـ AI قبله
+            if (!parsedResponse.reply || parsedResponse.reply.trim() === '') {
+                const textBeforeJson = rawText.split(jsonMatch[0])[0].trim();
+                parsedResponse.reply = textBeforeJson;
+            }
+        } else {
+            throw new Error("No JSON found");
+        }
     } catch (e) {
-        parsedResponse = { reply: typeof aiResult === 'object' ? aiResult.text : aiResult, widgets: [] };
+        // 2. إذا فشل استخراج الجيسون تماماً، نقوم بتنظيف النص الخام من أي أكواد
+        const cleanRawText = rawText.replace(/```(?:json)?[\s\S]*?```/g, '').trim();
+        // إزالة أي كود جيسون ملتصق بالنص العادي
+        const finalCleanText = cleanRawText.replace(/\{[\s\S]*"reply"[\s\S]*\}/g, '').trim();
+        
+        parsedResponse = { 
+            reply: finalCleanText || cleanRawText, 
+            widgets:[] 
+        };
     }
 
     // 9. Gatekeeper & Widgets
