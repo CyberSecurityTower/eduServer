@@ -65,7 +65,7 @@ async function executeGeminiRequest(client, modelName, prompt, timeoutMs, system
 async function _callModelInstance(targetModelName, prompt, timeoutMs, label, systemInstruction, history, attachments, enableSearch) {
   
   // ✅ تحديد الموديل الديناميكي (إذا لم يتم تمريره، نستخدم 3-flash الافتراضي الجديد)
-  const selectedModel = targetModelName || 'gemini-3-flash-preview';
+  const selectedModel = targetModelName || 'gemini-3.1-flash-preview';
 
   // ====================================================================
   // 🟢 المرحلة الأولى: محاولة استخدام مفتاح مجاني
