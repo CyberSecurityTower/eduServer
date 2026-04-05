@@ -42,20 +42,31 @@ async function generateAtomicStructuresBatch(req, res) {
       return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  // رد فوري لتجنب Timeout
-  res.json({ message: '🚀 Atomic Generator started in background...' });
+  // 👇 استخراج آي دي المادة من الطلب
+  const { subjectId } = req.body || {};
 
-  // تشغيل في الخلفية
-  runAtomicGeneratorLogic().catch(e => logger.error('Atomic Generator Fatal Error:', e));
+  // رد فوري لتجنب Timeout
+  res.json({ message: `🚀 Atomic Generator started in background for ${subjectId || 'ALL'}...` });
+
+  // تشغيل في الخلفية وتمرير آي دي المادة
+  runAtomicGeneratorLogic(subjectId).catch(e => logger.error('Atomic Generator Fatal Error:', e));
 }
-async function runAtomicGeneratorLogic() {
-  logger.info('⚛️ STARTING ATOMIC GENERATION (TURBO MODE) 🚀...');
+
+// 👇 إضافة subjectId كمتغير
+async function runAtomicGeneratorLogic(subjectId) {
+  logger.info(`⚛️ STARTING ATOMIC GENERATION (TURBO MODE) for ${subjectId || 'ALL'} 🚀...`);
 
   try {
     // 1. Fetch lessons
-    const { data: contents } = await supabase
-      .from('lessons_content')
-      .select('id, content');
+    let query = supabase.from('lessons_content').select('id, content, subject_id');
+    
+    // 👇 إذا تم تحديد مادة، فلتر الدروس الخاصة بها فقط
+    if (subjectId) {
+        query = query.eq('subject_id', subjectId);
+    }
+    
+    const { data: contents, error } = await query;
+    if (error) throw error;
 
     // 2. Fetch existing structures
     const { data: existingStructures } = await supabase
@@ -64,16 +75,21 @@ async function runAtomicGeneratorLogic() {
 
     const existingSet = new Set(existingStructures?.map(s => s.lesson_id) || []);
 
-    // 3. Filter lessons
-    const tasks = contents.filter(c => !existingSet.has(c.id));
-    logger.info(`🔨 Found ${tasks.length} lessons. Processing sequentially...`);
+    // 3. Filter lessons (أخذ الدروس التي ليس لها ذرات فقط)
+    const tasks = (contents || []).filter(c => !existingSet.has(c.id));
+    
+    if (tasks.length === 0) {
+        logger.info('✅ No missing atomic structures found for this request.');
+        return;
+    }
+
+    logger.info(`🔨 Found ${tasks.length} missing lessons. Processing sequentially...`);
 
     // 4. Limit batch size
     const batch = tasks.slice(0, 20);
 
     for (const task of batch) {
       logger.info(`⏳ Processing lesson ${task.id}...`);
-
       await processSingleAtomicLesson(task.id, task.content);
 
       logger.info('💤 Cooling down for 10 seconds...');
