@@ -27,7 +27,6 @@ const workLensController = require('../controllers/workLensController');
 const leaderController = require('../controllers/leaderController');
 const verifyLeader = require('../middleware/verifyLeader');
 const reportController = require('../controllers/reportController');
-router.get('/curriculum-health', requireAdmin, adminController.getCurriculumHealth);
 
 /*
 // ⏰ تشغيل منقذ الستريك كل ساعة (60 دقيقة)
@@ -115,6 +114,8 @@ router.post('/log-session-start', analyticsController.logSessionStart);
 // ==========================================
 // 4. Admin Panel Routes (لوحة التحكم - محمية) 🛡️
 // ==========================================
+router.get('/admin/curriculum-health', requireAdmin, adminController.getCurriculumHealth);
+
 //live traffic
 router.get('/admin/live-traffic', requireAdmin, adminController.getLiveTraffic);
 
