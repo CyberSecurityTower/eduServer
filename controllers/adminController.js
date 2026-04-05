@@ -1362,50 +1362,52 @@ async function getCurriculumHealth(req, res) {
   }
 }
 // ==========================================
-// 5. جلب تفاصيل الدرس الشاملة (للأدمن)
+// 5. جلب تفاصيل الدرس الشاملة (للأدمن) - DEBUG MODE 🕵️‍♂️
 // ==========================================
 
 async function getAdminLessonDetails(req, res) {
+  console.log(`\n======================================================`);
+  console.log(`📡 [DEBUG] Endpoint Hit: GET /admin/lessons/${req.params.lessonId}/details`);
+  console.log(`======================================================`);
+
   try {
     const { lessonId } = req.params;
 
     if (!lessonId) {
+      console.log(`❌ [DEBUG] Failed: Missing lessonId parameter`);
       return res.status(400).json({ error: 'Lesson ID is required' });
     }
 
-    // نستخدم Promise.all لجلب جميع البيانات في نفس الوقت (Parallel Fetching) لسرعة الاستجابة
-    // نستخدم maybeSingle() للمحتوى والذرات لأنه قد يكون الدرس جديداً ولم يتم توليدها بعد
+    console.log(`⏳ [DEBUG] Querying database for lesson ID: '${lessonId}'...`);
+
     const [lessonRes, contentRes, atomsRes, questionsRes] = await Promise.all([
-      // 1. البيانات الأساسية للدرس واسم المادة
-      supabase.from('lessons')
-        .select('id, title, order_index, subject_id, has_content, ai_memory, subjects(title)')
-        .eq('id', lessonId)
-        .single(),
-
-      // 2. محتوى الدرس (النص) - نستخدم id لأنه المفتاح الأساسي هنا
-      supabase.from('lessons_content')
-        .select('content')
-        .eq('id', lessonId)
-        .maybeSingle(),
-
-      // 3. الهيكل الذري (Atoms)
-      supabase.from('atomic_lesson_structures')
-        .select('structure_data')
-        .eq('lesson_id', lessonId)
-        .maybeSingle(),
-
-      // 4. بنك الأسئلة الخاص بهذا الدرس
-      supabase.from('question_bank')
-        .select('id, atom_id, widget_type, content, difficulty, points, is_verified')
-        .eq('lesson_id', lessonId)
+      supabase.from('lessons').select('id, title, order_index, subject_id, has_content, ai_memory, subjects(title)').eq('id', lessonId).single(),
+      supabase.from('lessons_content').select('content').eq('id', lessonId).maybeSingle(),
+      supabase.from('atomic_lesson_structures').select('structure_data').eq('lesson_id', lessonId).maybeSingle(),
+      supabase.from('question_bank').select('id, atom_id, widget_type, content, difficulty, points, is_verified').eq('lesson_id', lessonId)
     ]);
 
-    // إذا لم نجد الدرس الأساسي، نرجع خطأ 404
-    if (lessonRes.error || !lessonRes.data) {
-      return res.status(404).json({ error: 'Lesson not found' });
+    // طباعة نتائج قاعدة البيانات بالتفصيل
+    console.log(`📊 [DEBUG] DB Response - Lesson Data:`, lessonRes.data ? '✅ Found' : '❌ Not Found');
+    if (lessonRes.error) {
+        console.log(`⚠️ [DEBUG] DB Lesson Query Error:`, lessonRes.error.message);
     }
 
-    // تجميع البيانات وتنسيقها لترسل للفرونت إند كما طلب
+    console.log(`📊 [DEBUG] DB Response - Content:`, contentRes.data ? '✅ Found' : '❌ Not Found');
+    console.log(`📊 [DEBUG] DB Response - Atoms:`, atomsRes.data ? '✅ Found' : '❌ Not Found');
+    console.log(`📊 [DEBUG] DB Response - Questions Count:`, questionsRes.data?.length || 0);
+
+    // التحقق من وجود الدرس
+    if (lessonRes.error || !lessonRes.data) {
+      console.log(`❌ [DEBUG] Returning 404: Lesson '${lessonId}' does not exist in DB.`);
+      return res.status(404).json({ 
+        error: 'Lesson not found',
+        db_message: lessonRes.error ? lessonRes.error.message : 'No rows returned'
+      });
+    }
+
+    console.log(`✅ [DEBUG] Success! Sending full payload to frontend.\n`);
+
     const responseData = {
       success: true,
       lesson: {
@@ -1420,7 +1422,7 @@ async function getAdminLessonDetails(req, res) {
     res.json(responseData);
 
   } catch (error) {
-    logger.error(`Admin getLessonDetails Error [${req.params.lessonId}]:`, error.message);
+    console.error(`🚨 [DEBUG] Fatal Error in getAdminLessonDetails:`, error);
     res.status(500).json({ error: 'Internal Server Error fetching lesson details' });
   }
 }
