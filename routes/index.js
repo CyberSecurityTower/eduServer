@@ -116,6 +116,8 @@ router.post('/log-session-start', analyticsController.logSessionStart);
 // ==========================================
 router.get('/admin/curriculum-health', requireAdmin, adminController.getCurriculumHealth);
 
+// ✅ المسار الجديد لجلب تفاصيل الدرس بالكامل للوحة التحكم
+router.get('/admin/lessons/:lessonId/details', requireAdmin, adminController.getAdminLessonDetails);
 //live traffic
 router.get('/admin/live-traffic', requireAdmin, adminController.getLiveTraffic);
 
