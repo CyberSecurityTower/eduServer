@@ -1378,41 +1378,58 @@ async function getAdminLessonDetails(req, res) {
       return res.status(400).json({ error: 'Lesson ID is required' });
     }
 
-    console.log(`⏳ [DEBUG] Querying database for lesson ID: '${lessonId}'...`);
+    console.log(`⏳ [DEBUG] 1. Fetching Lesson, Content, Atoms, and Questions in parallel...`);
 
+    // 1. جلب البيانات الأساسية (بدون الـ Join المعقد)
     const [lessonRes, contentRes, atomsRes, questionsRes] = await Promise.all([
-      supabase.from('lessons').select('id, title, order_index, subject_id, has_content, ai_memory, subjects(title)').eq('id', lessonId).single(),
+      // أزلنا subjects(title) من هنا
+      supabase.from('lessons').select('id, title, order_index, subject_id, has_content, ai_memory').eq('id', lessonId).single(),
       supabase.from('lessons_content').select('content').eq('id', lessonId).maybeSingle(),
       supabase.from('atomic_lesson_structures').select('structure_data').eq('lesson_id', lessonId).maybeSingle(),
       supabase.from('question_bank').select('id, atom_id, widget_type, content, difficulty, points, is_verified').eq('lesson_id', lessonId)
     ]);
 
-    // طباعة نتائج قاعدة البيانات بالتفصيل
-    console.log(`📊 [DEBUG] DB Response - Lesson Data:`, lessonRes.data ? '✅ Found' : '❌ Not Found');
-    if (lessonRes.error) {
-        console.log(`⚠️ [DEBUG] DB Lesson Query Error:`, lessonRes.error.message);
-    }
-
-    console.log(`📊 [DEBUG] DB Response - Content:`, contentRes.data ? '✅ Found' : '❌ Not Found');
-    console.log(`📊 [DEBUG] DB Response - Atoms:`, atomsRes.data ? '✅ Found' : '❌ Not Found');
-    console.log(`📊 [DEBUG] DB Response - Questions Count:`, questionsRes.data?.length || 0);
-
     // التحقق من وجود الدرس
     if (lessonRes.error || !lessonRes.data) {
-      console.log(`❌ [DEBUG] Returning 404: Lesson '${lessonId}' does not exist in DB.`);
+      console.log(`❌ [DEBUG] Returning 404: Lesson '${lessonId}' not found.`);
       return res.status(404).json({ 
         error: 'Lesson not found',
         db_message: lessonRes.error ? lessonRes.error.message : 'No rows returned'
       });
     }
 
-    console.log(`✅ [DEBUG] Success! Sending full payload to frontend.\n`);
+    console.log(`✅ [DEBUG] Lesson found. Subject ID is: ${lessonRes.data.subject_id}`);
 
+    // 2. جلب اسم المادة على حدة (إذا كان هناك subject_id)
+    let subjectTitle = 'Unknown Subject';
+    if (lessonRes.data.subject_id) {
+      console.log(`⏳ [DEBUG] 2. Fetching Subject details separately...`);
+      const { data: subjectData, error: subjectError } = await supabase
+        .from('subjects')
+        .select('title')
+        .eq('id', lessonRes.data.subject_id)
+        .single();
+
+      if (!subjectError && subjectData) {
+        // معالجة إذا كان العنوان JSONb (ar, en, fr) أو نص عادي
+        if (typeof subjectData.title === 'object' && subjectData.title !== null) {
+            subjectTitle = subjectData.title.ar || subjectData.title.en || 'Unknown Subject';
+        } else {
+            subjectTitle = subjectData.title || 'Unknown Subject';
+        }
+      } else {
+        console.log(`⚠️ [DEBUG] Could not fetch subject title:`, subjectError?.message);
+      }
+    }
+
+    console.log(`✅ [DEBUG] Success! Assembling and sending payload to frontend.\n`);
+
+    // 3. تجميع وإرسال البيانات
     const responseData = {
       success: true,
       lesson: {
         ...lessonRes.data,
-        subject_title: lessonRes.data.subjects?.title || 'Unknown Subject'
+        subject_title: subjectTitle // أضفنا العنوان هنا يدوياً
       },
       content: contentRes.data ? contentRes.data.content : null,
       atoms: atomsRes.data?.structure_data?.elements || [],
