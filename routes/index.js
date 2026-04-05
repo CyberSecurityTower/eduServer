@@ -27,6 +27,7 @@ const workLensController = require('../controllers/workLensController');
 const leaderController = require('../controllers/leaderController');
 const verifyLeader = require('../middleware/verifyLeader');
 const reportController = require('../controllers/reportController');
+router.get('/curriculum-health', requireAdmin, adminController.getCurriculumHealth);
 
 /*
 // ⏰ تشغيل منقذ الستريك كل ساعة (60 دقيقة)
