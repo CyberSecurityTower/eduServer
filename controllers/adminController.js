@@ -1361,6 +1361,69 @@ async function getCurriculumHealth(req, res) {
     res.status(500).json({ error: error.message });
   }
 }
+// ==========================================
+// 5. جلب تفاصيل الدرس الشاملة (للأدمن)
+// ==========================================
+
+async function getAdminLessonDetails(req, res) {
+  try {
+    const { lessonId } = req.params;
+
+    if (!lessonId) {
+      return res.status(400).json({ error: 'Lesson ID is required' });
+    }
+
+    // نستخدم Promise.all لجلب جميع البيانات في نفس الوقت (Parallel Fetching) لسرعة الاستجابة
+    // نستخدم maybeSingle() للمحتوى والذرات لأنه قد يكون الدرس جديداً ولم يتم توليدها بعد
+    const [lessonRes, contentRes, atomsRes, questionsRes] = await Promise.all([
+      // 1. البيانات الأساسية للدرس واسم المادة
+      supabase.from('lessons')
+        .select('id, title, order_index, subject_id, has_content, ai_memory, subjects(title)')
+        .eq('id', lessonId)
+        .single(),
+
+      // 2. محتوى الدرس (النص) - نستخدم id لأنه المفتاح الأساسي هنا
+      supabase.from('lessons_content')
+        .select('content')
+        .eq('id', lessonId)
+        .maybeSingle(),
+
+      // 3. الهيكل الذري (Atoms)
+      supabase.from('atomic_lesson_structures')
+        .select('structure_data')
+        .eq('lesson_id', lessonId)
+        .maybeSingle(),
+
+      // 4. بنك الأسئلة الخاص بهذا الدرس
+      supabase.from('question_bank')
+        .select('id, atom_id, widget_type, content, difficulty, points, is_verified')
+        .eq('lesson_id', lessonId)
+    ]);
+
+    // إذا لم نجد الدرس الأساسي، نرجع خطأ 404
+    if (lessonRes.error || !lessonRes.data) {
+      return res.status(404).json({ error: 'Lesson not found' });
+    }
+
+    // تجميع البيانات وتنسيقها لترسل للفرونت إند كما طلب
+    const responseData = {
+      success: true,
+      lesson: {
+        ...lessonRes.data,
+        subject_title: lessonRes.data.subjects?.title || 'Unknown Subject'
+      },
+      content: contentRes.data ? contentRes.data.content : null,
+      atoms: atomsRes.data?.structure_data?.elements || [],
+      questions: questionsRes.data || []
+    };
+
+    res.json(responseData);
+
+  } catch (error) {
+    logger.error(`Admin getLessonDetails Error [${req.params.lessonId}]:`, error.message);
+    res.status(500).json({ error: 'Internal Server Error fetching lesson details' });
+  }
+}
 module.exports = {
   initAdminController,
   indexSpecificLesson,
@@ -1396,5 +1459,6 @@ module.exports = {
   generateAtomicStructuresBatch,
   fixRealFileSizes,
   getUsersList,
-  getRecentTransactions
+  getRecentTransactions,
+  getAdminLessonDetails 
 };
