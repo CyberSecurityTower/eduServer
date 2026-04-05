@@ -1280,6 +1280,71 @@ async function getUsersList(req, res) {
     res.status(500).json({ error: e.message });
   }
 }
+// ==========================================
+// 4. فحص صحة المنهج (Curriculum Health)
+// ==========================================
+
+async function getCurriculumHealth(req, res) {
+  try {
+    // 1. جلب كل البيانات اللازمة بالتوازي (للسرعة)
+    const [subjectsRes, lessonsRes, contentRes, atomsRes, questionsRes] = await Promise.all([
+      supabase.from('subjects').select('id, title, semester, path_id').order('order_index'),
+      supabase.from('lessons').select('id, title, subject_id, order_index').order('order_index'),
+      supabase.from('lessons_content').select('id'), // نجلب الـ id فقط لنعرف أن المحتوى موجود
+      supabase.from('atomic_lesson_structures').select('lesson_id'),
+      supabase.from('question_bank').select('id, lesson_id, widget_type')
+    ]);
+
+    const subjects = subjectsRes.data || [];
+    const lessons = lessonsRes.data || [];
+    const contents = new Set((contentRes.data || []).map(c => c.id));
+    const atoms = new Set((atomsRes.data || []).map(a => a.lesson_id));
+    const questions = questionsRes.data || [];
+
+    // 2. حساب عدد الأسئلة لكل درس
+    const questionCounts = {};
+    questions.forEach(q => {
+      if (!questionCounts[q.lesson_id]) questionCounts[q.lesson_id] = 0;
+      questionCounts[q.lesson_id]++;
+    });
+
+    // 3. بناء الشجرة (Tree)
+    const curriculumTree = subjects.map(subject => {
+      // استخراج العنوان العربي من الـ JSONb
+      let subjectTitle = subject.title;
+      try { if (typeof subjectTitle === 'object') subjectTitle = subjectTitle.ar || subjectTitle.en; } catch(e){}
+
+      const subjectLessons = lessons
+        .filter(l => l.subject_id === subject.id)
+        .map(lesson => ({
+          id: lesson.id,
+          title: lesson.title,
+          has_content: contents.has(lesson.id),
+          has_atoms: atoms.has(lesson.id),
+          questions_count: questionCounts[lesson.id] || 0
+        }));
+
+      return {
+        id: subject.id,
+        title: subjectTitle || subject.id,
+        semester: subject.semester,
+        path_id: subject.path_id,
+        lessons: subjectLessons,
+        stats: {
+          total_lessons: subjectLessons.length,
+          completed_content: subjectLessons.filter(l => l.has_content).length,
+          completed_atoms: subjectLessons.filter(l => l.has_atoms).length
+        }
+      };
+    });
+
+    res.json(curriculumTree);
+
+  } catch (error) {
+    console.error('Curriculum Health Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+}
 module.exports = {
   initAdminController,
   indexSpecificLesson,
@@ -1293,6 +1358,7 @@ module.exports = {
   pushDiscoveryMission,
   getKeysStatus,
   addApiKey,
+  getCurriculumHealth,
   reviveApiKey,
   runDailyChronoAnalysis,
   getDashboardStats,
