@@ -1349,7 +1349,9 @@ async function getCurriculumHealth(req, res) {
         stats: {
           total_lessons: subjectLessons.length,
           completed_content: subjectLessons.filter(l => l.has_content).length,
-          completed_atoms: subjectLessons.filter(l => l.has_atoms).length
+          completed_atoms: subjectLessons.filter(l => l.has_atoms).length,
+          // إضافة الدروس التي تمتلك أسئلة (نعتبر الدرس له أسئلة إذا كان عددها أكبر من 0)
+          completed_questions: subjectLessons.filter(l => l.questions_count > 0).length
         }
       };
     });
