@@ -85,13 +85,23 @@ class GeniusBankWorker {
 
         // 2. جلب الدروس التي تمتلك هيكلاً ذرياً (الشرط الأساسي)
         const { data: structures } = await supabase.from('atomic_lesson_structures').select('lesson_id');
-        const lessonsWithAtoms = new Set(structures?.map(s => String(s.lesson_id)) || []);
+        const lessonsWithAtoms = new Set(structures?.map(s => String(s.lesson_id).trim()) || []);
 
-        // 3. حساب عدد الأسئلة الحالية لكل درس
-        const { data: allQuestions } = await supabase.from('question_bank').select('lesson_id');
+        // 3. 🌟 الحل السحري: حساب عدد الأسئلة الحالية (بتخطي حد الـ 1000 سطر)
+        let allQuestions = [];
+        let from = 0;
+        const step = 1000;
+        while (true) {
+            const { data } = await supabase.from('question_bank').select('lesson_id').range(from, from + step - 1);
+            if (!data || data.length === 0) break;
+            allQuestions.push(...data);
+            if (data.length < step) break;
+            from += step;
+        }
+
         const questionCounts = {};
-        allQuestions?.forEach(q => {
-            const lId = String(q.lesson_id);
+        allQuestions.forEach(q => {
+            const lId = String(q.lesson_id).trim();
             questionCounts[lId] = (questionCounts[lId] || 0) + 1;
         });
 
@@ -100,7 +110,7 @@ class GeniusBankWorker {
         const secondaryQueue = []; // دروس تمتلك أسئلة بالفعل (لزيادة الإثراء)
 
         for (const lesson of lessons) {
-            const lId = String(lesson.id);
+            const lId = String(lesson.id).trim();
             if (lessonsWithAtoms.has(lId)) {
                 if (!questionCounts[lId] || questionCounts[lId] === 0) {
                     primaryQueue.push(lesson); // أولوية 1
