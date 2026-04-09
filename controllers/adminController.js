@@ -1317,28 +1317,32 @@ async function getCurriculumHealth(req, res) {
     const atoms = new Set((atomsRes.data || []).map(a => a.lesson_id));
     const questions = questionsRes.data || [];
 
-    // 2. حساب عدد الأسئلة لكل درس
+   
+    // 2. حساب عدد الأسئلة لكل درس (مع توحيد نوع الـ ID إلى String)
     const questionCounts = {};
     questions.forEach(q => {
-      if (!questionCounts[q.lesson_id]) questionCounts[q.lesson_id] = 0;
-      questionCounts[q.lesson_id]++;
+      const lId = String(q.lesson_id); // 👈 تحويل إلى نص
+      if (!questionCounts[lId]) questionCounts[lId] = 0;
+      questionCounts[lId]++;
     });
 
     // 3. بناء الشجرة (Tree)
     const curriculumTree = subjects.map(subject => {
-      // استخراج العنوان العربي من الـ JSONb
       let subjectTitle = subject.title;
       try { if (typeof subjectTitle === 'object') subjectTitle = subjectTitle.ar || subjectTitle.en; } catch(e){}
 
       const subjectLessons = lessons
         .filter(l => l.subject_id === subject.id)
-        .map(lesson => ({
-          id: lesson.id,
-          title: lesson.title,
-          has_content: contents.has(lesson.id),
-          has_atoms: atoms.has(lesson.id),
-          questions_count: questionCounts[lesson.id] || 0
-        }));
+        .map(lesson => {
+          const lId = String(lesson.id); // 👈 تحويل إلى نص للمطابقة
+          return {
+            id: lesson.id,
+            title: lesson.title,
+            has_content: contents.has(lesson.id),
+            has_atoms: atoms.has(lesson.id),
+            questions_count: questionCounts[lId] || 0 // 👈 استخدام الـ ID النصي
+          };
+        });
 
       return {
         id: subject.id,
