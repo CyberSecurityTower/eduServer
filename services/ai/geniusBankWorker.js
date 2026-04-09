@@ -66,13 +66,14 @@ class GeniusBankWorker {
         }
     }
 
+   
     /**
-     * 🔥 الجديد: تجهيز كل الدروس المطلوبة ووضعها في طابور
+     * 🔥 خوارزمية بناء الطابور الذكية (Queue Builder)
      */
     async _buildTaskQueue(subjectId) {
         logger.info('🔍 Scanning database to build Task Queue...');
 
-        // أ. جلب الدروس (إما للمادة المحددة أو الكل)
+        // 1. جلب الدروس المطلوبة
         let query = supabase.from('lessons').select('id, title, subject_id');
         if (subjectId) query = query.eq('subject_id', subjectId);
         const { data: lessons, error: lessonError } = await query;
@@ -82,22 +83,45 @@ class GeniusBankWorker {
             return;
         }
 
-        // ب. جلب الدروس التي تمتلك هيكلاً ذرياً
+        // 2. جلب الدروس التي تمتلك هيكلاً ذرياً (الشرط الأساسي)
         const { data: structures } = await supabase.from('atomic_lesson_structures').select('lesson_id');
-        const lessonsWithAtoms = new Set(structures?.map(s => s.lesson_id) || []);
+        const lessonsWithAtoms = new Set(structures?.map(s => String(s.lesson_id)) || []);
 
-        // ج. جلب الدروس التي تمتلك أسئلة مسبقاً
-        const { data: existingBanks } = await supabase.from('question_bank').select('lesson_id');
-        const lessonsWithQuestions = new Set(existingBanks?.map(b => b.lesson_id) || []);
+        // 3. حساب عدد الأسئلة الحالية لكل درس
+        const { data: allQuestions } = await supabase.from('question_bank').select('lesson_id');
+        const questionCounts = {};
+        allQuestions?.forEach(q => {
+            const lId = String(q.lesson_id);
+            questionCounts[lId] = (questionCounts[lId] || 0) + 1;
+        });
 
-        // د. تصفية الدروس المطلوبة فقط وإضافتها للطابور
+        // 4. تصنيف الدروس
+        const primaryQueue = [];   // دروس لا تمتلك أي سؤال (أولوية قصوى)
+        const secondaryQueue = []; // دروس تمتلك أسئلة بالفعل (لزيادة الإثراء)
+
         for (const lesson of lessons) {
-            if (lessonsWithAtoms.has(lesson.id) && !lessonsWithQuestions.has(lesson.id)) {
-                this.taskQueue.push(lesson);
+            const lId = String(lesson.id);
+            if (lessonsWithAtoms.has(lId)) {
+                if (!questionCounts[lId] || questionCounts[lId] === 0) {
+                    primaryQueue.push(lesson); // أولوية 1
+                } else {
+                    secondaryQueue.push(lesson); // أولوية 2
+                }
             }
         }
 
-        logger.info(`🎯 Found ${this.taskQueue.length} lessons ready for generation.`);
+        // 5. اتخاذ القرار (Decision Logic)
+        if (primaryQueue.length > 0) {
+            this.taskQueue = primaryQueue;
+            logger.info(`🎯 Priority 1: Found ${this.taskQueue.length} lessons with ZERO questions. Target locked.`);
+        } else if (secondaryQueue.length > 0) {
+            // إذا كانت كل الدروس ممتلئة بالأسئلة، نختار دروس عشوائية لزيادة الأسئلة (Enrichment Mode)
+            const shuffled = secondaryQueue.sort(() => 0.5 - Math.random());
+            this.taskQueue = shuffled.slice(0, 3); // نختار 3 دروس عشوائية لتوليد المزيد لها
+            logger.info(`✨ Priority 2 (Enrichment): All lessons have questions. Selected ${this.taskQueue.length} random lessons to generate MORE questions.`);
+        } else {
+            logger.info('✅ No suitable lessons found (Maybe missing atomic structures?).');
+        }
     }
 
     async _workerLoop(workerId) {
