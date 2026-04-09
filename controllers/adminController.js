@@ -1302,31 +1302,44 @@ async function getUsersList(req, res) {
 
 async function getCurriculumHealth(req, res) {
   try {
-    // 1. جلب كل البيانات اللازمة بالتوازي (للسرعة)
-    const [subjectsRes, lessonsRes, contentRes, atomsRes, questionsRes] = await Promise.all([
+    // 1. جلب البيانات الأساسية بالتوازي
+    const [subjectsRes, lessonsRes, contentRes, atomsRes] = await Promise.all([
       supabase.from('subjects').select('id, title, semester, path_id').order('order_index'),
       supabase.from('lessons').select('id, title, subject_id, order_index').order('order_index'),
-      supabase.from('lessons_content').select('id'), // نجلب الـ id فقط لنعرف أن المحتوى موجود
-      supabase.from('atomic_lesson_structures').select('lesson_id'),
-      supabase.from('question_bank').select('id, lesson_id, widget_type')
+      supabase.from('lessons_content').select('id'), 
+      supabase.from('atomic_lesson_structures').select('lesson_id')
     ]);
+
+    // 🌟 2. الحل السحري: جلب الأسئلة على دفعات لتجاوز حد الـ 1000 سطر في Supabase
+    let questions = [];
+    let from = 0;
+    const step = 1000;
+    while (true) {
+      const { data, error } = await supabase
+        .from('question_bank')
+        .select('lesson_id')
+        .range(from, from + step - 1);
+      
+      if (error || !data || data.length === 0) break;
+      questions.push(...data);
+      if (data.length < step) break; // إذا كانت الدفعة الأخيرة
+      from += step;
+    }
 
     const subjects = subjectsRes.data || [];
     const lessons = lessonsRes.data || [];
-    const contents = new Set((contentRes.data || []).map(c => c.id));
-    const atoms = new Set((atomsRes.data || []).map(a => a.lesson_id));
-    const questions = questionsRes.data || [];
+    const contents = new Set((contentRes.data || []).map(c => String(c.id).trim()));
+    const atoms = new Set((atomsRes.data || []).map(a => String(a.lesson_id).trim()));
 
-   
-    // 2. حساب عدد الأسئلة لكل درس (مع توحيد نوع الـ ID إلى String)
+    // 3. حساب عدد الأسئلة بدقة
     const questionCounts = {};
     questions.forEach(q => {
-      const lId = String(q.lesson_id); // 👈 تحويل إلى نص
+      const lId = String(q.lesson_id).trim();
       if (!questionCounts[lId]) questionCounts[lId] = 0;
       questionCounts[lId]++;
     });
 
-    // 3. بناء الشجرة (Tree)
+    // 4. بناء الشجرة
     const curriculumTree = subjects.map(subject => {
       let subjectTitle = subject.title;
       try { if (typeof subjectTitle === 'object') subjectTitle = subjectTitle.ar || subjectTitle.en; } catch(e){}
@@ -1334,13 +1347,13 @@ async function getCurriculumHealth(req, res) {
       const subjectLessons = lessons
         .filter(l => l.subject_id === subject.id)
         .map(lesson => {
-          const lId = String(lesson.id); // 👈 تحويل إلى نص للمطابقة
+          const lId = String(lesson.id).trim();
           return {
             id: lesson.id,
             title: lesson.title,
-            has_content: contents.has(lesson.id),
-            has_atoms: atoms.has(lesson.id),
-            questions_count: questionCounts[lId] || 0 // 👈 استخدام الـ ID النصي
+            has_content: contents.has(lId),
+            has_atoms: atoms.has(lId),
+            questions_count: questionCounts[lId] || 0 // الآن سيعرض العدد الحقيقي مهما كان كبيراً
           };
         });
 
@@ -1354,7 +1367,6 @@ async function getCurriculumHealth(req, res) {
           total_lessons: subjectLessons.length,
           completed_content: subjectLessons.filter(l => l.has_content).length,
           completed_atoms: subjectLessons.filter(l => l.has_atoms).length,
-          // إضافة الدروس التي تمتلك أسئلة (نعتبر الدرس له أسئلة إذا كان عددها أكبر من 0)
           completed_questions: subjectLessons.filter(l => l.questions_count > 0).length
         }
       };
